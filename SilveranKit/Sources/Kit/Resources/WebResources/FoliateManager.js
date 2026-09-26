@@ -4,6 +4,31 @@ import { SpanHighlighter } from "./SpanHighlighter.js";
 import { debugLog } from "./DebugConfig.js";
 import BookmarkManager from "./BookmarkManager.js";
 
+// Discrete swipe detection (page curl mode): a horizontal flick of at least
+// SWIPE_MIN_DISTANCE px that is clearly more horizontal than vertical, or a
+// shorter but fast flick.
+const SWIPE_MIN_DISTANCE = 30;
+const SWIPE_FAST_DISTANCE = 12;
+const SWIPE_FAST_VELOCITY = 0.35; // px per ms
+const SWIPE_DIRECTION_RATIO = 1.3;
+const TURN_PAGE_TIMEOUT_MS = 1500;
+
+/**
+ * Classifies a completed touch as a page-turn swipe. Returns the visual
+ * navigation direction ("left" = content moves right / goLeft), or null.
+ */
+export const classifySwipe = ({ dx, dy, dt }) => {
+  const ax = Math.abs(dx);
+  const ay = Math.abs(dy);
+  if (ax < SWIPE_FAST_DISTANCE || ax < ay * SWIPE_DIRECTION_RATIO) return null;
+  const velocity = dt > 0 ? ax / dt : 0;
+  if (ax < SWIPE_MIN_DISTANCE && velocity < SWIPE_FAST_VELOCITY) return null;
+  // Finger moving left reveals the page to the right, like the paginator's drag.
+  return dx < 0 ? "right" : "left";
+};
+
+const nextAnimationFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+
 const getCSS = ({
   lineSpacing = 1.4,
   textAlign = "justify",
@@ -154,6 +179,9 @@ class FoliateManager {
   #scrollingMode = false;
   #hasAudioNarration = false;
   #enableMarginClickNavigation = true;
+  #pageTurnStyle = "none";
+  #swipeGesture = null;
+  #lastTurnNavigation = Promise.resolve();
   #lastRelocateRange = null;
   #highlightedElement = null;
   #highlightedSectionIndex = null;
@@ -175,6 +203,8 @@ class FoliateManager {
 
     debugLog("FoliateManager", "Setting up event listeners");
     this.#attachEventListeners();
+    // Touches on the page margins outside the section iframe.
+    this.#attachSwipeInterceptors(window, document, { onlyReaderTouches: true });
 
     debugLog("FoliateManager", "Opening file in foliate-view...");
     await this.#view.open(file);
@@ -202,6 +232,8 @@ class FoliateManager {
       const { doc, index } = detail;
       if (doc) {
         let isDragging = false;
+
+        this.#attachSwipeInterceptors(doc.defaultView, doc);
 
         doc.addEventListener("touchmove", (event) => {
           const selection = doc.getSelection?.();
@@ -463,6 +495,110 @@ class FoliateManager {
     }
   }
 
+  /**
+   * In curl mode the paginator must not drag pages under the finger: Swift
+   * animates the turn instead. Capture-phase listeners on the window run before
+   * the paginator's document/element listeners, so stopping propagation here
+   * suppresses its drag-and-snap. Gestures that start with an active selection,
+   * multiple fingers, or pinch zoom pass through untouched.
+   */
+  #attachSwipeInterceptors(win, doc, { onlyReaderTouches = false } = {}) {
+    if (!win) return;
+    const opts = { capture: true, passive: false };
+
+    win.addEventListener("touchstart", (e) => {
+      const outsideReader = onlyReaderTouches && !e.composedPath().includes(this.#view);
+      if (this.#pageTurnStyle !== "curl" || this.#scrollingMode || outsideReader) {
+        this.#swipeGesture = null;
+        return;
+      }
+      const selection = doc?.getSelection?.();
+      const hasSelection = selection && !selection.isCollapsed;
+      const pinched = (globalThis.visualViewport?.scale ?? 1) > 1;
+      if (e.touches.length > 1 || hasSelection || pinched) {
+        this.#swipeGesture = null;
+        return;
+      }
+      const touch = e.changedTouches[0];
+      this.#swipeGesture = { x: touch.screenX, y: touch.screenY, t: e.timeStamp };
+      e.stopPropagation();
+    }, opts);
+
+    win.addEventListener("touchmove", (e) => {
+      if (!this.#swipeGesture) return;
+      if (e.touches.length > 1) {
+        // Became a pinch; stop intercepting this gesture.
+        this.#swipeGesture = null;
+        return;
+      }
+      e.stopPropagation();
+      e.preventDefault();
+    }, opts);
+
+    win.addEventListener("touchend", (e) => {
+      const gesture = this.#swipeGesture;
+      if (!gesture) return;
+      this.#swipeGesture = null;
+      e.stopPropagation();
+      const touch = e.changedTouches[0];
+      const direction = classifySwipe({
+        dx: touch.screenX - gesture.x,
+        dy: touch.screenY - gesture.y,
+        dt: e.timeStamp - gesture.t,
+      });
+      if (!direction) return;
+      debugLog("FoliateManager", "Swipe detected, direction:", direction);
+      // Visual direction, like the paginator's drag; Swift routes it through EPM.
+      window.webkit?.messageHandlers?.MarginClickNav?.postMessage({
+        direction,
+        source: "swipe",
+      });
+    }, opts);
+
+    win.addEventListener("touchcancel", () => {
+      this.#swipeGesture = null;
+    }, opts);
+  }
+
+  /**
+   * Turns one page and resolves once the new page has been painted, so Swift
+   * can snapshot it for the page curl. Resolves to a JSON string
+   * `{ changed }`; `changed` is false when the reader could not move.
+   */
+  async turnPage(direction) {
+    debugLog("FoliateManager", `turnPage(${direction})`);
+    if (!this.#view) {
+      return JSON.stringify({ changed: false });
+    }
+
+    // The paginator drops turns requested while a previous turn holds its lock,
+    // so queued curl turns wait for the previous navigation to fully finish.
+    await this.#lastTurnNavigation;
+
+    let onRelocate;
+    const relocated = new Promise(resolve => {
+      onRelocate = () => resolve(true);
+      this.#view.addEventListener("relocate", onRelocate, { once: true });
+    });
+    const navigated = Promise.resolve(
+      direction === "left" ? this.#view.goLeft() : this.#view.goRight()
+    ).catch(error => {
+      console.error(`[FM2] turnPage(${direction}) failed:`, error);
+    }).then(() => false);
+    this.#lastTurnNavigation = navigated;
+    const timedOut = new Promise(resolve =>
+      setTimeout(() => resolve(false), TURN_PAGE_TIMEOUT_MS)
+    );
+
+    const changed = await Promise.race([relocated, navigated, timedOut]);
+    this.#view.removeEventListener("relocate", onRelocate);
+
+    // Two frames: one to lay out the new position, one to composite it.
+    await nextAnimationFrame();
+    await nextAnimationFrame();
+    return JSON.stringify({ changed });
+  }
+
   #handleMarginClickNavigation(direction) {
     if (!this.#view) {
       console.warn("[FM2] Margin click navigation but view not initialized");
@@ -682,6 +818,9 @@ class FoliateManager {
     if (styles.enableMarginClickNavigation !== undefined && styles.enableMarginClickNavigation !== null) {
       this.#enableMarginClickNavigation = styles.enableMarginClickNavigation;
     }
+    if (typeof styles.pageTurnStyle === "string") {
+      this.#pageTurnStyle = styles.pageTurnStyle;
+    }
     if (styles.userHighlightMode !== undefined && styles.userHighlightMode !== null) {
       this.#bookmarkManager.setHighlightMode(styles.userHighlightMode);
     }
@@ -728,6 +867,10 @@ class FoliateManager {
     const flow = this.#scrollingMode ? "scrolled" : "paginated";
     this.#view.renderer.setAttribute("flow", flow);
     debugLog("FoliateManager", `Set flow to ${flow}`);
+
+    // The paginator's built-in sliding transition. Curl is drawn natively by Swift
+    // over an instant turn, so it must stay off in curl mode.
+    this.#view.renderer.toggleAttribute("animated", this.#pageTurnStyle === "slide");
 
     const columnCount = (this.#singleColumnMode || this.#scrollingMode) ? "1" : "2";
     this.#view.renderer.setAttribute("max-column-count", columnCount);

@@ -121,6 +121,30 @@ struct EbookPlayerSettings: View {
                     settingsVM.save()
                 }
 
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Page Turn")
+                Picker("Page Turn", selection: $settingsVM.pageTurnStyle) {
+                    Text("None").tag("none")
+                    Text("Slide").tag("slide")
+                    Text("Curl").tag("curl")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .onChange(of: settingsVM.pageTurnStyle) { _, _ in
+                    settingsVM.save()
+                }
+            }
+            .disabled(settingsVM.scrollingMode)
+
+            Toggle(
+                "Animate Read-Aloud Page Turns",
+                isOn: $settingsVM.animatePageTurnsDuringReadaloud,
+            )
+            .onChange(of: settingsVM.animatePageTurnsDuringReadaloud) { _, _ in
+                settingsVM.save()
+            }
+            .disabled(settingsVM.scrollingMode || settingsVM.pageTurnStyle != "curl")
+
             labeledSlider(
                 label: "Line Spacing",
                 value: $settingsVM.lineSpacing,
@@ -268,6 +292,8 @@ struct EbookPlayerSettings: View {
         settingsVM.textAlignment = kDefaultTextAlignment
         settingsVM.enableMarginClickNavigation = kDefaultEnableMarginClickNavigation
         settingsVM.scrollingMode = kDefaultScrollingMode
+        settingsVM.pageTurnStyle = kDefaultPageTurnStyle
+        settingsVM.animatePageTurnsDuringReadaloud = kDefaultAnimatePageTurnsDuringReadaloud
         settingsVM.enableReadingBar = kDefaultReadingBarEnabled
         settingsVM.showProgressBar = kDefaultShowProgressBar
         settingsVM.showProgress = kDefaultShowProgress

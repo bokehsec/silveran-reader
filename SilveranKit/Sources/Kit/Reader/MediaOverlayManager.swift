@@ -966,6 +966,6 @@ public final class MediaOverlayManager {
 
         lastFlipTime = Date()
         debugLog("[MOM] Page flip")
-        try? await commsBridge?.sendJsGoRightCommand()
+        try? await commsBridge?.sendJsGoRightCommand(trigger: .readaloud)
     }
 }

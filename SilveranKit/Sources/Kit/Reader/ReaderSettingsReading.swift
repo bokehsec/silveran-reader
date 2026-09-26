@@ -24,4 +24,12 @@ public protocol ReaderSettingsReading: AnyObject {
     var userHighlightMode: String { get }
     var readaloudHighlightMode: String { get }
     var lockViewToAudio: Bool { get }
+    var pageTurnStyle: String { get }
+    var animatePageTurnsDuringReadaloud: Bool { get }
+}
+
+/// Readers that never animate page turns (headless, Android) get these for free.
+extension ReaderSettingsReading {
+    public var pageTurnStyle: String { "none" }
+    public var animatePageTurnsDuringReadaloud: Bool { false }
 }

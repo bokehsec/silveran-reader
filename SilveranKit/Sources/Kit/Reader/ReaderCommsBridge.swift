@@ -12,6 +12,16 @@ import Foundation
 public final class ReaderCommsBridge {
     public weak var js: (any JSEvaluating)?
 
+    /// Platform page-turn animation (iOS page curl). Nil means turns are never animated
+    /// by Swift; JS may still slide.
+    public weak var pageTurnAnimator: (any PageTurnAnimating)?
+
+    /// Effective page turn style last sent to JS ("none", "slide", "curl").
+    public private(set) var pageTurnStyle = "none"
+    public private(set) var animateReadaloudPageTurns = false
+    /// Reader background color last sent to JS, used to back page-curl snapshots.
+    public private(set) var readerBackgroundColorHex: String?
+
     /// Notifies when book structure (TOC) is ready
     public var onBookStructureReady: ((BookStructureReadyMessage) -> Void)?
 
@@ -145,23 +155,43 @@ public final class ReaderCommsBridge {
         onElementVisibility?(message)
     }
 
-    public func sendJsGoLeftCommand() async throws {
-        guard let js else {
-            throw ReaderCommsBridgeError.jsNotAvailable
-        }
-
-        debugLog("[ReaderCommsBridge] sendJsGoLeftCommand()")
-        _ = try await js.evaluate("window.foliateManager.goLeft()")
+    public func sendJsGoLeftCommand(trigger: PageTurnTrigger = .programmatic) async throws {
+        debugLog("[ReaderCommsBridge] sendJsGoLeftCommand(trigger: \(trigger))")
+        try await sendJsTurnCommand(.left, trigger: trigger)
     }
 
     /// Swift commands JS to navigate right (next page)
-    public func sendJsGoRightCommand() async throws {
+    public func sendJsGoRightCommand(trigger: PageTurnTrigger = .programmatic) async throws {
+        debugLog("[ReaderCommsBridge] sendJsGoRightCommand(trigger: \(trigger))")
+        try await sendJsTurnCommand(.right, trigger: trigger)
+    }
+
+    private func sendJsTurnCommand(
+        _ direction: PageTurnDirection,
+        trigger: PageTurnTrigger,
+    ) async throws {
         guard let js else {
             throw ReaderCommsBridgeError.jsNotAvailable
         }
 
-        debugLog("[ReaderCommsBridge] sendJsGoRightCommand()")
-        _ = try await js.evaluate("window.foliateManager.goRight()")
+        let animate = PageTurnPolicy.shouldAnimate(
+            effectiveStyle: pageTurnStyle,
+            trigger: trigger,
+            animateReadaloudTurns: animateReadaloudPageTurns,
+        )
+        guard animate, let animator = pageTurnAnimator else {
+            let method = direction == .left ? "goLeft" : "goRight"
+            _ = try await js.evaluate("window.foliateManager.\(method)()")
+            return
+        }
+
+        try await animator.performAnimatedTurn(direction: direction) { [weak js] in
+            guard let js else { throw ReaderCommsBridgeError.jsNotAvailable }
+            let result = try await js.callAsync(
+                "return await window.foliateManager.turnPage('\(direction.rawValue)');"
+            )
+            return PageTurnPolicy.parseOutcome(result)
+        }
     }
 
     /// Swift commands JS to navigate to a specific href (with optional fragment)
@@ -327,10 +357,21 @@ public final class ReaderCommsBridge {
         enableMarginClickNavigation: Bool,
         userHighlightMode: String,
         readaloudHighlightMode: String,
+        pageTurnStyle requestedPageTurnStyle: String = "none",
+        animateReadaloudPageTurns: Bool = false,
     ) async throws {
         guard let js else {
             throw ReaderCommsBridgeError.jsNotAvailable
         }
+
+        let effectivePageTurnStyle = PageTurnPolicy.effectiveStyle(
+            requested: requestedPageTurnStyle,
+            scrollingMode: scrollingMode,
+            hasAnimator: pageTurnAnimator != nil,
+        )
+        pageTurnStyle = effectivePageTurnStyle
+        self.animateReadaloudPageTurns = animateReadaloudPageTurns
+        readerBackgroundColorHex = backgroundColor
 
         var styles: [String: Any] = [
             "fontSize": fontSize,
@@ -350,6 +391,7 @@ public final class ReaderCommsBridge {
             "enableMarginClickNavigation": enableMarginClickNavigation,
             "userHighlightMode": userHighlightMode,
             "readaloudHighlightMode": readaloudHighlightMode,
+            "pageTurnStyle": effectivePageTurnStyle,
         ]
 
         styles["backgroundColor"] = backgroundColor ?? NSNull()

@@ -8,4 +8,18 @@ import Foundation
 public protocol JSEvaluating: AnyObject {
     @discardableResult
     func evaluate(_ script: String) async throws -> String?
+
+    /// Runs `body` as an async function and awaits the promise it returns.
+    /// The body should `return` a JSON string.
+    @discardableResult
+    func callAsync(_ body: String) async throws -> String?
+}
+
+extension JSEvaluating {
+    /// Engines without promise support fire the script and return no result.
+    @discardableResult
+    public func callAsync(_ body: String) async throws -> String? {
+        _ = try await evaluate("(async () => { \(body) })()")
+        return nil
+    }
 }

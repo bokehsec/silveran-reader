@@ -138,6 +138,9 @@ private class WebViewCoordinator2: NSObject, WKNavigationDelegate, WKScriptMessa
     }
     var onContentPurged: (() -> Void)?
     var onReaderReady: (() -> Void)?
+    #if os(iOS)
+    var pageCurlAnimator: PageCurlAnimator?
+    #endif
 
     init(onNavigationFinished: @escaping () -> Void) {
         self.onNavigationFinished = onNavigationFinished
@@ -154,6 +157,9 @@ private class WebViewCoordinator2: NSObject, WKNavigationDelegate, WKScriptMessa
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         debugLog("[EbookPlayerWebView] Web content process terminated")
+        #if os(iOS)
+        pageCurlAnimator?.cancel()
+        #endif
         onContentPurged?()
     }
 
@@ -304,6 +310,17 @@ private class WebViewCoordinator2: NSObject, WKNavigationDelegate, WKScriptMessa
 @available(iOS 17.0, *)
 class HighlightableWebView: WKWebView {
     var commsBridge: ReaderCommsBridge?
+    /// Called when the view changes size (rotation, split view, safe-area changes).
+    var onSizeChange: (() -> Void)?
+    private var lastLayoutSize: CGSize = .zero
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if bounds.size != lastLayoutSize {
+            lastLayoutSize = bounds.size
+            onSizeChange?()
+        }
+    }
 
     func presentDictionary(for term: String) {
         guard !term.isEmpty,
@@ -610,6 +627,16 @@ private struct WebViewRepresentable2: PlatformViewRepresentable {
             #if os(macOS)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 wkWebView.window?.makeFirstResponder(wkWebView)
+
+            // Registered before anyone sees the bridge so the first style update
+            // already knows curl is available.
+            #if os(iOS)
+            let animator = PageCurlAnimator(webView: wkWebView, bridge: bridge)
+            context.coordinator.pageCurlAnimator = animator
+            bridge.pageTurnAnimator = animator
+            wkWebView.onSizeChange = { [weak animator] in animator?.cancel() }
+            #endif
+
             }
             #endif
 

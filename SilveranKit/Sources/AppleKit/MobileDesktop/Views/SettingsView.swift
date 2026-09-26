@@ -180,6 +180,8 @@ public struct SettingsView: View {
                     enableMarginClickNavigation: newValue.reading.enableMarginClickNavigation,
                     singleColumnMode: newValue.reading.singleColumnMode,
                     scrollingMode: newValue.reading.scrollingMode,
+                    pageTurnStyle: newValue.reading.pageTurnStyle,
+                    animatePageTurnsDuringReadaloud: newValue.reading.animatePageTurnsDuringReadaloud,
                     defaultPlaybackSpeed: newValue.playback.defaultPlaybackSpeed,
                     enableReadingBar: newValue.readingBar.enabled,
                     showPlayerControls: newValue.readingBar.showPlayerControls,
@@ -322,6 +324,8 @@ extension SettingsView {
         config.reading.enableMarginClickNavigation = kDefaultEnableMarginClickNavigation
         config.reading.singleColumnMode = false
         config.reading.scrollingMode = kDefaultScrollingMode
+        config.reading.pageTurnStyle = kDefaultPageTurnStyle
+        config.reading.animatePageTurnsDuringReadaloud = kDefaultAnimatePageTurnsDuringReadaloud
         config.reading.customCSS = nil
         config.playback.defaultPlaybackSpeed = kDefaultPlaybackSpeed
     }

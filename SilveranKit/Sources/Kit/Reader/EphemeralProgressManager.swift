@@ -890,7 +890,7 @@ public final class EphemeralProgressManager {
         }
         Task { @SilveranUIActor in
             do {
-                try await commsBridge?.sendJsGoLeftCommand()
+                try await commsBridge?.sendJsGoLeftCommand(trigger: .user)
             } catch {
                 debugLog("[EPM] Failed to send left nav: \(error)")
                 pendingPageNav = nil
@@ -921,7 +921,7 @@ public final class EphemeralProgressManager {
         }
         Task { @SilveranUIActor in
             do {
-                try await commsBridge?.sendJsGoRightCommand()
+                try await commsBridge?.sendJsGoRightCommand(trigger: .user)
             } catch {
                 debugLog("[EPM] Failed to send right nav: \(error)")
                 pendingPageNav = nil

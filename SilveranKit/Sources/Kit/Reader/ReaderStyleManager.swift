@@ -75,6 +75,8 @@ public final class ReaderStyleManager {
             _ = settingsVM.enableMarginClickNavigation
             _ = settingsVM.userHighlightMode
             _ = settingsVM.readaloudHighlightMode
+            _ = settingsVM.pageTurnStyle
+            _ = settingsVM.animatePageTurnsDuringReadaloud
         } onChange: {
             Task { @SilveranUIActor in
                 self.scheduleStyleUpdate()
@@ -142,6 +144,8 @@ public final class ReaderStyleManager {
             enableMarginClickNavigation: settingsVM.enableMarginClickNavigation,
             userHighlightMode: settingsVM.userHighlightMode,
             readaloudHighlightMode: settingsVM.readaloudHighlightMode,
+            pageTurnStyle: settingsVM.pageTurnStyle,
+            animateReadaloudPageTurns: settingsVM.animatePageTurnsDuringReadaloud,
         )
     }
 }

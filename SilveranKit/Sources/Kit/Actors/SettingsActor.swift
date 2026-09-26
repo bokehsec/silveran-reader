@@ -60,6 +60,8 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
         public var enableMarginClickNavigation: Bool
         public var singleColumnMode: Bool
         public var scrollingMode: Bool
+        public var pageTurnStyle: String
+        public var animatePageTurnsDuringReadaloud: Bool
         public var userHighlightColor1: String
         public var userHighlightColor2: String
         public var userHighlightColor3: String
@@ -94,6 +96,8 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
             enableMarginClickNavigation: Bool = kDefaultEnableMarginClickNavigation,
             singleColumnMode: Bool? = nil,
             scrollingMode: Bool = kDefaultScrollingMode,
+            pageTurnStyle: String = kDefaultPageTurnStyle,
+            animatePageTurnsDuringReadaloud: Bool = kDefaultAnimatePageTurnsDuringReadaloud,
             userHighlightColor1: String = kDefaultUserHighlightColor1,
             userHighlightColor2: String = kDefaultUserHighlightColor2,
             userHighlightColor3: String = kDefaultUserHighlightColor3,
@@ -131,6 +135,8 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
             self.customCSS = customCSS
             self.enableMarginClickNavigation = enableMarginClickNavigation
             self.scrollingMode = scrollingMode
+            self.pageTurnStyle = Self.normalizedPageTurnStyle(pageTurnStyle)
+            self.animatePageTurnsDuringReadaloud = animatePageTurnsDuringReadaloud
             self.userHighlightColor1 = userHighlightColor1
             self.userHighlightColor2 = userHighlightColor2
             self.userHighlightColor3 = userHighlightColor3
@@ -201,6 +207,13 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
                 (try? container?.decode(Bool.self, forKey: .scrollingMode))
                 ?? (try? legacyContainer?.decode(Bool.self, forKey: .readaloudScrollingMode))
                 ?? kDefaultScrollingMode
+            pageTurnStyle = Self.normalizedPageTurnStyle(
+                (try? container?.decode(String.self, forKey: .pageTurnStyle))
+                    ?? kDefaultPageTurnStyle
+            )
+            animatePageTurnsDuringReadaloud =
+                (try? container?.decode(Bool.self, forKey: .animatePageTurnsDuringReadaloud))
+                ?? kDefaultAnimatePageTurnsDuringReadaloud
             userHighlightColor1 =
                 (try? container?.decode(String.self, forKey: .userHighlightColor1))
                 ?? kDefaultUserHighlightColor1
@@ -272,7 +285,7 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
             case wordSpacing, letterSpacing, textAlignment, highlightColor, highlightThickness
             case backgroundColor, foregroundColor
             case customCSS, enableMarginClickNavigation, singleColumnMode
-            case scrollingMode
+            case scrollingMode, pageTurnStyle, animatePageTurnsDuringReadaloud
             case userHighlightColor1, userHighlightColor2, userHighlightColor3
             case userHighlightColor4, userHighlightColor5, userHighlightColor6
             case userHighlightLabel1, userHighlightLabel2, userHighlightLabel3
@@ -284,6 +297,10 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
         private enum LegacyCodingKeys: String, CodingKey {
             case readaloudHighlightUnderline, tvBackgroundStyle, readaloudScrollingMode
             case justifyText
+        }
+
+        static func normalizedPageTurnStyle(_ value: String) -> String {
+            kPageTurnStyleValues.contains(value) ? value : kDefaultPageTurnStyle
         }
 
         static func normalizedTextAlignment(_ value: String) -> String {
@@ -689,6 +706,8 @@ public actor SettingsActor {
         enableMarginClickNavigation: Bool? = nil,
         singleColumnMode: Bool? = nil,
         scrollingMode: Bool? = nil,
+        pageTurnStyle: String? = nil,
+        animatePageTurnsDuringReadaloud: Bool? = nil,
         defaultPlaybackSpeed: Double? = nil,
         defaultVolume: Double? = nil,
         statsExpanded: Bool? = nil,
@@ -762,6 +781,14 @@ public actor SettingsActor {
         if let singleColumnMode { updated.reading.singleColumnMode = singleColumnMode }
         if let scrollingMode {
             updated.reading.scrollingMode = scrollingMode
+        }
+        if let pageTurnStyle {
+            updated.reading.pageTurnStyle = SilveranGlobalConfig.Reading.normalizedPageTurnStyle(
+                pageTurnStyle
+            )
+        }
+        if let animatePageTurnsDuringReadaloud {
+            updated.reading.animatePageTurnsDuringReadaloud = animatePageTurnsDuringReadaloud
         }
         if let defaultPlaybackSpeed { updated.playback.defaultPlaybackSpeed = defaultPlaybackSpeed }
         if let defaultVolume { updated.playback.defaultVolume = defaultVolume }

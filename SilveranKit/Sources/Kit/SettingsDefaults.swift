@@ -15,6 +15,11 @@ public let kDefaultHighlightThickness: Double = 1.0
 public let kDefaultEnableMarginClickNavigation = true
 public let kDefaultSingleColumnMode = true
 public let kDefaultScrollingMode = false
+/// Page turn animation: "none", "slide", or "curl". Curl is only rendered on iOS;
+/// other platforms treat it as "none".
+public let kDefaultPageTurnStyle = "curl"
+public let kPageTurnStyleValues = ["none", "slide", "curl"]
+public let kDefaultAnimatePageTurnsDuringReadaloud = false
 
 // Slot order is defined by HighlightColor's case order: Pink, Orange, Yellow,
 // Green, Blue, Purple. These palettes are indexed by that position and must

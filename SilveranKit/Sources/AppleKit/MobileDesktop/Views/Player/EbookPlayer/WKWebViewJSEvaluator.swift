@@ -18,5 +18,19 @@ final class WKWebViewJSEvaluator: JSEvaluating {
         let result = try await webView.evaluateJavaScript(script)
         return result as? String
     }
+
+    @discardableResult
+    func callAsync(_ body: String) async throws -> String? {
+        guard let webView else {
+            throw ReaderCommsBridgeError.jsNotAvailable
+        }
+        let result = try await webView.callAsyncJavaScript(
+            body,
+            arguments: [:],
+            in: nil,
+            contentWorld: .page,
+        )
+        return result as? String
+    }
 }
 #endif
