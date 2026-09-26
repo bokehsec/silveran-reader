@@ -24,6 +24,7 @@ private final class RecordingJSEvaluator: JSEvaluating {
 private final class RecordingAnimator: PageTurnAnimating {
     var directions: [PageTurnDirection] = []
     var outcomes: [PageTurnOutcome] = []
+    var suppressesSwipeNavigation = false
 
     func performAnimatedTurn(
         direction: PageTurnDirection,
@@ -197,6 +198,32 @@ struct PageTurnBridgeTests {
         #expect(animator.directions.isEmpty)
         #expect(bridge.pageTurnStyle == "none")
         #expect(js.evaluated.contains { $0.contains(#""pageTurnStyle":"none""#) })
+    }
+
+    @Test func swipeIgnoredWhileNativeDragOwnsGesture() {
+        let js = RecordingJSEvaluator()
+        let animator = RecordingAnimator()
+        let bridge = ReaderCommsBridge(js: js)
+        bridge.pageTurnAnimator = animator
+        var received: [String?] = []
+        bridge.onMarginClickNav = { received.append($0.source) }
+
+        animator.suppressesSwipeNavigation = true
+        bridge.sendSwiftMarginClickNav(MarginClickNavMessage(direction: "right", source: "swipe"))
+        bridge.sendSwiftMarginClickNav(MarginClickNavMessage(direction: "right", source: "drag"))
+        bridge.sendSwiftMarginClickNav(MarginClickNavMessage(direction: "right"))
+
+        animator.suppressesSwipeNavigation = false
+        bridge.sendSwiftMarginClickNav(MarginClickNavMessage(direction: "left", source: "swipe"))
+
+        #expect(received == ["drag", nil, "swipe"])
+    }
+
+    @Test func marginClickNavDecodesWithoutSource() throws {
+        let message = try JSONDecoder().decode(
+            MarginClickNavMessage.self, from: Data(#"{"direction":"left"}"#.utf8))
+        #expect(message.direction == "left")
+        #expect(message.source == nil)
     }
 
     @Test func missingAnimatorSendsNoneToJS() async throws {

@@ -206,6 +206,15 @@ private class WebViewCoordinator2: NSObject, WKNavigationDelegate, WKScriptMessa
                     let msg = try decoder.decode(SelectionTextActionMessage.self, from: data)
                     Self.copyToPasteboard(msg.text)
 
+                case "SelectionState":
+                    #if os(iOS)
+                    if let body = message.body as? [String: Any],
+                        let active = body["active"] as? Bool
+                    {
+                        pageCurlAnimator?.textSelectionActive = active
+                    }
+                    #endif
+
                 case "FileAccessDiagnostic":
                     if let body = message.body as? [String: Any],
                         let filePath = body["filePath"] as? String,
@@ -444,6 +453,7 @@ private func makeWebViewConfiguration2(
     contentController.add(coordinator, name: "HighlightDelete")
     contentController.add(coordinator, name: "HighlightEdit")
     contentController.add(coordinator, name: "FileAccessDiagnostic")
+    contentController.add(coordinator, name: "SelectionState")
     contentController.add(coordinator, name: "ReaderReady")
 
     contentController.addUserScript(consoleOverrideScript)
@@ -575,11 +585,19 @@ private struct WebViewRepresentable2: PlatformViewRepresentable {
 
     func updateNSView(_ nsView: WKWebView, context: Context) {}
     #else
-    func makeUIView(context: Context) -> WKWebView {
-        makeWebView(context: context)
+    func makeUIView(context: Context) -> UIView {
+        // The container lets page-curl overlays sit above the web view without being
+        // its subviews (WKWebView snapshots include its subviews).
+        let container = UIView()
+        container.backgroundColor = .clear
+        let wkWebView = makeWebView(context: context)
+        wkWebView.frame = container.bounds
+        wkWebView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.addSubview(wkWebView)
+        return container
     }
 
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: UIView, context: Context) {}
     #endif
 
     private func makeWebView(context: Context) -> WKWebView {
@@ -631,7 +649,11 @@ private struct WebViewRepresentable2: PlatformViewRepresentable {
             // Registered before anyone sees the bridge so the first style update
             // already knows curl is available.
             #if os(iOS)
-            let animator = PageCurlAnimator(webView: wkWebView, bridge: bridge)
+            let animator = PageCurlAnimator(
+                webView: wkWebView,
+                overlayParent: wkWebView.superview ?? wkWebView,
+                bridge: bridge,
+            )
             context.coordinator.pageCurlAnimator = animator
             bridge.pageTurnAnimator = animator
             wkWebView.onSizeChange = { [weak animator] in animator?.cancel() }

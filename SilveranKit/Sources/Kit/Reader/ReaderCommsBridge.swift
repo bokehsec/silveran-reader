@@ -19,6 +19,9 @@ public final class ReaderCommsBridge {
     /// Effective page turn style last sent to JS ("none", "slide", "curl").
     public private(set) var pageTurnStyle = "none"
     public private(set) var animateReadaloudPageTurns = false
+    /// Whether read-aloud narration is currently playing. Drag-to-curl is disabled while
+    /// it plays so a half-dragged page cannot move the audio back and forth.
+    public var isNarrationPlaying: () -> Bool = { false }
     /// Reader background color last sent to JS, used to back page-curl snapshots.
     public private(set) var readerBackgroundColorHex: String?
 
@@ -122,7 +125,13 @@ public final class ReaderCommsBridge {
 
     /// JS detected a margin click for navigation
     public func sendSwiftMarginClickNav(_ message: MarginClickNavMessage) {
-        debugLog("[ReaderCommsBridge] sendSwiftMarginClickNav - direction: \(message.direction)")
+        debugLog(
+            "[ReaderCommsBridge] sendSwiftMarginClickNav - direction: \(message.direction), source: \(message.source ?? "tap")"
+        )
+        if message.source == "swipe", pageTurnAnimator?.suppressesSwipeNavigation == true {
+            debugLog("[ReaderCommsBridge] Ignoring swipe handled by native drag turn")
+            return
+        }
         onMarginClickNav?(message)
     }
 

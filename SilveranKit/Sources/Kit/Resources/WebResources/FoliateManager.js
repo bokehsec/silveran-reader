@@ -182,6 +182,7 @@ class FoliateManager {
   #pageTurnStyle = "none";
   #swipeGesture = null;
   #lastTurnNavigation = Promise.resolve();
+  #textSelectionActive = false;
   #lastRelocateRange = null;
   #highlightedElement = null;
   #highlightedSectionIndex = null;
@@ -234,6 +235,7 @@ class FoliateManager {
         let isDragging = false;
 
         this.#attachSwipeInterceptors(doc.defaultView, doc);
+        doc.addEventListener("selectionchange", () => this.#reportSelectionState(doc));
 
         doc.addEventListener("touchmove", (event) => {
           const selection = doc.getSelection?.();
@@ -531,8 +533,9 @@ class FoliateManager {
         this.#swipeGesture = null;
         return;
       }
+      // No preventDefault: WebKit fails native gestures on the web view when a
+      // touchmove is prevented, and the drag-to-curl pan must stay recognizable.
       e.stopPropagation();
-      e.preventDefault();
     }, opts);
 
     win.addEventListener("touchend", (e) => {
@@ -558,6 +561,18 @@ class FoliateManager {
     win.addEventListener("touchcancel", () => {
       this.#swipeGesture = null;
     }, opts);
+  }
+
+  /**
+   * Tells Swift whether text is selected, so a native drag-to-curl never starts
+   * while the reader is adjusting a selection.
+   */
+  #reportSelectionState(doc) {
+    const selection = doc.getSelection?.();
+    const active = !!selection && !selection.isCollapsed;
+    if (active === this.#textSelectionActive) return;
+    this.#textSelectionActive = active;
+    window.webkit?.messageHandlers?.SelectionState?.postMessage({ active });
   }
 
   /**

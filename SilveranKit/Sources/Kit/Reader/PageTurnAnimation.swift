@@ -37,6 +37,14 @@ public protocol PageTurnAnimating: AnyObject {
         direction: PageTurnDirection,
         navigate: @escaping @SilveranUIActor () async throws -> PageTurnOutcome,
     ) async throws
+
+    /// True while the animator is handling a finger-driven turn itself, so a swipe
+    /// detected by JS for the same gesture must not turn the page a second time.
+    var suppressesSwipeNavigation: Bool { get }
+}
+
+extension PageTurnAnimating {
+    public var suppressesSwipeNavigation: Bool { false }
 }
 
 /// Decides whether a page turn should be handed to the platform animator.

@@ -439,6 +439,10 @@ public final class ReadingSession {
     }
 
     private func installBridgeCallbacks(_ bridge: ReaderCommsBridge) {
+        bridge.isNarrationPlaying = { [weak self] in
+            self?.mediaOverlayManager?.isPlaying ?? false
+        }
+
         bridge.onBookStructureReady = { [weak self] message in
             guard let self else { return }
             Task { @SilveranUIActor in
