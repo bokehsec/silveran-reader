@@ -26,7 +26,11 @@ icon*.png
 XCodeApps/Assets.xcassets/AppIcon.appiconset/*.png
 XCodeApps/WatchAssets.xcassets/AppIcon.appiconset/*.png
 XCodeApps/TVAssets.xcassets/**/*.png
+!XCodeApps/Assets.xcassets/AppIcon.appiconset/icon_1024x1024.png
+!XCodeApps/Assets.xcassets/AppIcon.appiconset/icon_120x120.png
+!XCodeApps/Assets.xcassets/AppIcon.appiconset/icon_152x152.png
 XCodeApps/Info-iOS.plist
 XCodeApps/Info-macOS.plist
 XCodeApps/Info-tvOS.plist
 XCodeApps/Info-watchOS.plist
+.build-archives/

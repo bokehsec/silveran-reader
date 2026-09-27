@@ -154,6 +154,10 @@ const getCSS = ({
  * - Execute commands from Swift
  * - Report events to Swift
  */
+// How long after the book opens to wait for the initial navigation before
+// showing the start of the book instead of a blank reader.
+const DISPLAY_FALLBACK_DELAY_MS = 5000;
+
 class FoliateManager {
   #view;
   #fontSize = 20;
@@ -188,6 +192,8 @@ class FoliateManager {
   #highlightedSectionIndex = null;
   #resizeHandler = null;
   #pendingHighlight = null;
+  #pendingNavigations = 0;
+  #displayFallbackTimer = null;
   #bookmarkManager = (() => {
     console.log("[FoliateManager] Creating BookmarkManager instance");
     return new BookmarkManager();
@@ -214,6 +220,10 @@ class FoliateManager {
 
     debugLog("FoliateManager", "Book opened, reporting structure to Swift");
     await this.#reportBookStructureReady();
+
+    // Swift performs the initial navigation; if it never displays anything
+    // (no command sent, or a command that silently failed), show the book start.
+    this.#scheduleDisplayFallback();
 
     debugLog("FoliateManager", "Initialization complete");
   }
@@ -669,7 +679,7 @@ class FoliateManager {
       console.warn("[FM2] goLeft() called but view not initialized");
       return;
     }
-    this.#view.goLeft();
+    this.#navigate("goLeft", () => this.#view.goLeft());
   }
 
   goRight() {
@@ -678,7 +688,7 @@ class FoliateManager {
       console.warn("[FM2] goRight() called but view not initialized");
       return;
     }
-    this.#view.goRight();
+    this.#navigate("goRight", () => this.#view.goRight());
   }
 
   goTo(href) {
@@ -687,7 +697,41 @@ class FoliateManager {
       console.warn("[FM2] goTo() called but view not initialized");
       return;
     }
-    this.#view.goTo(href);
+    const target = this.#resolveSectionHref(href);
+    if (target !== href) debugLog("FoliateManager", "goTo() - resolved href to:", target);
+    // Returns nothing so Swift's evaluateJavaScript never receives a Promise.
+    this.#navigate(`goTo(${href})`, () => this.#view.goTo(target));
+  }
+
+  /**
+   * Foliate identifies sections by their path from the EPUB root (e.g. "OEBPS/ch1.xhtml"),
+   * but saved read-along positions use paths relative to the package document
+   * ("ch1.xhtml"), which foliate cannot resolve. Map such hrefs onto the matching
+   * section, the same suffix match Swift's findSectionIndex uses.
+   */
+  #resolveSectionHref(href) {
+    const book = this.#view?.book;
+    if (typeof href !== "string" || !book?.sections) return href;
+    try {
+      if (book.resolveHref?.(href)) return href;
+    } catch {
+      // Fall through to suffix matching.
+    }
+
+    const hashIndex = href.indexOf("#");
+    const path = hashIndex === -1 ? href : href.slice(0, hashIndex);
+    const hash = hashIndex === -1 ? "" : href.slice(hashIndex);
+    let decodedPath = path;
+    try {
+      decodedPath = decodeURI(path);
+    } catch {
+      // Keep the raw path if it is not valid percent-encoding.
+    }
+    if (!decodedPath) return href;
+
+    const section = book.sections.find(s =>
+      typeof s.id === "string" && (s.id === decodedPath || s.id.endsWith(`/${decodedPath}`)));
+    return section ? `${section.id}${hash}` : href;
   }
 
   async goToFractionInSection(sectionIndex, fraction) {
@@ -698,9 +742,81 @@ class FoliateManager {
     }
     if (typeof sectionIndex !== 'number' || typeof fraction !== 'number') {
       console.warn("[FM2] goToFractionInSection() - invalid parameters");
+      await this.#ensureDisplayed("goToFractionInSection(invalid parameters)");
       return;
     }
-    await this.#view.goToFractionInSection(sectionIndex, fraction);
+    await this.#navigate(
+      `goToFractionInSection(${sectionIndex}, ${fraction})`,
+      () => this.#view.goToFractionInSection(sectionIndex, fraction),
+      sectionIndex,
+    );
+  }
+
+  /**
+   * Runs a navigation and, if the reader still shows no section afterwards,
+   * falls back so a failed jump never leaves the reader blank. Foliate drops
+   * unresolvable hrefs, out-of-range section indexes, and navigations made
+   * while a page turn holds its lock without reporting an error.
+   */
+  async #navigate(label, navigation, preferredSectionIndex = null) {
+    this.#pendingNavigations += 1;
+    try {
+      await navigation();
+    } catch (error) {
+      console.error(`[FM2] Navigation ${label} failed:`, error);
+    } finally {
+      this.#pendingNavigations -= 1;
+    }
+    await this.#ensureDisplayed(label, preferredSectionIndex);
+  }
+
+  #hasDisplayedContent() {
+    return (this.#view?.renderer?.getContents?.() ?? []).some(content => content.doc);
+  }
+
+  async #ensureDisplayed(reason, preferredSectionIndex = null) {
+    if (!this.#view?.renderer || this.#hasDisplayedContent()) return;
+    // Another navigation is still loading; it runs this check when it finishes.
+    if (this.#pendingNavigations > 0) return;
+
+    const sectionCount = this.#view.book?.sections?.length ?? 0;
+    const hasPreferredSection = Number.isInteger(preferredSectionIndex)
+      && preferredSectionIndex >= 0
+      && preferredSectionIndex < sectionCount;
+
+    this.#pendingNavigations += 1;
+    try {
+      if (hasPreferredSection) {
+        console.warn(`[FM2] Nothing displayed after ${reason}; falling back to start of section ${preferredSectionIndex}`);
+        await this.#view.goTo(preferredSectionIndex);
+      }
+      if (!this.#hasDisplayedContent()) {
+        console.warn(`[FM2] Nothing displayed after ${reason}; falling back to start of book`);
+        await this.#view.goToTextStart();
+      }
+      if (!this.#hasDisplayedContent()) {
+        const firstSection = Math.max(0, this.#view.book.sections.findIndex(s => s.linear !== "no"));
+        console.warn(`[FM2] Text start unavailable; falling back to section ${firstSection}`);
+        await this.#view.goTo(firstSection);
+      }
+    } catch (error) {
+      console.error("[FM2] Fallback navigation failed:", error);
+    } finally {
+      this.#pendingNavigations -= 1;
+    }
+  }
+
+  #scheduleDisplayFallback() {
+    clearTimeout(this.#displayFallbackTimer);
+    this.#displayFallbackTimer = setTimeout(() => {
+      this.#displayFallbackTimer = null;
+      if (this.#hasDisplayedContent()) return;
+      if (this.#pendingNavigations > 0) {
+        this.#scheduleDisplayFallback();
+        return;
+      }
+      this.#ensureDisplayed("initial navigation timeout");
+    }, DISPLAY_FALLBACK_DELAY_MS);
   }
 
   async goToBookFraction(bookFraction) {

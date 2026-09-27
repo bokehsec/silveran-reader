@@ -5,5 +5,7 @@ cd "${SCRIPT_DIR}/.."
 
 xcrun simctl boot "iPhone 17 Pro Max"
 open -a Simulator
-xcrun simctl install booted ".buildIos/Build/Products/Debug-iphonesimulator/Silveran Reader.app"
-xcrun simctl launch booted com.kyonifer.SilveranReader
+APP_PATH=".buildIos/Build/Products/Debug-iphonesimulator/Silveran Reader.app"
+APP_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")"
+xcrun simctl install booted "$APP_PATH"
+xcrun simctl launch booted "$APP_BUNDLE_ID"

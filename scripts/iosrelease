@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+cd "${SCRIPT_DIR}/.."
+
+SCHEME="Silveran Reader (iOS)"
+ARCHIVE_DIR="${SILVERAN_ARCHIVE_DIR:-.build-archives}"
+ARCHIVE="${ARCHIVE_DIR}/SilveranReader-iOS.xcarchive"
+EXPORT_DIR="${ARCHIVE_DIR}/export"
+
+# Build number: commit count. Monotonic, unique per commit, never needs a
+# manual bump. Override with SILVERAN_BUILD_NUMBER if App Store Connect has
+# somehow moved ahead of it.
+BUILD_NUMBER="${SILVERAN_BUILD_NUMBER:-$(git rev-list --count HEAD)}"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+    echo "warning: working tree is dirty; build ${BUILD_NUMBER} will not match a clean commit" >&2
+fi
+
+# The ebook reader is foliate-js, a git submodule. If its checkout is missing or
+# emptied, the archive still builds but every EPUB opens to a blank page, so
+# refuse to build without it and re-check the bundled copy after archiving.
+READER_ENGINE_FILES=(view.js epub.js paginator.js)
+
+require_reader_engine() {
+    local dir="$1" file
+    for file in "${READER_ENGINE_FILES[@]}"; do
+        if [[ ! -s "${dir}/${file}" ]]; then
+            echo "error: reader engine file missing: ${dir}/${file}" >&2
+            echo "       run: git submodule update --init SilveranKit/Sources/Kit/Resources/WebResources/foliate-js" >&2
+            exit 1
+        fi
+    done
+}
+
+require_reader_engine "SilveranKit/Sources/Kit/Resources/WebResources/foliate-js"
+
+echo "==> Generating Xcode project"
+./scripts/genxproj
+
+echo "==> Archiving build ${BUILD_NUMBER}"
+rm -rf "${ARCHIVE}" "${EXPORT_DIR}"
+mkdir -p "${ARCHIVE_DIR}"
+xcodebuild -project Silveran.xcodeproj \
+    -scheme "${SCHEME}" \
+    -configuration Release \
+    -destination "generic/platform=iOS" \
+    -archivePath "${ARCHIVE}" \
+    -allowProvisioningUpdates \
+    CURRENT_PROJECT_VERSION="${BUILD_NUMBER}" \
+    archive | xcbeautify
+
+# Verify the archive actually carries the build number we asked for. Xcode
+# bakes CFBundleVersion in at archive time, so this is the last point where a
+# stale project or scheme can still be caught before upload.
+APP="$(find "${ARCHIVE}/Products/Applications" -maxdepth 1 -name '*.app' -print -quit)"
+if [[ -z "${APP}" ]]; then
+    echo "error: no .app found in archive" >&2
+    exit 1
+fi
+
+ACTUAL="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${APP}/Info.plist")"
+SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${APP}/Info.plist")"
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${APP}/Info.plist")"
+
+if [[ "${ACTUAL}" != "${BUILD_NUMBER}" ]]; then
+    echo "error: archive has CFBundleVersion ${ACTUAL}, expected ${BUILD_NUMBER}" >&2
+    exit 1
+fi
+
+require_reader_engine "${APP}/Silveran_SilveranKit.bundle/WebResources/foliate-js"
+
+echo "==> Archived ${BUNDLE_ID} ${SHORT} (${ACTUAL})"
+
+# Export re-signs for distribution. The archive itself is development-signed;
+# TestFlight silently discards development-signed builds (get-task-allow=true),
+# so this step is mandatory, not a convenience.
+echo "==> Exporting for App Store Connect"
+xcodebuild -exportArchive \
+    -archivePath "${ARCHIVE}" \
+    -exportOptionsPlist XCodeApps/ExportOptions.plist \
+    -exportPath "${EXPORT_DIR}" \
+    -allowProvisioningUpdates | xcbeautify
+
+IPA="$(find "${EXPORT_DIR}" -maxdepth 1 -name '*.ipa' -print -quit)"
+if [[ -z "${IPA}" ]]; then
+    echo "error: export produced no .ipa" >&2
+    exit 1
+fi
+
+# Verify distribution signing. A development-signed IPA uploads without error
+# and then never appears in TestFlight, so catch it here instead of finding out
+# from a build that silently never shows up.
+PAYLOAD="$(mktemp -d)"
+unzip -q "${IPA}" -d "${PAYLOAD}"
+EXPORTED_APP="$(find "${PAYLOAD}/Payload" -maxdepth 1 -name '*.app' -print -quit)"
+GTA="$(codesign -d --entitlements - --xml "${EXPORTED_APP}" 2>/dev/null \
+    | plutil -convert xml1 -o - - 2>/dev/null \
+    | grep -A1 'get-task-allow' | grep -c '<true/>' || true)"
+AUTHORITY="$(codesign -dvvv "${EXPORTED_APP}" 2>&1 | grep '^Authority=' | head -1)"
+rm -rf "${PAYLOAD}"
+
+if [[ "${GTA}" != "0" ]]; then
+    echo "error: exported IPA is development-signed (get-task-allow=true)." >&2
+    echo "       TestFlight will discard it. ${AUTHORITY}" >&2
+    exit 1
+fi
+
+echo "==> ${AUTHORITY}"
+echo "==> Ready to upload: ${IPA}"
+echo
+echo "Upload by dragging into Xcode Organizer, or with an ASC API key:"
+echo "  xcrun altool --upload-app -f \"${IPA}\" -t ios --apiKey <KEY_ID> --apiIssuer <ISSUER_ID>"

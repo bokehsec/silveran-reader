@@ -1,6 +1,24 @@
 {
   "images" : [
     {
+      "filename" : "icon_48x48.png",
+      "idiom" : "watch",
+      "scale" : "2x",
+      "size" : "24x24"
+    },
+    {
+      "filename" : "icon_80x80.png",
+      "idiom" : "watch",
+      "scale" : "2x",
+      "size" : "40x40"
+    },
+    {
+      "filename" : "icon_88x88.png",
+      "idiom" : "watch",
+      "scale" : "2x",
+      "size" : "44x44"
+    },
+    {
       "filename" : "icon_1024x1024.png",
       "idiom" : "universal",
       "platform" : "watchos",

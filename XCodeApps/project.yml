@@ -48,7 +48,7 @@ targets:
     info:
       path: XCodeApps/Info-macOS.plist
       properties:
-        CFBundleName: "Silveran Reader"
+        CFBundleName: "Silveran Reader Rob Test"
         CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -62,7 +62,7 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         ATSApplicationFontsPath: "fonts"
         CFBundleURLTypes:
-          - CFBundleURLName: com.kyonifer.SilveranReader
+          - CFBundleURLName: "$(APP_BUNDLE_ID)"
             CFBundleURLSchemes:
               - silveran
     sources:
@@ -94,6 +94,7 @@ targets:
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_FILE: XCodeApps/Info-iOS.plist
         PRODUCT_BUNDLE_IDENTIFIER: "$(APP_BUNDLE_ID)"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         #INFOPLIST_KEY_CFBundleDisplayName: Silveran Reader
         #INFOPLIST_KEY_CFBundleName: Silveran Reader
         SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
@@ -101,8 +102,8 @@ targets:
     info:
       path: XCodeApps/Info-iOS.plist
       properties:
-        CFBundleName: "Silveran Reader"
-        CFBundleDisplayName: "Silveran Reader"
+        CFBundleName: "Silveran Reader Rob Test"
+        CFBundleDisplayName: "Silveran Reader Rob Test"
         CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -114,7 +115,7 @@ targets:
         LSApplicationCategoryType: "public.app-category.books"
         NSLocalNetworkUsageDescription: "Silveran Reader needs local network access to connect to your Storyteller server."
         CFBundleURLTypes:
-          - CFBundleURLName: com.kyonifer.SilveranReader
+          - CFBundleURLName: "$(APP_BUNDLE_ID)"
             CFBundleURLSchemes:
               - silveran
         UILaunchScreen: {}
@@ -179,7 +180,7 @@ targets:
       path: XCodeApps/Info-Widgets-iOS.plist
       properties:
         CFBundleName: "Silveran Reader Widgets"
-        CFBundleDisplayName: "Silveran Reader"
+        CFBundleDisplayName: "Silveran Reader Rob Test"
         CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -217,7 +218,7 @@ targets:
       path: XCodeApps/Info-Widgets-macOS.plist
       properties:
         CFBundleName: "Silveran Reader Widgets"
-        CFBundleDisplayName: "Silveran Reader"
+        CFBundleDisplayName: "Silveran Reader Rob Test"
         CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -246,8 +247,8 @@ targets:
     info:
       path: XCodeApps/Info-watchOS.plist
       properties:
-        CFBundleName: "Silveran Reader"
-        CFBundleDisplayName: "Silveran Reader"
+        CFBundleName: "Silveran Reader Rob Test"
+        CFBundleDisplayName: "Silveran Reader Rob Test"
         CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
@@ -256,6 +257,9 @@ targets:
         KEYCHAIN_ACCESS_GROUP: "$(KEYCHAIN_ACCESS_GROUP)"
         KEYCHAIN_SERVICE: "$(KEYCHAIN_SERVICE)"
         WKApplication: true
+        CFBundleIconName: AppIcon
+        CFBundleIconFiles:
+          - AppIcon
         UIBackgroundModes:
           - audio
         WKCompanionAppBundleIdentifier: "$(APP_BUNDLE_ID)"
@@ -281,8 +285,8 @@ targets:
     info:
       path: XCodeApps/Info-tvOS.plist
       properties:
-        CFBundleName: "Silveran Reader"
-        CFBundleDisplayName: "Silveran Reader"
+        CFBundleName: "Silveran Reader Rob Test"
+        CFBundleDisplayName: "Silveran Reader Rob Test"
         CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleShortVersionString: "$(MARKETING_VERSION)"

@@ -119,6 +119,7 @@ public final class ReadingSession {
     public private(set) var lastPrepareError: Error?
 
     @ObservationIgnored private var nativeLoadingTask: Task<Void, Never>?
+    @ObservationIgnored private var isNativeLoadingFinished = false
     @ObservationIgnored private var incomingPositionObserverId: UUID?
     @ObservationIgnored private var headlessEngineObserverId: UUID?
     @ObservationIgnored private var audioAttachmentID: UUID?
@@ -132,6 +133,8 @@ public final class ReadingSession {
     @ObservationIgnored public var configureMediaOverlayManager: ((MediaOverlayManager) -> Void)?
     @ObservationIgnored public var onReadaloudAvailabilityChanged: ((Bool) -> Void)?
     @ObservationIgnored public var onViewStructureReady: (() async -> Void)?
+    /// Called before text is shown ahead of audio loading, so the reader's styles apply first.
+    @ObservationIgnored public var onViewEarlyTextReady: (() -> Void)?
     @ObservationIgnored public var onIncomingServerPosition: ((IncomingServerPosition) -> Void)?
 
     init(
@@ -158,7 +161,9 @@ public final class ReadingSession {
         }
         debugLog("[ReadingSession] Preparing local ebook file")
         let needsNativeAudio = category == .synced
+        isNativeLoadingFinished = false
         nativeLoadingTask = Task { @SilveranUIActor in
+            defer { self.isNativeLoadingFinished = true }
             do {
                 let prepStarted = Date()
                 let prepared = try await BookServiceActor.shared.prepareEbookForReading(
@@ -515,6 +520,16 @@ public final class ReadingSession {
 
         let isRecovering = isViewRecovering?() ?? false
 
+        // Loading a read-along book into the audio engine can take seconds. Show the text at the
+        // saved position now instead of leaving the reader blank; audio is positioned afterwards.
+        if !isRecovering, nativeLoadingTask != nil, !isNativeLoadingFinished {
+            if bookStructure.isEmpty {
+                progressManager?.bookStructure = message.sections
+            }
+            onViewEarlyTextReady?()
+            progressManager?.previewInitialTextPosition(hasSMIL: category == .synced)
+        }
+
         if let loadingTask = nativeLoadingTask {
             debugLog("[ReadingSession] Waiting for native EPUB parsing to complete...")
             await loadingTask.value
@@ -709,6 +724,7 @@ public final class ReadingSession {
         configureMediaOverlayManager = nil
         onReadaloudAvailabilityChanged = nil
         onViewStructureReady = nil
+        onViewEarlyTextReady = nil
         onIncomingServerPosition = nil
     }
 

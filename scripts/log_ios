@@ -3,4 +3,4 @@
 xcrun simctl spawn booted log stream \
   --style compact \
   --level debug \
-  --predicate 'subsystem == "com.kyonifer.SilveranReader"'
+  --predicate "subsystem == \"${SILVERAN_LOG_SUBSYSTEM:-$(xcodebuild -project Silveran.xcodeproj -scheme 'Silveran Reader (iOS)' -showBuildSettings 2>/dev/null | awk -F ' = ' '$1 ~ /PRODUCT_BUNDLE_IDENTIFIER/ { print $2; exit }')}\""

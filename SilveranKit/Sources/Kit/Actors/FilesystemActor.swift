@@ -827,15 +827,31 @@ public actor FilesystemActor {
             .appendingPathComponent("WebResources", isDirectory: true)
     }
 
-    public func copyWebResources(from sourceDirectory: URL) throws {
+    /// Returns the installed reader web resources, installing them from the app bundle first when
+    /// they are missing. The reader must use this rather than `getWebResourcesDirectory()` so a
+    /// book opened before launch-time installation finishes never loads an absent reader.
+    public func readyWebResourcesDirectory() throws -> URL {
         let webResourcesDir = getWebResourcesDirectory()
-
-        let fm = FileManager.default
-        if fm.fileExists(atPath: webResourcesDir.path) {
-            try fm.removeItem(at: webResourcesDir)
+        let htmlURL = webResourcesDir.appendingPathComponent("foliate_wrap.html")
+        if !FileManager.default.fileExists(atPath: htmlURL.path) {
+            debugLog("[FilesystemActor] Web resources missing; installing before opening reader")
+            try copyWebResources(from: KitResources.webResourcesDirectory())
         }
+        return webResourcesDir
+    }
 
-        try ensureDirectoryExists(at: webResourcesDir.deletingLastPathComponent())
+    /// Installs the bundled reader web resources into Application Support.
+    ///
+    /// Skips the copy when the installed files already match the bundle, and otherwise stages a
+    /// full copy and swaps it into place, so a reader that is loading while this runs never sees a
+    /// deleted or half-copied directory. This method has no suspension points, so callers on this
+    /// actor observe either the old complete directory or the new complete one.
+    public func copyWebResources(from sourceDirectory: URL) throws {
+        try Self.installWebResources(from: sourceDirectory, to: getWebResourcesDirectory())
+    }
+
+    static func installWebResources(from sourceDirectory: URL, to webResourcesDir: URL) throws {
+        let fm = FileManager.default
 
         let htmlURL = sourceDirectory.appendingPathComponent("foliate_wrap.html")
         let foliateJSURL = sourceDirectory.appendingPathComponent("foliate-js", isDirectory: true)
@@ -848,17 +864,86 @@ public actor FilesystemActor {
                 ],
             )
         }
-        guard fm.fileExists(atPath: foliateJSURL.path) else {
+        guard fm.fileExists(atPath: foliateJSURL.appendingPathComponent("view.js").path) else {
             throw NSError(
                 domain: "FilesystemActor",
                 code: 2,
                 userInfo: [
-                    NSLocalizedDescriptionKey: "Failed to find foliate-js folder in web resources"
+                    NSLocalizedDescriptionKey:
+                        "Failed to find foliate-js reader engine in web resources"
                 ],
             )
         }
 
-        try fm.copyItem(at: sourceDirectory, to: webResourcesDir)
+        let stamp = Self.directoryFingerprint(sourceDirectory)
+        let stampURL = webResourcesDir.appendingPathComponent(Self.webResourcesStampFilename)
+        if let installedStamp = try? String(contentsOf: stampURL, encoding: .utf8),
+            installedStamp == stamp
+        {
+            debugLog("[FilesystemActor] Web resources already up to date")
+            return
+        }
+
+        let parentDir = webResourcesDir.deletingLastPathComponent()
+        try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
+
+        // Remove staging copies left behind if the app was killed mid-install.
+        if let leftovers = try? fm.contentsOfDirectory(atPath: parentDir.path) {
+            for name in leftovers where name.hasPrefix("WebResources.staging-") {
+                try? fm.removeItem(at: parentDir.appendingPathComponent(name))
+            }
+        }
+
+        let stagingDir = parentDir.appendingPathComponent(
+            "WebResources.staging-\(UUID().uuidString)",
+            isDirectory: true,
+        )
+        do {
+            try fm.copyItem(at: sourceDirectory, to: stagingDir)
+            try stamp.write(
+                to: stagingDir.appendingPathComponent(Self.webResourcesStampFilename),
+                atomically: true,
+                encoding: .utf8,
+            )
+            if fm.fileExists(atPath: webResourcesDir.path) {
+                _ = try fm.replaceItemAt(webResourcesDir, withItemAt: stagingDir)
+            } else {
+                try fm.moveItem(at: stagingDir, to: webResourcesDir)
+            }
+        } catch {
+            try? fm.removeItem(at: stagingDir)
+            throw error
+        }
+        debugLog("[FilesystemActor] Installed web resources")
+    }
+
+    private static let webResourcesStampFilename = ".installed-stamp"
+
+    /// Relative path, size, and modification time of every file, which changes whenever a new
+    /// build ships different reader files.
+    private static func directoryFingerprint(_ directory: URL) -> String {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]
+        guard
+            let enumerator = FileManager.default.enumerator(
+                at: directory,
+                includingPropertiesForKeys: keys,
+            )
+        else { return UUID().uuidString }
+
+        let basePath = directory.standardizedFileURL.path
+        var lines: [String] = []
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                values.isRegularFile == true
+            else { continue }
+            let relativePath = String(url.standardizedFileURL.path.dropFirst(basePath.count))
+            let size = values.fileSize ?? 0
+            let modified = Int64(
+                ((values.contentModificationDate?.timeIntervalSince1970 ?? 0) * 1000).rounded()
+            )
+            lines.append("\(relativePath)|\(size)|\(modified)")
+        }
+        return lines.sorted().joined(separator: "\n")
     }
 
     private static let audioExtensions: Set<String> = [

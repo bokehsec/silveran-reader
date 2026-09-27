@@ -2,7 +2,10 @@ import Foundation
 
 #if canImport(os)
 import os
-private let logger = Logger(subsystem: "com.kyonifer.SilveranReader", category: "debug")
+private let logger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.silveran.reader",
+    category: "debug",
+)
 #endif
 
 public final class DebugLogBuffer: @unchecked Sendable {

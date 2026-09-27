@@ -128,6 +128,10 @@ class EbookPlayerViewModel {
     var isReadingBarVisible = true
     var isTopBarVisible = true
     var collapseCardTrigger = 0
+    /// Set by the audio card while it is pulled up past the mini player.
+    var isAudioCardExpanded = false
+    @ObservationIgnored private var chromeAutoHideTask: Task<Void, Never>?
+    static let chromeAutoHideDelay: Duration = .seconds(5)
     #endif
     var showCustomizePopover = false
     var commsBridge: ReaderCommsBridge? = nil
@@ -405,6 +409,53 @@ class EbookPlayerViewModel {
         #endif
     }
 
+    #if os(iOS)
+    /// Whether the bars a center tap would hide are showing.
+    private var isChromeVisible: Bool {
+        settingsVM.alwaysShowMiniPlayer ? isTopBarVisible : (isTopBarVisible || isReadingBarVisible)
+    }
+
+    /// Menus, panels, and sheets opened from the bars keep them on screen.
+    var isChromeInUse: Bool {
+        showCustomizePopover || showSearchPanel || showBookmarksPanel || showAudioSheet
+            || showTranslation || isAudioCardExpanded || pendingSelection != nil
+            || pendingEditHighlight != nil || showServerPositionDialog
+    }
+
+    /// Restarts the countdown after which the reader bars hide themselves.
+    /// A center tap still toggles them manually at any time.
+    func scheduleChromeAutoHide() {
+        chromeAutoHideTask?.cancel()
+        guard isChromeVisible, !isChromeInUse, !UIAccessibility.isVoiceOverRunning else {
+            chromeAutoHideTask = nil
+            return
+        }
+        chromeAutoHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.chromeAutoHideDelay)
+            guard !Task.isCancelled, let self else { return }
+            self.autoHideChrome()
+        }
+    }
+
+    func noteChromeInteraction() {
+        scheduleChromeAutoHide()
+    }
+
+    private func autoHideChrome() {
+        guard isChromeVisible, !isChromeInUse, !UIAccessibility.isVoiceOverRunning else { return }
+        debugLog("[EbookPlayerViewModel] Auto-hiding reader bars after inactivity")
+        withAnimation(.easeInOut(duration: 0.25)) {
+            if settingsVM.alwaysShowMiniPlayer {
+                isTopBarVisible = false
+                collapseCardTrigger += 1
+            } else {
+                isReadingBarVisible = false
+                isTopBarVisible = false
+            }
+        }
+    }
+    #endif
+
     func handleNextSentence() {
         mediaOverlayManager?.nextSentence()
     }
@@ -477,12 +528,12 @@ class EbookPlayerViewModel {
         session.onReadaloudAvailabilityChanged = { [weak self] available in
             self?.styleManager?.setReadaloudModeAvailable(available)
         }
+        session.onViewEarlyTextReady = { [weak self] in
+            self?.applyInitialReaderStyles()
+        }
         session.onViewStructureReady = { [weak self] in
             guard let self else { return }
-            self.settingsVM.applyActiveTheme(for: self.bridgeInitialColorScheme)
-            self.styleManager?.sendInitialStyles(
-                isDarkMode: self.bridgeInitialColorScheme == .dark
-            )
+            self.applyInitialReaderStyles()
             await self.loadHighlights()
         }
         session.onIncomingServerPosition = { [weak self] position in
@@ -496,6 +547,11 @@ class EbookPlayerViewModel {
                 }
             }
         }
+    }
+
+    private func applyInitialReaderStyles() {
+        settingsVM.applyActiveTheme(for: bridgeInitialColorScheme)
+        styleManager?.sendInitialStyles(isDarkMode: bridgeInitialColorScheme == .dark)
     }
 
     private func prepareComicPages(from extractedDirectory: URL) {

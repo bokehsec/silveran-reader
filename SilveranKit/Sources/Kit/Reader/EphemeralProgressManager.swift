@@ -65,6 +65,12 @@ public final class EphemeralProgressManager {
     /// read in a previous session.
     public var hasPerformedInitialSeek = false
 
+    /// True once the text was shown at the saved position ahead of the audio engine loading.
+    private var didPreviewInitialPosition = false
+    private var previewedLocator: BookLocator? = nil
+    /// True if the reader moved between that early text display and the full restore.
+    private var userNavigatedSincePreview = false
+
     private enum UserNavDirection: String {
         case left
         case right
@@ -270,6 +276,35 @@ public final class EphemeralProgressManager {
         return (sectionIndex: result.sectionIndex, anchor: result.textId)
     }
 
+    /// Shows the text at the saved position before the audio engine has finished loading the
+    /// book. `handleBookStructureReady()` later completes the restore by positioning the audio,
+    /// without moving the text again. `hasSMIL` must describe the book, since the media overlay
+    /// manager that normally answers that does not exist yet.
+    public func previewInitialTextPosition(hasSMIL: Bool) {
+        guard !hasPerformedInitialSeek, !didPreviewInitialPosition else { return }
+        guard let bridge = commsBridge else {
+            debugLog("[EPM] Bridge not available for initial text preview")
+            return
+        }
+
+        didPreviewInitialPosition = true
+
+        Task { @SilveranUIActor in
+            let locator = await self.resolveInitialLocator()
+            self.previewedLocator = locator
+            debugLog("[EPM] Showing saved text position before audio is ready")
+            do {
+                try await self.navigateTextToInitialPosition(
+                    locator,
+                    bridge: bridge,
+                    hasSMIL: hasSMIL,
+                )
+            } catch {
+                debugLog("[EPM] Failed to show initial text position: \(error)")
+            }
+        }
+    }
+
     /// Called when book structure is ready-- performs initial navigation
     /// Handles both text (ebook) and audio (audiobook) locators.
     /// Audio locators are detected via type.contains("audio") to match server behavior:
@@ -286,118 +321,148 @@ public final class EphemeralProgressManager {
         }
 
         hasPerformedInitialSeek = true
+        let textAlreadyShown = didPreviewInitialPosition
 
         Task { @SilveranUIActor in
-            do {
-                var locatorToUse = initialLocator
+            let hasSMIL = self.mediaOverlayManager?.hasMediaOverlay == true
 
-                if let bookID = self.bookID {
-                    if let psaProgress = await ProgressSyncActor.shared.getBookProgress(
-                        for: bookID
-                    ),
-                        let psaLocator = psaProgress.locator
-                    {
-                        debugLog("[EPM] Got locator from PSA (source: \(psaProgress.source))")
-                        locatorToUse = psaLocator
-                    }
-                }
-
-                if let locator = locatorToUse {
-                    let isAudioLocator =
-                        locator.type.contains("audio") || locator.href.hasPrefix("audiobook://")
-
-                    if isAudioLocator {
-                        if let totalProg = locator.locations?.totalProgression, totalProg > 0 {
-                            debugLog(
-                                "[EPM] Translating audio locator (totalProgression: \(totalProg)) to text position"
-                            )
-                            try await bridge.sendJsGoToBookFractionCommand(fraction: totalProg)
-
-                            if let mom = mediaOverlayManager,
-                                let (sectionIndex, anchor) = await findSmilEntryByBookFraction(
-                                    totalProg
-                                )
-                            {
-                                debugLog(
-                                    "[EPM] Seeking media overlay to section \(sectionIndex), anchor: \(anchor)"
-                                )
-                                await mom.handleSeekEvent(
-                                    sectionIndex: sectionIndex,
-                                    anchor: anchor,
-                                )
-                            }
-                        } else {
-                            debugLog("[EPM] Audio locator has no totalProgression, going to start")
-                            try await bridge.sendJsGoRightCommand()
-                        }
-                        return
-                    }
-
-                    let hasSMIL = mediaOverlayManager?.hasMediaOverlay == true
-
-                    if let fragment = locator.locations?.fragments?.first, hasSMIL {
-                        debugLog(
-                            "[EPM] Seeking to saved position with fragment: \(locator.href)#\(fragment)"
-                        )
-                        try await bridge.sendJsGoToLocatorCommand(locator: locator)
-
-                        if let mom = mediaOverlayManager,
-                            let sectionIndex = findSectionIndex(
-                                for: locator.href,
-                                in: bookStructure,
-                            )
-                        {
-                            debugLog(
-                                "[EPM] Also seeking media overlay to section \(sectionIndex), fragment: \(fragment)"
-                            )
-                            await mom.handleSeekEvent(sectionIndex: sectionIndex, anchor: fragment)
-                        }
-                    } else if let progression = locator.locations?.progression,
-                        let sectionIndex = findSectionIndex(for: locator.href, in: bookStructure)
-                    {
-                        debugLog("[EPM] Using section \(sectionIndex) progression: \(progression)")
-                        try await bridge.sendJsGoToFractionInSectionCommand(
-                            sectionIndex: sectionIndex,
-                            fraction: progression,
-                        )
-
-                        if hasSMIL,
-                            let mom = mediaOverlayManager,
-                            let anchor = findSmilEntryBySectionFraction(
-                                sectionIndex,
-                                fraction: progression,
-                            )
-                        {
-                            debugLog(
-                                "[EPM] Also seeking media overlay to section \(sectionIndex), anchor: \(anchor)"
-                            )
-                            await mom.handleSeekEvent(sectionIndex: sectionIndex, anchor: anchor)
-                        }
-                    } else if let totalProg = locator.locations?.totalProgression, totalProg > 0 {
-                        debugLog("[EPM] Fallback to book fraction: \(totalProg)")
-                        try await bridge.sendJsGoToBookFractionCommand(fraction: totalProg)
-
-                        if hasSMIL,
-                            let mom = mediaOverlayManager,
-                            let (smilSection, anchor) = await findSmilEntryByBookFraction(totalProg)
-                        {
-                            debugLog(
-                                "[EPM] Also seeking media overlay to section \(smilSection), anchor: \(anchor)"
-                            )
-                            await mom.handleSeekEvent(sectionIndex: smilSection, anchor: anchor)
-                        }
-                    } else {
-                        debugLog("[EPM] Fallback to href: \(locator.href)")
-                        try await bridge.sendJsGoToHrefCommand(href: locator.href)
-                    }
+            if textAlreadyShown {
+                if self.userNavigatedSincePreview {
+                    // The reader moved on while audio loaded; start audio where they are now.
+                    await self.alignAudioToCurrentPage()
                 } else {
-                    debugLog("[EPM] No saved position, navigating to first page")
-                    try await bridge.sendJsGoRightCommand()
+                    await self.seekAudioToInitialPosition(self.previewedLocator, hasSMIL: hasSMIL)
                 }
+                return
+            }
+
+            let locator = await self.resolveInitialLocator()
+            do {
+                try await self.navigateTextToInitialPosition(
+                    locator,
+                    bridge: bridge,
+                    hasSMIL: hasSMIL,
+                )
             } catch {
                 debugLog("[EPM] Failed to perform initial seek: \(error)")
+                return
             }
+            await self.seekAudioToInitialPosition(locator, hasSMIL: hasSMIL)
         }
+    }
+
+    /// The position to open at: the latest synced progress, else the locator the book opened with.
+    private func resolveInitialLocator() async -> BookLocator? {
+        if let bookID,
+            let psaProgress = await ProgressSyncActor.shared.getBookProgress(for: bookID),
+            let psaLocator = psaProgress.locator
+        {
+            debugLog("[EPM] Got locator from PSA (source: \(psaProgress.source))")
+            return psaLocator
+        }
+        return initialLocator
+    }
+
+    private static func isAudioLocator(_ locator: BookLocator) -> Bool {
+        locator.type.contains("audio") || locator.href.hasPrefix("audiobook://")
+    }
+
+    private func navigateTextToInitialPosition(
+        _ locator: BookLocator?,
+        bridge: ReaderCommsBridge,
+        hasSMIL: Bool,
+    ) async throws {
+        guard let locator else {
+            debugLog("[EPM] No saved position, navigating to first page")
+            try await bridge.sendJsGoRightCommand()
+            return
+        }
+
+        if Self.isAudioLocator(locator) {
+            if let totalProg = locator.locations?.totalProgression, totalProg > 0 {
+                debugLog(
+                    "[EPM] Translating audio locator (totalProgression: \(totalProg)) to text position"
+                )
+                try await bridge.sendJsGoToBookFractionCommand(fraction: totalProg)
+            } else {
+                debugLog("[EPM] Audio locator has no totalProgression, going to start")
+                try await bridge.sendJsGoRightCommand()
+            }
+            return
+        }
+
+        if let fragment = locator.locations?.fragments?.first, hasSMIL {
+            debugLog("[EPM] Seeking to saved position with fragment: \(locator.href)#\(fragment)")
+            try await bridge.sendJsGoToLocatorCommand(locator: locator)
+        } else if let progression = locator.locations?.progression,
+            let sectionIndex = findSectionIndex(for: locator.href, in: bookStructure)
+        {
+            debugLog("[EPM] Using section \(sectionIndex) progression: \(progression)")
+            try await bridge.sendJsGoToFractionInSectionCommand(
+                sectionIndex: sectionIndex,
+                fraction: progression,
+            )
+        } else if let totalProg = locator.locations?.totalProgression, totalProg > 0 {
+            debugLog("[EPM] Fallback to book fraction: \(totalProg)")
+            try await bridge.sendJsGoToBookFractionCommand(fraction: totalProg)
+        } else {
+            debugLog("[EPM] Fallback to href: \(locator.href)")
+            try await bridge.sendJsGoToHrefCommand(href: locator.href)
+        }
+    }
+
+    /// Positions narration audio at the initial locator, mirroring the text navigation branches.
+    private func seekAudioToInitialPosition(_ locator: BookLocator?, hasSMIL: Bool) async {
+        guard let locator, let mom = mediaOverlayManager else { return }
+
+        if Self.isAudioLocator(locator) {
+            if let totalProg = locator.locations?.totalProgression, totalProg > 0,
+                let (sectionIndex, anchor) = await findSmilEntryByBookFraction(totalProg)
+            {
+                debugLog(
+                    "[EPM] Seeking media overlay to section \(sectionIndex), anchor: \(anchor)"
+                )
+                await mom.handleSeekEvent(sectionIndex: sectionIndex, anchor: anchor)
+            }
+            return
+        }
+
+        guard hasSMIL else { return }
+
+        if let fragment = locator.locations?.fragments?.first {
+            if let sectionIndex = findSectionIndex(for: locator.href, in: bookStructure) {
+                debugLog(
+                    "[EPM] Also seeking media overlay to section \(sectionIndex), fragment: \(fragment)"
+                )
+                await mom.handleSeekEvent(sectionIndex: sectionIndex, anchor: fragment)
+            }
+        } else if let progression = locator.locations?.progression,
+            let sectionIndex = findSectionIndex(for: locator.href, in: bookStructure)
+        {
+            if let anchor = findSmilEntryBySectionFraction(sectionIndex, fraction: progression) {
+                debugLog(
+                    "[EPM] Also seeking media overlay to section \(sectionIndex), anchor: \(anchor)"
+                )
+                await mom.handleSeekEvent(sectionIndex: sectionIndex, anchor: anchor)
+            }
+        } else if let totalProg = locator.locations?.totalProgression, totalProg > 0,
+            let (smilSection, anchor) = await findSmilEntryByBookFraction(totalProg)
+        {
+            debugLog(
+                "[EPM] Also seeking media overlay to section \(smilSection), anchor: \(anchor)"
+            )
+            await mom.handleSeekEvent(sectionIndex: smilSection, anchor: anchor)
+        }
+    }
+
+    private func alignAudioToCurrentPage() async {
+        guard let mom = mediaOverlayManager,
+            let section = selectedChapterId,
+            let page = chapterCurrentPage,
+            let total = chapterTotalPages
+        else { return }
+        debugLog("[EPM] Reader moved before audio was ready; aligning audio to current page")
+        _ = await mom.handleUserNavEvent(section: section, page: page, totalPages: total)
     }
 
     public func handleServerPositionUpdate(_ locator: BookLocator) {
@@ -1123,6 +1188,9 @@ public final class EphemeralProgressManager {
     //   - If audio is playing during sync check, activity is refreshed automatically
 
     private func recordActivity() {
+        if didPreviewInitialPosition && !hasPerformedInitialSeek {
+            userNavigatedSincePreview = true
+        }
         lastActivityTimestamp = floor(Date().timeIntervalSince1970 * 1000) / 1000
         let timestampMs = lastActivityTimestamp! * 1000
         debugLog("[EPM] Activity recorded at \(timestampMs) ms (unix epoch)")

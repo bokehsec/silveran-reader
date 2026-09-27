@@ -529,7 +529,15 @@ private struct WebViewWrapper2: View {
         }
 
         Task { @MainActor in
-            let webResourcesDir = await FilesystemActor.shared.getWebResourcesDirectory()
+            // Waits for any in-progress launch-time install and installs the reader if it is
+            // missing, so opening a book right after launch cannot load an absent reader.
+            let webResourcesDir: URL
+            do {
+                webResourcesDir = try await FilesystemActor.shared.readyWebResourcesDirectory()
+            } catch {
+                debugLog("[EbookPlayerWebView] ERROR: failed to install web resources: \(error)")
+                return
+            }
             let url = webResourcesDir.appendingPathComponent("foliate_wrap.html")
 
             guard FileManager.default.fileExists(atPath: url.path) else {
@@ -637,14 +645,6 @@ private struct WebViewRepresentable2: PlatformViewRepresentable {
             let bridge = ReaderCommsBridge(js: evaluator)
             context.coordinator.jsEvaluator = evaluator
             context.coordinator.commsBridge = bridge
-            self.commsBridge = bridge
-            self.onBridgeReady?(bridge)
-
-            wkWebView.commsBridge = bridge
-
-            #if os(macOS)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                wkWebView.window?.makeFirstResponder(wkWebView)
 
             // Registered before anyone sees the bridge so the first style update
             // already knows curl is available.
@@ -659,6 +659,14 @@ private struct WebViewRepresentable2: PlatformViewRepresentable {
             wkWebView.onSizeChange = { [weak animator] in animator?.cancel() }
             #endif
 
+            self.commsBridge = bridge
+            self.onBridgeReady?(bridge)
+
+            wkWebView.commsBridge = bridge
+
+            #if os(macOS)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                wkWebView.window?.makeFirstResponder(wkWebView)
             }
             #endif
 

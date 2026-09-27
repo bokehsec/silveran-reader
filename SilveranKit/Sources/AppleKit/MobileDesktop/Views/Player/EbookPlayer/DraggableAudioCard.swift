@@ -38,6 +38,8 @@ struct DraggableAudioCard<FullContent: View>: View {
     let onSleepTimerCancel: () -> Void
     let onDismiss: () -> Void
     let onComicScrubberVisibilityChange: (Bool) -> Void
+    /// True while the card is pulled up past its compact mini-player size.
+    let onExpandedChange: (Bool) -> Void
     @ViewBuilder let fullContent: () -> FullContent
 
     enum CardState {
@@ -182,11 +184,13 @@ struct DraggableAudioCard<FullContent: View>: View {
             onComicScrubberVisibilityChange(
                 isPresented && supportsComicScrubber && newValue == .scrubber
             )
+            onExpandedChange(isPresented && newValue != .compact)
         }
         .onChange(of: isPresented) { _, newValue in
             onComicScrubberVisibilityChange(
                 newValue && supportsComicScrubber && cardState == .scrubber
             )
+            onExpandedChange(newValue && cardState != .compact)
         }
         .onAppear {
             sliderValue = chapterProgress

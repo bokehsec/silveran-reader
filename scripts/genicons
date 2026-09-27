@@ -9,10 +9,16 @@ ASSETS_DIR="XCodeApps/Assets.xcassets/AppIcon.appiconset"
 WATCH_ASSETS_DIR="XCodeApps/WatchAssets.xcassets/AppIcon.appiconset"
 TV_ASSETS_DIR="XCodeApps/TVAssets.xcassets/App Icon.brandassets"
 STORYTELLER_LOGO="XCodeApps/Assets.xcassets/StorytellerLogo.imageset/Storyteller_Logo.png"
+IOS_ICON_SOURCE="XCodeApps/IconSources/SilveranForkAppIcon-v1.png"
 MAC_MASK="SilveranKit/Sources/Kit/Resources/assets/icons/macos_icon_mask.png"
 
 if [ ! -f "$STORYTELLER_LOGO" ]; then
     echo "Error: Storyteller_Logo.png not found in project"
+    exit 1
+fi
+
+if [ ! -f "$IOS_ICON_SOURCE" ]; then
+    echo "Error: iOS fork app icon not found at $IOS_ICON_SOURCE"
     exit 1
 fi
 
@@ -34,7 +40,9 @@ magick -size 1024x1024 gradient:'#fbfffe-#fffbee' \
     -gravity center -compose over -composite \
     -colorspace sRGB -profile "${SRGB_PROFILE}" "${MAIN_ICON}"
 
-magick "${MAIN_ICON}" "${ASSETS_DIR}/icon_1024x1024.png"
+sips -z 1024 1024 -s format png "${IOS_ICON_SOURCE}" --out "${ASSETS_DIR}/icon_1024x1024.png"
+sips -z 120 120 -s format png "${IOS_ICON_SOURCE}" --out "${ASSETS_DIR}/icon_120x120.png"
+sips -z 152 152 -s format png "${IOS_ICON_SOURCE}" --out "${ASSETS_DIR}/icon_152x152.png"
 magick "${MAIN_ICON}" "${WATCH_ASSETS_DIR}/icon_1024x1024.png"
 magick -size 2048x2048 canvas:none \
     \( "${STORYTELLER_LOGO}" -trim +repage -resize 1024x1024 \) \

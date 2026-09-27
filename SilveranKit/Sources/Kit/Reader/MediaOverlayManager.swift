@@ -63,6 +63,8 @@ public final class MediaOverlayManager {
     public var sleepTimerActive: Bool = false
     public var sleepTimerRemaining: TimeInterval? = nil
     public var sleepTimerType: SleepTimerType? = nil
+    private var sleepTimerDuration: TimeInterval? = nil
+    private var sleepTimerExpired = false
     private var sleepTimerTask: Task<Void, Never>? = nil
 
     /// Platform hook that keeps the screen awake during narration playback.
@@ -243,7 +245,7 @@ public final class MediaOverlayManager {
             if total > 0 && elapsed >= total - 0.5 {
                 debugLog("[MOM] End of chapter reached - sleep timer pausing playback")
                 Task {
-                    self.cancelSleepTimer()
+                    self.sleepTimerExpired = true
                     if self.isPlaying {
                         await self.progressManager?.togglePlaying()
                     }
@@ -483,6 +485,12 @@ public final class MediaOverlayManager {
             try await SMILPlayerActor.shared.play()
             isPlaying = true
 
+            if sleepTimerActive && sleepTimerExpired {
+                sleepTimerExpired = false
+                sleepTimerRemaining = sleepTimerDuration
+                debugLog("[MOM] Restarting expired sleep timer on playback resume")
+            }
+
             if let entry = await SMILPlayerActor.shared.getCurrentEntry() {
                 let (currentSectionIndex, _) = await SMILPlayerActor.shared.getCurrentPosition()
                 await sendHighlightCommand(
@@ -714,10 +722,14 @@ public final class MediaOverlayManager {
             debugLog("[MOM] Sleep timer: will pause at end of current chapter")
             sleepTimerActive = true
             sleepTimerRemaining = nil
+            sleepTimerDuration = nil
+            sleepTimerExpired = false
         } else if let duration = duration {
             debugLog("[MOM] Sleep timer: starting \(Int(duration))s countdown")
             sleepTimerActive = true
             sleepTimerRemaining = duration
+            sleepTimerDuration = duration
+            sleepTimerExpired = false
 
             sleepTimerTask = Task { @SilveranUIActor [weak self] in
                 while !Task.isCancelled {
@@ -736,11 +748,19 @@ public final class MediaOverlayManager {
         sleepTimerActive = false
         sleepTimerRemaining = nil
         sleepTimerType = nil
+        sleepTimerDuration = nil
+        sleepTimerExpired = false
     }
 
     /// Internal: Update sleep timer countdown
     private func updateSleepTimer() async {
         guard sleepTimerActive, isPlaying else { return }
+
+        if sleepTimerExpired {
+            sleepTimerExpired = false
+            sleepTimerRemaining = sleepTimerDuration
+            debugLog("[MOM] Restarting expired sleep timer on playback resume")
+        }
 
         if sleepTimerType == .endOfChapter {
             return
@@ -756,7 +776,7 @@ public final class MediaOverlayManager {
 
         if remaining <= 0 {
             debugLog("[MOM] Sleep timer expired - pausing playback")
-            cancelSleepTimer()
+            sleepTimerExpired = true
             await progressManager?.togglePlaying()
         }
     }
@@ -774,7 +794,7 @@ public final class MediaOverlayManager {
         if chapterElapsed >= chapterTotal - 0.5 {
             debugLog("[MOM] End of chapter reached - sleep timer pausing playback")
             Task {
-                self.cancelSleepTimer()
+                self.sleepTimerExpired = true
                 if self.isPlaying {
                     await self.progressManager?.togglePlaying()
                 }

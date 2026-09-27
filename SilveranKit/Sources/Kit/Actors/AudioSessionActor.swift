@@ -162,7 +162,9 @@ public actor AudioSessionActor {
 
     private var sleepTimerMode: AudiobookSessionSleepTimerMode?
     private var sleepTimerRemaining: TimeInterval?
+    private var sleepTimerDuration: TimeInterval?
     private var sleepTimerChapterID: String?
+    private var sleepTimerExpired = false
     private var lastSleepTimerUpdate = Date()
 
     private init() {}
@@ -685,7 +687,9 @@ public actor AudioSessionActor {
         }
         sleepTimerMode = .duration
         sleepTimerRemaining = seconds
+        sleepTimerDuration = seconds
         sleepTimerChapterID = nil
+        sleepTimerExpired = false
         lastSleepTimerUpdate = Date()
     }
 
@@ -693,14 +697,18 @@ public actor AudioSessionActor {
         let index = await AudiobookActor.shared.getCurrentChapterIndex()
         sleepTimerMode = .endOfChapter
         sleepTimerRemaining = nil
+        sleepTimerDuration = nil
         sleepTimerChapterID = index.flatMap { metadata?.chapters[safe: $0]?.id }
+        sleepTimerExpired = false
         lastSleepTimerUpdate = Date()
     }
 
     private func cancelSleepTimer() {
         sleepTimerMode = nil
         sleepTimerRemaining = nil
+        sleepTimerDuration = nil
         sleepTimerChapterID = nil
+        sleepTimerExpired = false
     }
 
     private func startRefreshTask() {
@@ -730,6 +738,19 @@ public actor AudioSessionActor {
         defer { lastSleepTimerUpdate = now }
         guard state.isPlaying, let sleepTimerMode else { return }
 
+        if sleepTimerExpired {
+            sleepTimerExpired = false
+            switch sleepTimerMode {
+                case .duration:
+                    sleepTimerRemaining = sleepTimerDuration
+                case .endOfChapter:
+                    if let index = state.currentChapterIndex {
+                        sleepTimerChapterID = metadata?.chapters[safe: index]?.id
+                    }
+            }
+            debugLog("[AudioSessionActor] Restarting expired sleep timer on playback resume")
+        }
+
         switch sleepTimerMode {
             case .duration:
                 let remaining = max(
@@ -738,7 +759,7 @@ public actor AudioSessionActor {
                 )
                 sleepTimerRemaining = remaining
                 if remaining <= 0 {
-                    cancelSleepTimer()
+                    sleepTimerExpired = true
                     await AudiobookActor.shared.pause()
                 }
             case .endOfChapter:
@@ -749,7 +770,7 @@ public actor AudioSessionActor {
                 let chapter = metadata.chapters[index]
                 let elapsed = max(0, state.currentTime - chapter.startTime)
                 if chapter.id != sleepTimerChapterID || elapsed >= chapter.duration - 0.5 {
-                    cancelSleepTimer()
+                    sleepTimerExpired = true
                     await AudiobookActor.shared.pause()
                 }
         }

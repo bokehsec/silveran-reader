@@ -15,7 +15,6 @@ public enum WatchTransferState: Sendable, Codable {
     case cancelled
     case failed(message: String)
 }
-
 public struct WatchTransferItem: Sendable, Identifiable, Codable {
     public let id: UUID
     public let bookID: BookID
@@ -48,13 +47,19 @@ private let watchChunkCount = 100
 public actor AppleWatchActor: NSObject {
     public static let shared = AppleWatchActor()
 
+    private struct ObserverCallback: @unchecked Sendable {
+        let call: @Sendable (WatchTransferEvent) -> Void
+    }
+
+    private typealias WatchTransferCallback = @Sendable (WatchTransferEvent) -> Void
+
     private var session: WCSession?
     private var pendingTransfers: [UUID: WatchTransferItem] = [:]
     private var completedTransfers: [UUID: WatchTransferItem] = [:]
     private var watchBooks: [WatchBookInfo] = []
     private var chunksCompleted: [UUID: Int] = [:]
     private var chunksExpected: [UUID: Int] = [:]
-    private var observers: [UUID: @Sendable @MainActor (WatchTransferEvent) -> Void] = [:]
+    private var observers: [UUID: ObserverCallback] = [:]
     private var smilObserverID: UUID?
     private var sourceListObserverID: UUID?
     private var lastPublishedPhoneSourceRecords: [BookSourceRecord]?
@@ -80,11 +85,14 @@ public actor AppleWatchActor: NSObject {
         debugLog("[AppleWatchActor] WCSession activation requested")
     }
 
-    public func addObserver(_ callback: @escaping @Sendable @MainActor (WatchTransferEvent) -> Void)
-        -> UUID
-    {
+    public func addObserver(_ callback: @escaping @MainActor (WatchTransferEvent) -> Void) -> UUID {
         let id = UUID()
-        observers[id] = callback
+        let wrapped: WatchTransferCallback = { event in
+            Task { @MainActor in
+                callback(event)
+            }
+        }
+        observers[id] = ObserverCallback(call: wrapped)
         return id
     }
 
@@ -93,11 +101,9 @@ public actor AppleWatchActor: NSObject {
     }
 
     private func notifyObservers(_ event: WatchTransferEvent) {
-        let callbacks = observers.values
-        Task { @MainActor in
-            for callback in callbacks {
-                callback(event)
-            }
+        let callbacks = observers.values.map { $0.call }
+        for callback in callbacks {
+            callback(event)
         }
     }
 
@@ -332,9 +338,9 @@ public actor AppleWatchActor: NSObject {
 
         session.sendMessage(
             request,
-            replyHandler: { [weak self] response in
+            replyHandler: { response in
                 guard let message = try? WatchProtocolMessage.decode(from: response) else { return }
-                Task { await self?.handleWatchLibrary(message) }
+                Task { await AppleWatchActor.shared.handleWatchLibrary(message) }
             },
             errorHandler: { error in
                 debugLog("[AppleWatchActor] Failed to request library: \(error)")
@@ -353,10 +359,10 @@ public actor AppleWatchActor: NSObject {
         )
         send(
             message,
-            replyHandler: { [weak self] response in
+            replyHandler: { response in
                 guard case .acknowledgement = try? WatchProtocolMessage.decode(from: response)
                 else { return }
-                Task { await self?.requestWatchLibrary() }
+                Task { await AppleWatchActor.shared.requestWatchLibrary() }
             },
         )
     }
@@ -546,7 +552,7 @@ public actor AppleWatchActor: NSObject {
 
     private func send(
         _ message: WatchProtocolMessage,
-        replyHandler: (([String: Any]) -> Void)? = nil,
+        replyHandler: (@Sendable ([String: Any]) -> Void)? = nil,
     ) {
         guard let session, let encoded = try? message.encode() else { return }
         session.sendMessage(
@@ -564,7 +570,9 @@ public actor AppleWatchActor: NSObject {
         smilObserverID = observerID
         Task {
             await SMILPlayerActor.shared.addStateObserver(id: observerID) { [weak self] _ in
-                Task { await self?.sendPlaybackStateToWatch() }
+                Task { [weak self] in
+                    await self?.sendPlaybackStateToWatch()
+                }
             }
         }
     }

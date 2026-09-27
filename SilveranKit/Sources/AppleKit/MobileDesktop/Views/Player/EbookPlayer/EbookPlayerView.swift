@@ -74,6 +74,10 @@ public struct EbookPlayerView: View {
         #if os(iOS)
         .statusBarHidden(!viewModel.isTopBarVisible)
         .persistentSystemOverlays(viewModel.isTopBarVisible ? .automatic : .hidden)
+        .onAppear { viewModel.scheduleChromeAutoHide() }
+        .onChange(of: viewModel.isTopBarVisible) { _, _ in viewModel.scheduleChromeAutoHide() }
+        .onChange(of: viewModel.isReadingBarVisible) { _, _ in viewModel.scheduleChromeAutoHide() }
+        .onChange(of: viewModel.isChromeInUse) { _, _ in viewModel.scheduleChromeAutoHide() }
         .navigationBarHidden(true)
         .toolbar(.hidden, for: .tabBar)
         .onReceive(NotificationCenter.default.publisher(for: .appWillResignActive)) { _ in
@@ -570,11 +574,13 @@ public struct EbookPlayerView: View {
                     onSleepTimerCancel: viewModel.handleSleepTimerCancel,
                     settingsVM: viewModel.settingsVM,
                 )
+                .simultaneousGesture(chromeInteractionGesture)
                 .transition(.opacity)
             }
 
             if !(isPad && viewModel.showAudioSidebar) {
                 draggableAudioCard
+                    .simultaneousGesture(chromeInteractionGesture)
             }
 
             playbackProgressBar
@@ -645,6 +651,13 @@ public struct EbookPlayerView: View {
         )
     }
 
+    /// Any touch on the reader bars restarts their auto-hide countdown.
+    private var chromeInteractionGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { _ in viewModel.noteChromeInteraction() }
+            .onEnded { _ in viewModel.noteChromeInteraction() }
+    }
+
     @ViewBuilder
     private var draggableAudioCard: some View {
         let pm = viewModel.progressManager
@@ -709,6 +722,10 @@ public struct EbookPlayerView: View {
             },
             onComicScrubberVisibilityChange: { visible in
                 isComicScrubberVisible = visible
+            },
+            onExpandedChange: { expanded in
+                viewModel.isAudioCardExpanded = expanded
+                viewModel.scheduleChromeAutoHide()
             },
             fullContent: {
                 audiobookSidebar()

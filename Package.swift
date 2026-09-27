@@ -100,7 +100,7 @@ let package = Package(
                 // ELF allows it by default.
                 .unsafeFlags(
                     ["-Xlinker", "-undefined", "-Xlinker", "dynamic_lookup"],
-                    .when(platforms: [.macOS]),
+                    .when(platforms: [.macOS, .iOS, .watchOS, .tvOS]),
                 )
             ],
         ),
