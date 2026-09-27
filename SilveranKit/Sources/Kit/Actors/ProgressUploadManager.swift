@@ -90,8 +90,7 @@ public actor ProgressUploadManager {
     }
 
     public func enqueuePendingUploads() async {
-        let pending = await ProgressSyncActor.shared.getPendingProgressSyncs()
-            .filter { !$0.syncedToStoryteller }
+        let pending = await ProgressSyncActor.shared.getUploadablePendingProgressSyncs()
         guard !pending.isEmpty else { return }
 
         let outstanding = await outstandingTasks()

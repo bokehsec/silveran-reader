@@ -49,6 +49,9 @@ public actor StorytellerActor {
     private var apiBaseURL: URL?
     private var accessToken: AccessToken?
     private(set) public var libraryMetadata: [BookMetadata] = []
+    /// Books the last library listing included but that could not be decoded. The cache keeps
+    /// them rather than treating them as removed from the server.
+    private(set) public var lastListingUnreadableUUIDs: Set<String> = []
     public var lastUpdateBookError: String?
     private var cachedStatuses: [BookStatus] = []
     public private(set) var connectionStatus: ConnectionStatus = .disconnected
@@ -773,6 +776,12 @@ public actor StorytellerActor {
                             "[StorytellerActor] WARNING: Skipped \(skipped) book(s) due to decode errors (loaded \(libraryMetadata.count)/\(totalCount))"
                         )
                     }
+                    let decodedUUIDs = Set(libraryMetadata.map(\.uuid))
+                    lastListingUnreadableUUIDs = Set(
+                        jsonArray.compactMap { ($0 as? [String: Any])?["uuid"] as? String }
+                    ).subtracting(decodedUUIDs)
+                } else {
+                    lastListingUnreadableUUIDs = []
                 }
             } catch {
                 debugLog("[StorytellerActor] DECODE ERROR in fetchLibraryInformation:")
@@ -786,6 +795,7 @@ public actor StorytellerActor {
             try? await LocalMediaActor.shared.updateSourceCacheMetadata(
                 libraryMetadata,
                 replacingSourceID: sourceRecordValue.id,
+                unreadableUUIDs: lastListingUnreadableUUIDs,
             )
 
             await recordNetworkSuccess()

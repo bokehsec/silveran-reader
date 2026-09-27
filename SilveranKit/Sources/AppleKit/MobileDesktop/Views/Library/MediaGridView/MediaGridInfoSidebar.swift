@@ -131,6 +131,13 @@ struct MediaGridInfoSidebar: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 18) {
+            if currentItem.isRemovedFromSource {
+                SourceRemovedNotice(
+                    item: currentItem,
+                    onOpenReplacement: { relatedItemOverride = $0 },
+                    onRemovedFromLibrary: onClose,
+                )
+            }
             descriptionSection
             #if os(macOS)
             relatedBooksSections

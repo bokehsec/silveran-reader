@@ -112,6 +112,7 @@ struct MediaCompactCardView: View {
                 }
             }
             .stableCoverRendering()
+            .modifier(SourceRemovedCoverStyle(isRemoved: item.isRemovedFromSource))
             .overlay(alignment: .bottom) {
                 if progressStyle == .line && progress > 0 && !shouldRenderDoubleCover {
                     MediaProgressBar(progress: progress, backgroundOpacity: 0.3)
@@ -137,7 +138,10 @@ struct MediaCompactCardView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if let sourceLabel = sourceLabel {
+                if item.isRemovedFromSource {
+                    SourceRemovedBadge(size: 8)
+                        .padding(2)
+                } else if let sourceLabel = sourceLabel {
                     SourceBadge(label: sourceLabel)
                         .padding(2)
                 }

@@ -45,8 +45,8 @@ class SilveranAppDelegate: NSObject, UIApplicationDelegate {
 
     static func scheduleProgressSyncRefreshIfNeeded() async {
         guard await SilveranRuntime.start() else { return }
-        let hasPending = await ProgressSyncActor.shared.getPendingProgressSyncs()
-            .contains { !$0.syncedToStoryteller }
+        let hasPending = await !ProgressSyncActor.shared.getUploadablePendingProgressSyncs()
+            .isEmpty
         guard hasPending else { return }
 
         let request = BGAppRefreshTaskRequest(identifier: progressSyncTaskIdentifier)

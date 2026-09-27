@@ -222,9 +222,16 @@ public actor ProgressSyncActor {
 
         var syncedCount = 0
         var failedBookIDs: [BookID] = []
+        // Held locally, not sent: the source no longer has these books. They upload if it lists
+        // them again.
+        let removedFromSource = await LocalMediaActor.shared.sourceRemovedBookIDs()
 
         let bookIDs = pendingProgressQueue.map(\.bookID)
         for bookID in bookIDs {
+            guard !removedFromSource.contains(bookID) else {
+                debugLog("[PSA] syncPendingQueue: \(bookID) removed from its source, holding")
+                continue
+            }
             let sourceStatus = await BookServiceActor.shared.connectionStatus(
                 sourceID: bookID.sourceID
             )
@@ -329,6 +336,17 @@ public actor ProgressSyncActor {
     public func getPendingProgressSyncs() async -> [PendingProgressSync] {
         guard await ensureQueueLoaded() else { return [] }
         return pendingProgressQueue
+    }
+
+    /// Pending positions that should be sent now: not yet confirmed, and for a book its source
+    /// still lists. Upload schedulers use this so a book removed from its source never keeps a
+    /// retry or background wakeup alive.
+    public func getUploadablePendingProgressSyncs() async -> [PendingProgressSync] {
+        guard await ensureQueueLoaded() else { return [] }
+        let removedFromSource = await LocalMediaActor.shared.sourceRemovedBookIDs()
+        return pendingProgressQueue.filter {
+            !$0.syncedToStoryteller && !removedFromSource.contains($0.bookID)
+        }
     }
 
     public func removePendingSync(for bookID: BookID) async {
@@ -889,6 +907,28 @@ public actor ProgressSyncActor {
             reason: .userRestoredFromHistory,
             sourceIdentifier: "Restored from History",
             locationDescription: locationDescription,
+        )
+    }
+
+    /// Continues reading on another book from where the user was in this one: used when a book's
+    /// source removed it and the user picked its current version. The position is recorded on the
+    /// destination as a new user action, so it syncs and wins over the destination's older
+    /// position. The locator is carried as is; if the destination is a different edition, the
+    /// reader resolves it the same way as any position it cannot place exactly.
+    public func movePosition(from sourceBookID: BookID, to destinationBookID: BookID) async
+        -> SyncResult
+    {
+        guard let progress = await getBookProgress(for: sourceBookID),
+            let locator = progress.locator
+        else { return .failed }
+        let timestamp = floor(Date().timeIntervalSince1970 * 1000)
+        return await syncProgress(
+            bookID: destinationBookID,
+            locator: locator,
+            timestamp: timestamp,
+            reason: .userMovedFromRemovedBook,
+            sourceIdentifier: "Moved from removed copy",
+            locationDescription: buildLocationDescription(from: locator),
         )
     }
 

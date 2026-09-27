@@ -576,10 +576,11 @@ public actor BookServiceActor {
                 return named
             }
             metadata.append(contentsOf: named)
-            if record.kind == .storyteller {
+            if let storyteller = source as? StorytellerActor {
                 try? await LocalMediaActor.shared.updateSourceCacheMetadata(
                     named,
                     replacingSourceID: record.id,
+                    unreadableUUIDs: await storyteller.lastListingUnreadableUUIDs,
                 )
             }
         }
@@ -604,10 +605,11 @@ public actor BookServiceActor {
             named.source = named.source ?? sourceRecord?.name
             return named
         }
-        if sourceRecord?.kind == .storyteller {
+        if let storyteller = source as? StorytellerActor {
             try? await LocalMediaActor.shared.updateSourceCacheMetadata(
                 named,
                 replacingSourceID: sourceID,
+                unreadableUUIDs: await storyteller.lastListingUnreadableUUIDs,
             )
         }
         return named

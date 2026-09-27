@@ -233,12 +233,45 @@ public actor LocalMediaActor: GlobalActor {
         await updateLedgerEntry(bookID: bookID, sourceID: sourceID, paths: paths)
     }
 
+    /// Replaces the cached library of one source with a complete listing from that source.
+    ///
+    /// A book the previous cache held but the listing omits was deleted or merged on the source.
+    /// It is dropped, unless this device still has downloaded media for it: then it stays in the
+    /// cache marked `removedFromSourceAt`, so the local copy and its reading position remain
+    /// usable and the user decides what to do with it. `unreadableUUIDs` are books the source did
+    /// list but whose entries could not be decoded; they are kept unchanged, never treated as
+    /// removed. A book the listing includes again replaces its retained copy, clearing the mark.
     public func updateSourceCacheMetadata(
         _ metadata: [BookMetadata],
         replacingSourceID sourceID: BookSourceID,
+        unreadableUUIDs: Set<String> = [],
     ) async throws {
+        await ensureSourceCacheLoaded()
+        let listedUUIDs = Set(metadata.map(\.uuid))
+        var booksWithMedia: Set<BookID> = []
+        for book in sourceCacheMetadata
+        where book.sourceID == sourceID && !listedUUIDs.contains(book.uuid)
+            && !unreadableUUIDs.contains(book.uuid)
+        {
+            if await hasDownloadedMedia(book.id) {
+                booksWithMedia.insert(book.id)
+            }
+        }
+
+        // Built from the cache as it is now: the media checks above suspend, and a position
+        // recorded meanwhile must not be overwritten by an earlier copy of the book.
+        let current = sourceCacheMetadata.filter { $0.sourceID == sourceID }
+        let retained = SourceListingRetention.retainedBooks(
+            cached: current,
+            listedUUIDs: listedUUIDs,
+            unreadableUUIDs: unreadableUUIDs,
+            booksWithMedia: booksWithMedia,
+            removedAt: Date().ISO8601Format(),
+        )
+        let relisted = current.filter { $0.isRemovedFromSource && listedUUIDs.contains($0.uuid) }
+
         let preserved = sourceCacheMetadata.filter { $0.sourceID != sourceID }
-        let nextMetadata = preserved + metadata
+        let nextMetadata = preserved + metadata + retained
         sourceCacheMetadata = nextMetadata
         sourceCacheLoaded = true
         let grouped = metadataBySourceID(nextMetadata)
@@ -252,8 +285,11 @@ public actor LocalMediaActor: GlobalActor {
             )
         }
 
+        // Retained books are excluded: their position is this device's own, recorded locally
+        // after the source stopped listing them, and must not be taken as the source confirming
+        // a pending upload.
         let positions = Dictionary(
-            nextMetadata.compactMap { book -> (BookID, BookReadingPosition)? in
+            (preserved + metadata).compactMap { book -> (BookID, BookReadingPosition)? in
                 guard let pos = book.position else { return nil }
                 return (book.id, pos)
             },
@@ -264,6 +300,48 @@ public actor LocalMediaActor: GlobalActor {
         await ProgressSyncActor.shared.updateServerPositions(positions)
 
         await notifyObservers()
+
+        // Progress held back while these books were missing from the source can upload again.
+        if !relisted.isEmpty {
+            await ProgressSyncActor.shared.scheduleQueueFlush()
+        }
+    }
+
+    /// Books kept in the cache after their source stopped listing them. Progress for these is
+    /// recorded locally but not uploaded: the source has no such book to receive it.
+    public func sourceRemovedBookIDs() async -> Set<BookID> {
+        await ensureSourceCacheLoaded()
+        return Set(sourceCacheMetadata.filter(\.isRemovedFromSource).map(\.id))
+    }
+
+    /// Whether any category of the book is on disk. Consults the ledger first; a book the ledger
+    /// has no entry for is scanned, because the ledger may not be bootstrapped yet and a wrong
+    /// "no media" answer would drop a downloaded book from the library.
+    private func hasDownloadedMedia(_ bookID: BookID) async -> Bool {
+        if let record = downloadedMediaBySource[bookID.sourceID]?[bookID.uuid], !record.isEmpty {
+            return true
+        }
+        return await !scanBookPaths(for: bookID.uuid, sourceID: bookID.sourceID).isAllNil
+    }
+
+    /// Drops a book the source no longer lists once its last downloaded category is deleted:
+    /// nothing is left to read, so it leaves the library, together with the reading position that
+    /// could never be uploaded.
+    private func forgetRemovedBookIfEmpty(_ bookID: BookID) async {
+        guard sourceCacheMetadata.contains(where: { $0.id == bookID && $0.isRemovedFromSource }),
+            !(await hasDownloadedMedia(bookID))
+        else { return }
+        sourceCacheMetadata.removeAll { $0.id == bookID }
+        let sourceMetadata = sourceCacheMetadata.filter { $0.sourceID == bookID.sourceID }
+        do {
+            try await filesystem.saveSourceCacheLibraryMetadata(
+                sourceMetadata,
+                sourceID: bookID.sourceID,
+            )
+        } catch {
+            debugLog("[LMA] forgetRemovedBookIfEmpty: persist failed for \(bookID): \(error)")
+        }
+        await ProgressSyncActor.shared.removePendingSync(for: bookID)
     }
 
     public func updateSourceCacheBookMetadata(
@@ -360,6 +438,7 @@ public actor LocalMediaActor: GlobalActor {
                     alignedByStorytellerVersion: existing.alignedByStorytellerVersion,
                     alignedWith: existing.alignedWith,
                     source: existing.source,
+                    removedFromSourceAt: existing.removedFromSourceAt,
                 )
                 sourceCacheMetadata[index] = updatedMetadata
                 debugLog("[LocalMediaActor] updateBookProgress: updated source-cache metadata")
@@ -421,8 +500,9 @@ public actor LocalMediaActor: GlobalActor {
         await rebuildPathProjection()
         sourceCacheLoaded = true
 
+        // Books the source no longer lists carry this device's own position, not the source's.
         var allPositions: [BookID: BookReadingPosition] = [:]
-        for book in cachedMetadata {
+        for book in cachedMetadata where !book.isRemovedFromSource {
             if let pos = book.position,
                 (pos.timestamp ?? 0) >= (allPositions[book.id]?.timestamp ?? 0)
             {
@@ -608,6 +688,7 @@ public actor LocalMediaActor: GlobalActor {
             category: category,
             url: nil,
         )
+        await forgetRemovedBookIfEmpty(bookID)
         await notifyObservers()
     }
 
@@ -629,6 +710,7 @@ public actor LocalMediaActor: GlobalActor {
                 url: nil,
             )
         }
+        await forgetRemovedBookIfEmpty(bookID)
         await notifyObservers()
     }
 

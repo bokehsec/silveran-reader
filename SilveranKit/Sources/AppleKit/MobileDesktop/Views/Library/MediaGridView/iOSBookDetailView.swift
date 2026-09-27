@@ -8,6 +8,7 @@ struct iOSBookDetailView: View {
 
     @Environment(MediaViewModel.self) private var mediaViewModel
     @Environment(\.editMetadataAction) private var editMetadataAction
+    @Environment(\.dismiss) private var dismiss
     @State private var selectedStatusName: String?
     @State private var isUpdatingStatus = false
     @State private var showOfflineError = false
@@ -26,7 +27,7 @@ struct iOSBookDetailView: View {
         MediaGridInfoSidebar(
             item: currentItem,
             mediaKind: mediaKind,
-            onClose: {},
+            onClose: { dismiss() },
             onReadNow: {},
             onRename: {},
             onDelete: {},

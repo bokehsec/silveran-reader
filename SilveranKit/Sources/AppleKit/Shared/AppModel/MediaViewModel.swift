@@ -2025,6 +2025,23 @@ public final class MediaViewModel {
         }
     }
 
+    /// Deletes every downloaded category of a book. For a book its source no longer has, this
+    /// also removes it from the library, since nothing is left to read.
+    public func removeAllDownloads(for item: BookMetadata) {
+        for category in LocalMediaCategory.allCases {
+            deleteDownload(for: item, category: category)
+        }
+    }
+
+    /// Continues reading `destination` from the user's position in `source`: used when the
+    /// source's server removed it and the user picked the book's current version.
+    public func movePosition(from source: BookID, to destination: BookID) async -> Bool {
+        switch await ProgressSyncActor.shared.movePosition(from: source, to: destination) {
+            case .success, .queued: return true
+            case .failed: return false
+        }
+    }
+
     public func pauseDownload(for item: BookMetadata, category: LocalMediaCategory) {
         Task {
             await DownloadManager.shared.pauseDownload(for: item.id, category: category)

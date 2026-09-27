@@ -577,6 +577,7 @@ public enum SyncReason: String, Sendable, Codable {
     // User-initiated events (general)
     case userClosedBook
     case userRestoredFromHistory
+    case userMovedFromRemovedBook
 
     // App lifecycle
     case appBackgrounding
@@ -722,6 +723,13 @@ public struct BookMetadata: Codable, Sendable, Identifiable, Hashable {
     public var alignedByStorytellerVersion: String? = nil
     public var alignedWith: String? = nil
     public var source: String? = nil
+    /// Set on a cached book when its source's library listing stopped including it (the server
+    /// deleted or merged it) while the book still had downloaded media on this device. The cache
+    /// keeps such a book so its local copy and reading position stay usable; it is cleared by the
+    /// source listing the book again. ISO 8601, recording when the absence was first seen.
+    public var removedFromSourceAt: String? = nil
+
+    public var isRemovedFromSource: Bool { removedFromSourceAt != nil }
 
     public var uuid: String { id.uuid }
     public var sourceID: BookSourceID { id.sourceID }
@@ -753,6 +761,7 @@ public struct BookMetadata: Codable, Sendable, Identifiable, Hashable {
         alignedByStorytellerVersion: String? = nil,
         alignedWith: String? = nil,
         source: String? = nil,
+        removedFromSourceAt: String? = nil,
     ) {
         self.id = bookID
         self.title = title
@@ -780,6 +789,7 @@ public struct BookMetadata: Codable, Sendable, Identifiable, Hashable {
         self.alignedByStorytellerVersion = alignedByStorytellerVersion
         self.alignedWith = alignedWith
         self.source = source
+        self.removedFromSourceAt = removedFromSourceAt
     }
 
     public var hasAudioNarration: Bool {

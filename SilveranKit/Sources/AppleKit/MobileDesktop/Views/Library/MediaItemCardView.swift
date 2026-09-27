@@ -472,6 +472,7 @@ struct MediaItemCardView: View {
                             }
                         }
                     }
+                    .modifier(SourceRemovedCoverStyle(isRemoved: item.isRemovedFromSource))
                     .overlay(alignment: .bottom) {
                         let progress = mediaViewModel.progress(for: item.id)
                         if progressStyle == .line && !shouldRenderDoubleCover {
@@ -488,7 +489,10 @@ struct MediaItemCardView: View {
                     // Badges attach to the cover (sized to the artwork), not the slot, so they
                     // track the visible cover even when it is letterboxed in a taller slot.
                     .overlay(alignment: .bottomLeading) {
-                        if let sourceLabel = sourceLabel {
+                        if item.isRemovedFromSource {
+                            SourceRemovedBadge()
+                                .padding(4)
+                        } else if let sourceLabel = sourceLabel {
                             SourceBadge(label: sourceLabel)
                                 .padding(4)
                         }
@@ -1196,6 +1200,34 @@ struct SourceBadge: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
             .background(Capsule().fill(Color.black.opacity(0.7)))
+    }
+}
+
+/// Marks a downloaded book its server no longer has. Takes the source badge's corner: both
+/// describe where the book comes from, and this state supersedes the source name.
+struct SourceRemovedBadge: View {
+    var size: CGFloat = 10
+
+    var body: some View {
+        Image(systemName: "icloud.slash.fill")
+            .font(.system(size: size, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Color.orange.opacity(0.9)))
+            .accessibilityLabel("No longer on your server")
+    }
+}
+
+/// Mutes the artwork of a book its server no longer has, so it stands apart while scanning the
+/// library without looking broken.
+struct SourceRemovedCoverStyle: ViewModifier {
+    let isRemoved: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .saturation(isRemoved ? 0.35 : 1)
+            .opacity(isRemoved ? 0.8 : 1)
     }
 }
 

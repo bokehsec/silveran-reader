@@ -221,6 +221,12 @@ struct MediaTableRowView: View {
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+                if item.isRemovedFromSource {
+                    Image(systemName: "icloud.slash.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("No longer on your server")
+                }
             }
 
             if let subtitle = item.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines),
