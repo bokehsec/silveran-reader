@@ -2,7 +2,7 @@
 
 ## Product direction
 
-Silveran's long-term direction is Kindle Scribe-class EPUB annotation, Storyteller synchronization of books and reading state, iCloud sync of annotations and settings between the person's own devices (never to the book server), and automatic, recoverable iCloud backup of annotations and configuration. [The feasibility and architecture review](docs/ANNOTATION_SYNC_BACKUP_REVIEW.md) records the current gaps, proposed boundaries, and staged acceptance criteria. [AGENTS.md](AGENTS.md) makes the engineering and data-integrity requirements mandatory.
+Silveran's long-term direction is Kindle Scribe-class EPUB annotation, synchronization of books and reading state with Storyteller and, later, other book servers (see [Book sources](#book-sources)), iCloud sync of annotations and settings between the person's own devices (never to the book server), and automatic, recoverable iCloud backup of annotations and configuration. [The feasibility and architecture review](docs/ANNOTATION_SYNC_BACKUP_REVIEW.md) records the current gaps, proposed boundaries, and staged acceptance criteria. [AGENTS.md](AGENTS.md) makes the engineering and data-integrity requirements mandatory.
 
 The existing portable-core architecture remains the foundation. Annotation data and recovery policy belong in Kit; platform input and cloud transports are adapters; Foliate and the JavaScript bridge handle layout and rendering. Local persistence, synchronization, and historical backup have distinct responsibilities. The current per-book JSON stores remain authoritative until verified migration; iCloud preference synchronization does not implement complete backup/restore. [ADR 003](docs/decisions/003-transactional-annotation-repository.md) selects the portable SQLite repository, implemented behind an inactive domain API, and [ADR 004](docs/decisions/004-edition-anchors-and-creative-conflicts.md) defines edition/anchor/conflict contracts. [ADR 005](docs/decisions/005-annotation-snapshots-and-transactional-restore.md) adds consistent logical annotation snapshots and transactional restore with retained checkpoints and quarantined delivery. [ADR 006](docs/decisions/006-legacy-annotation-capture-and-staging.md) commits exact legacy originals before restartable, verified staging. [ADR 008](docs/decisions/008-portable-ink-model-and-native-drawing.md) keeps the portable stroke model as the editable original. [ADR 009](docs/decisions/009-backup-archive-and-icloud-transport.md) defines the `.silveranbackup` archive, owner-by-owner restore and the private CloudKit transport; both the local archive/restore and automatic iCloud backup are implemented (iCloud backup is switched on per build once its container is provisioned). Reader cutover to the SQLite repository remains separately gated work.
 
@@ -34,6 +34,22 @@ Important areas:
 - [`Facades`](https://github.com/kyonifer/silveran-reader/tree/main/SilveranKit/Sources/Kit/Facades), described below.
 - [`Annotations`](SilveranKit/Sources/Kit/Annotations) for the transactional annotation repository, anchors/editions, snapshots and legacy staging (not yet the reader's write path).
 - [`Backup`](SilveranKit/Sources/Kit/Backup) for the portable archive format, the `BackupParticipant` contract each storage owner implements, `BackupService` (capture, preview, journaled restore, safety copies) and `CloudBackupCoordinator` (scheduling, retention and account isolation over a `CloudBackupTransport`).
+
+## Book sources
+
+A book source is where a library entry comes from. Two kinds exist today, `storyteller` and `localFolder` ([`BookSourceModels`](SilveranKit/Sources/Kit/Models/BookSourceModels.swift)). Each is an actor conforming to `BookSourceActor`, owned by [`BookServiceActor`](SilveranKit/Sources/Kit/Actors/BookServiceActor.swift), and declares what it supports through `BookSourceCapabilities`. Every book is identified by `BookID`, its source ID plus the source's own book ID.
+
+Silveran will add further server backends, such as Audiobookshelf and Grimmory; OPDS is a candidate for catalog browsing and download across many servers (product decision, 2026-09-30, not yet scheduled). Each new backend is another `BookSourceKind` with its own adapter actor, capability set, credential handling, backup policy for its source descriptor, and compatibility matrix like [STORYTELLER_COMPATIBILITY.md](docs/STORYTELLER_COMPATIBILITY.md). Features a backend lacks are hidden or shown as unsupported through capabilities, never faked. Readaloud (synced EPUB media overlays) is Storyteller-specific; other backends supply ordinary ebooks and audiobooks.
+
+The layers above sources are already backend-neutral and must stay that way: annotations and editions ([ADR 004](docs/decisions/004-edition-anchors-and-creative-conflicts.md)), backup ([ADR 009](docs/decisions/009-backup-archive-and-icloud-transport.md)) and iCloud annotation sync ([ADR 010](docs/decisions/010-live-icloud-annotation-sync.md)) key on `BookID` and edition fingerprints, not on a server. The same work held on two servers is two library entries; carrying annotations between them needs the user-confirmed cross-source edition mapping ADR 004 requires, and the product experience for that is undecided.
+
+Known Storyteller coupling to retire before the first new backend, and not to extend:
+
+- `BookServiceActor` casts to `StorytellerActor` for permission checks, refresh and uploads instead of using the source contract.
+- App views and `MediaViewModel` branch on `kind == .storyteller`; server settings live in the Storyteller-only `StorytellerServerSettingsView`.
+- Shared types carry Storyteller names (`StorytellerUploadAsset`), and `BookStatus`, `BookLocator` and `BookMetadata` mirror Storyteller's shapes. `BookLocator` is Readium-locator shaped, so another server's position format needs a documented translation.
+
+Adding a backend is a storage/identity-adjacent change that needs an ADR covering the adapter boundary, capability additions, position translation, credentials and source-descriptor backup.
 
 ## Dependency Injection
 

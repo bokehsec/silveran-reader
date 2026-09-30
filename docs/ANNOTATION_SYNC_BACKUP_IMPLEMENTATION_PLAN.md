@@ -150,7 +150,7 @@ Deliver in small reviewable changes:
 - **P6.2 Existing sync hardening.** Audit queue durability, restart/retry, permissions, stale responses, missing books and source/account isolation. Keep private user state distinct from shared catalog changes. Preserve distinct domain conflict rules rather than generalizing every queue into timestamp-only last-writer-wins.
 - **P6.3 Reading-state conflicts and restore.** Test simultaneous position updates from several devices, out-of-order responses, duplicate events, account switch and a backup restore on a device whose server state has moved on. Restore never replays old position, status or book-edit uploads (ADR 009). Show unsupported, unauthorized and temporarily unavailable as different user states.
 
-**Components:** `StorytellerActor`, `ProgressSyncActor`, `ProgressUploadManager`, `BookEditSyncActor` and source capabilities. No annotation data is sent to the server or hidden in server metadata fields.
+**Components:** `StorytellerActor`, `ProgressSyncActor`, `ProgressUploadManager`, `BookEditSyncActor` and source capabilities. No annotation data is sent to the server or hidden in server metadata fields. Because other book servers will follow (Phase 7), put new or hardened sync behavior behind the `BookSourceActor` contract and capabilities rather than Storyteller-specific branches in shared code, and keep the contract harness reusable for another backend ([Book sources](../ARCHITECTURE.md#book-sources)).
 
 **Exit gate:** existing supported operations pass against the declared server matrix ([STORYTELLER_COMPATIBILITY.md](STORYTELLER_COMPATIBILITY.md)) with failure and concurrency tests; the server dependency never blocks the backup or EPUB releases.
 
@@ -165,6 +165,7 @@ Deliver as separately scoped features using the established data and backup cont
 | Handwriting recognition/search | Correctable derived text linked to immutable/editable originals; measured language/accuracy coverage and reindexing behavior |
 | Optional AI assistance | Explicit privacy/data-flow policy, user control, provenance and original preservation; local annotation remains independent |
 | Android/Linux and additional Apple surfaces | Appropriate input/rendering/storage adapters, portable archive round trips and honest cloud/platform capabilities |
+| Additional book servers (e.g. Audiobookshelf, Grimmory; OPDS for browse/download) | First retire the Storyteller coupling listed in [Book sources](../ARCHITECTURE.md#book-sources) and generalize adding a server; then per backend: an ADR, adapter actor, capability set, reading-position translation with documented precision loss, credentials, source-descriptor backup policy and a compatibility matrix against representative server versions. Annotations stay off every server. Decide the product experience for linking the same work across two servers before carrying annotations between them |
 
 **Exit gate:** each workstream has its own updated parity matrix, migration/backup tests, device acceptance and performance criteria. No blanket “all platforms” or “full parity” claim from completion of one workstream.
 
@@ -341,6 +342,10 @@ The product owner confirmed that annotations are never synchronized with Storyte
 ### 2026-09-30 — Annotations must sync between devices (Phase 4S)
 
 The product owner decided annotations must sync, together with settings, between their own devices through iCloud: latest change wins with the older version kept in recovery, handwritten strokes combined, changes within about a minute. [ADR 010](decisions/010-live-icloud-annotation-sync.md) records the design: a sync layer beside the existing protected owners (no reader cutover), `CKSyncEngine` transport. Server annotation sync remains out of scope.
+
+### 2026-09-30 — Direction: additional book servers
+
+The product owner decided Silveran will eventually support book servers besides Storyteller, such as Audiobookshelf and Grimmory, for adding and syncing books and reading state. It is not scheduled. Recorded as a Phase 7 workstream; AGENTS.md now requires backend-neutral source-layer changes, ARCHITECTURE.md gained a [Book sources](../ARCHITECTURE.md#book-sources) section listing the Storyteller coupling to retire, and Phase 6 must not deepen that coupling. Rough sizing from an analysis the same day: generalizing the source layer is about 2–4 weeks, and each backend 3–5 weeks for reading and position sync plus 2–4 more for full parity. Estimate again when the work is scheduled.
 
 ### 2026-09-30 — Phase 4S implemented (device sync of annotations)
 
