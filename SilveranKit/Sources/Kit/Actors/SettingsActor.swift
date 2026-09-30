@@ -1095,6 +1095,7 @@ public actor SettingsActor {
             let previous = config
             try Self.ensureStorageDirectory(for: storageURL, using: fileManager)
             try writeFile(bytes, storageURL)
+            LocalDataChangeSignal.post()
             config = updated
             loadResult = ConfigurationLoadResult(
                 state: .valid,

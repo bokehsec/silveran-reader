@@ -38,7 +38,7 @@ targets:
       base:
         MACOSX_DEPLOYMENT_TARGET: 15.0
         ENABLE_HARDENED_RUNTIME: YES
-        CODE_SIGN_ENTITLEMENTS: XCodeApps/SilveranReaderMac.entitlements
+        CODE_SIGN_ENTITLEMENTS: "$(SILVERAN_MAC_ENTITLEMENTS)"
         INFOPLIST_FILE: XCodeApps/Info-macOS.plist
         PRODUCT_BUNDLE_IDENTIFIER: "$(APP_BUNDLE_ID)"
         #INFOPLIST_KEY_CFBundleDisplayName: Silveran Reader
@@ -58,6 +58,16 @@ targets:
         KEYCHAIN_SERVICE: "$(KEYCHAIN_SERVICE)"
         SILVERAN_WIDGET_APP_GROUP: "$(MAC_APP_GROUP_ID)"
         LSApplicationCategoryType: "public.app-category.books"
+        SilveranCloudBackupContainer: "$(SILVERAN_CLOUD_BACKUP_CONTAINER)"
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: "$(APP_BUNDLE_ID).backup"
+            UTTypeDescription: "Silveran Backup"
+            UTTypeConformsTo:
+              - public.zip-archive
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - silveranbackup
         NSLocalNetworkUsageDescription: "Silveran Reader needs local network access to connect to your Storyteller server."
         ITSAppUsesNonExemptEncryption: false
         ATSApplicationFontsPath: "fonts"
@@ -90,7 +100,7 @@ targets:
     settings:
       base:
         IPHONEOS_DEPLOYMENT_TARGET: 18.0
-        CODE_SIGN_ENTITLEMENTS: XCodeApps/SilveranReaderIos.entitlements
+        CODE_SIGN_ENTITLEMENTS: "$(SILVERAN_IOS_ENTITLEMENTS)"
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_FILE: XCodeApps/Info-iOS.plist
         PRODUCT_BUNDLE_IDENTIFIER: "$(APP_BUNDLE_ID)"
@@ -113,6 +123,16 @@ targets:
         KEYCHAIN_SERVICE: "$(KEYCHAIN_SERVICE)"
         SILVERAN_WIDGET_APP_GROUP: "$(APP_GROUP_ID)"
         LSApplicationCategoryType: "public.app-category.books"
+        SilveranCloudBackupContainer: "$(SILVERAN_CLOUD_BACKUP_CONTAINER)"
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: "$(APP_BUNDLE_ID).backup"
+            UTTypeDescription: "Silveran Backup"
+            UTTypeConformsTo:
+              - public.zip-archive
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - silveranbackup
         NSLocalNetworkUsageDescription: "Silveran Reader needs local network access to connect to your Storyteller server."
         CFBundleURLTypes:
           - CFBundleURLName: "$(APP_BUNDLE_ID)"

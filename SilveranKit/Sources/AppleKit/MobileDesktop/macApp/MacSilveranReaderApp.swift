@@ -28,6 +28,7 @@ struct SilveranReaderApp: App {
         Task {
             guard await SilveranRuntime.start() else { return }
             await AppleConfigurationSyncCoordinator.shared.start()
+            await AppBackup.start()
 
             do {
                 let webResourcesURL = try KitResources.webResourcesDirectory()
@@ -78,6 +79,7 @@ struct SilveranReaderApp: App {
                     guard await SilveranRuntime.start() else { return }
                     await AppleConfigurationSyncCoordinator.shared.foreground()
                     await BookServiceActor.shared.setActive(true, source: .mac)
+                    await AppBackup.opportunity()
                 }
             case .inactive:
                 break

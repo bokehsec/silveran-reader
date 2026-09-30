@@ -11,3 +11,12 @@ KEYCHAIN_ACCESS_GROUP = $(AppIdentifierPrefix)$(KEYCHAIN_GROUP_SUFFIX)
 
 // One signed KVS namespace shared by the macOS and iOS apps.
 ICLOUD_KVS_IDENTIFIER = $(TeamIdentifierPrefix)$(APP_BUNDLE_ID)
+
+// Automatic iCloud backup (docs/decisions/009-backup-archive-and-icloud-transport.md).
+// Off by default: the app offers backup files only. To turn it on, create the CloudKit
+// container for your App ID in the Apple Developer portal, then override these three in
+// Local.xcconfig (see Local.example.xcconfig). Never set the container without the matching
+// entitlements: CloudKit refuses containers the app isn't entitled to.
+SILVERAN_CLOUD_BACKUP_CONTAINER =
+SILVERAN_IOS_ENTITLEMENTS = XCodeApps/SilveranReaderIos.entitlements
+SILVERAN_MAC_ENTITLEMENTS = XCodeApps/SilveranReaderMac.entitlements

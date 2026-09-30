@@ -141,6 +141,7 @@ public actor CustomFontsActor {
     }
 
     public func refreshFonts() async {
+        LocalDataChangeSignal.post()
         cachedFamilies = scanForFontFamilies()
         cachedFontFaceCSS = generateFontFaceCSS()
 

@@ -451,6 +451,7 @@ public actor FilesystemActor {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(sources)
         try write(data: data, to: sourcesURL)
+        LocalDataChangeSignal.post()
     }
 
     public func loadBookSources() async throws -> [BookSourceRecord]? {
@@ -831,12 +832,14 @@ public actor FilesystemActor {
         _ = try HighlightsCodec.decode(data, bookID: bookID)
         try ensureDirectoryExists(at: fileURL.deletingLastPathComponent())
         try writeHighlights(data, fileURL)
+        LocalDataChangeSignal.post()
     }
 
     public func deleteHighlights(bookID: BookID) throws {
         // Deletion must not bypass a failed read or unsupported payload either.
         guard try loadHighlights(bookID: bookID) != nil else { return }
         try removeHighlights(highlightsFileURL(bookID: bookID))
+        LocalDataChangeSignal.post()
     }
 
     public func highlightBookIDs() -> [BookID] {
@@ -1369,6 +1372,7 @@ public actor FilesystemActor {
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(shelves)
         try data.write(to: url, options: .atomic)
+        LocalDataChangeSignal.post()
     }
 
     /// The saved shelf file exactly as stored (current or legacy name), for backup.

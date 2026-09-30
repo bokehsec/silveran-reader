@@ -9,3 +9,9 @@ KEYCHAIN_SERVICE = com.example.silveran.storyteller
 // Optional: override to isolate test preference data. Enable iCloud Key-value
 // storage for your App ID and use a store allowed by its provisioning profile.
 // ICLOUD_KVS_IDENTIFIER = $(TeamIdentifierPrefix)$(APP_BUNDLE_ID)
+
+// Optional: automatic iCloud backup. Create the container "iCloud.<your bundle ID>" with
+// CloudKit enabled for your App ID first, then uncomment all three lines.
+// SILVERAN_CLOUD_BACKUP_CONTAINER = iCloud.$(APP_BUNDLE_ID)
+// SILVERAN_IOS_ENTITLEMENTS = XCodeApps/SilveranReaderIosCloudBackup.entitlements
+// SILVERAN_MAC_ENTITLEMENTS = XCodeApps/SilveranReaderMacCloudBackup.entitlements

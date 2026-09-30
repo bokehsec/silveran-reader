@@ -128,6 +128,7 @@ public actor InkActor {
                     )
                 }
             }
+            LocalDataChangeSignal.post()
             return .success(())
         } catch {
             debugLog("[InkActor] Local ink commit failed: \(error)")
@@ -213,6 +214,7 @@ public actor InkActor {
                     withIntermediateDirectories: true
                 )
                 try writeFile(data, url)
+                LocalDataChangeSignal.post()
             } catch {
                 debugLog("[InkActor] Restoring ink failed: \(error)")
                 return BackupRecordMerge(.localNeedsRecovery)

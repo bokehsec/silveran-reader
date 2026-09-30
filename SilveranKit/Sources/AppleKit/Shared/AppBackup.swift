@@ -63,6 +63,64 @@ enum AppBackup {
         )
     }()
 
+    /// The iCloud container for automatic backup, from the build's Info.plist. Empty or
+    /// missing means this build was not provisioned for iCloud backup (ADR 009): never create a
+    /// CloudKit container without the matching entitlement.
+    static let cloudContainerIdentifier: String? = {
+        let value =
+            Bundle.main.object(forInfoDictionaryKey: "SilveranCloudBackupContainer")
+            as? String
+        guard let value, value.hasPrefix("iCloud."), !value.contains("$(") else { return nil }
+        return value
+    }()
+
+    static let cloud: CloudBackupCoordinator? = cloudContainerIdentifier.map {
+        CloudBackupCoordinator(
+            transport: CloudKitBackupTransport(containerIdentifier: $0),
+            service: service,
+            stateURL: stateDirectory.appendingPathComponent("cloud-state.json"),
+            deviceID: deviceID
+        )
+    }
+
+    private static var observers: [NSObjectProtocol] = []
+    private static var debounce: Task<Void, Never>?
+    /// Quiet period after the last change before an automatic backup starts.
+    static let debounceInterval: Duration = .seconds(120)
+
+    /// Registers change observers once and takes the launch opportunity.
+    static func start() async {
+        guard let cloud, observers.isEmpty else { return }
+        let center = NotificationCenter.default
+        for name in [LocalDataChangeSignal.name, UserDefaults.didChangeNotification] {
+            observers.append(
+                center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                    Task { @MainActor in noteChange() }
+                }
+            )
+        }
+        await opportunity()
+    }
+
+    /// Records that something changed and schedules a backup after a quiet period.
+    static func noteChange() {
+        guard let cloud else { return }
+        Task { await cloud.noteLocalChange() }
+        debounce?.cancel()
+        debounce = Task {
+            do { try await Task.sleep(for: debounceInterval) } catch { return }
+            await opportunity()
+        }
+    }
+
+    /// Launch, foreground, background and after-change opportunities. Never required for
+    /// correctness: pending work persists and is retried at the next opportunity.
+    @discardableResult
+    static func opportunity(force: Bool = false) async -> Bool {
+        guard let cloud else { return false }
+        return await cloud.runIfDue(force: force)
+    }
+
     /// A dated file name such as `Silveran Backup 2026-09-30 1405.silveranbackup`.
     static func suggestedFileName(for date: Date = Date()) -> String {
         let formatter = DateFormatter()

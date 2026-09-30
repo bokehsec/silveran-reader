@@ -129,6 +129,7 @@ struct SilveranReaderApp: App {
             let started = CFAbsoluteTimeGetCurrent()
             guard await SilveranRuntime.start() else { return false }
             await AppleConfigurationSyncCoordinator.shared.start()
+            await AppBackup.start()
             await vm.start()
             await AppleWatchActor.shared.activate()
             await ProgressUploadManager.shared.setBackstopScheduler {
@@ -237,6 +238,8 @@ struct SilveranReaderApp: App {
             try? await Task.sleep(for: .seconds(2))
             await ProgressUploadManager.shared.enqueuePendingUploads()
             await SilveranAppDelegate.scheduleProgressSyncRefreshIfNeeded()
+            // Best effort within the background allowance; an unfinished upload stays pending.
+            await AppBackup.opportunity()
 
             if backgroundTask != .invalid {
                 UIApplication.shared.endBackgroundTask(backgroundTask)
@@ -251,6 +254,7 @@ struct SilveranReaderApp: App {
             guard await SilveranRuntime.start() else { return }
             await AppleConfigurationSyncCoordinator.shared.foreground()
             await BookServiceActor.shared.setActive(true, source: .app)
+            await AppBackup.opportunity()
         }
     }
 }

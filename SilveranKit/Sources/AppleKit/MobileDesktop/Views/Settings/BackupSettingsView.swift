@@ -65,6 +65,9 @@ struct BackupSettingsView: View {
     @State private var reconnections: [SourceReconnection] = []
     @State private var reconnecting: SourceReconnection?
     @State private var safetyArchives: [URL] = []
+    @State private var cloudEnabled = false
+    @State private var cloudStatus: CloudBackupStatus = .off
+    @State private var cloudPoints: [CloudBackupGeneration]?
 
     struct RestorePreview: Identifiable {
         let id = UUID()
@@ -104,6 +107,19 @@ struct BackupSettingsView: View {
                     cancel: { self.preview = nil }
                 )
             }
+            .sheet(
+                isPresented: Binding(
+                    get: { cloudPoints != nil },
+                    set: { if !$0 { cloudPoints = nil } }
+                )
+            ) {
+                CloudRecoveryPointsSheet(points: cloudPoints ?? []) { point in
+                    cloudPoints = nil
+                    Task { await openCloud(point) }
+                } cancel: {
+                    cloudPoints = nil
+                }
+            }
             .sheet(item: $finished) { report in
                 RestoreResultSheet(report: report) { finished = nil }
             }
@@ -138,6 +154,8 @@ struct BackupSettingsView: View {
     }
 
     @ViewBuilder private var sections: some View {
+        cloudSection
+
         Section {
             Text(
                 "A backup file holds your highlights, bookmarks, typed notes, handwriting, settings, themes, smart shelves and custom fonts. Books and audio aren't included; they reconnect when you add the same sources again. Passwords aren't included."
@@ -221,9 +239,141 @@ struct BackupSettingsView: View {
         }
     }
 
+    @ViewBuilder private var cloudSection: some View {
+        Section {
+            if AppBackup.cloud == nil {
+                Text(
+                    "Automatic iCloud backup isn't set up in this build yet. Backup files below work without iCloud."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            } else {
+                Toggle(
+                    "Back Up Automatically to iCloud",
+                    isOn: Binding(
+                        get: { cloudEnabled },
+                        set: { value in Task { await setCloudEnabled(value) } }
+                    )
+                )
+                Text(cloudStatusText)
+                    .font(.callout)
+                    .foregroundStyle(cloudNeedsAttention ? .orange : .secondary)
+                if cloudEnabled {
+                    if cloudAccountMismatch {
+                        Button("Back Up to This Apple Account") { Task { await adoptAccount() } }
+                    }
+                    Button("Back Up Now") { Task { await backUpNow() } }
+                        .disabled(busy != nil)
+                }
+                Button("Restore from iCloud…") { Task { await loadCloudPoints() } }
+                    .disabled(busy != nil || pending?.finished == false)
+            }
+        } header: {
+            #if os(iOS)
+            Text("iCloud Backup")
+            #else
+            Text("iCloud Backup").font(.headline)
+            #endif
+        } footer: {
+            if AppBackup.cloud != nil {
+                Text(
+                    "Backs up the same things as a backup file to your private iCloud storage, keeping earlier versions for three months. Only you can see them."
+                )
+            }
+        }
+    }
+
+    private var cloudStatusText: String {
+        switch cloudStatus {
+            case .off: return "Off"
+            case .upToDate(let date):
+                return "Backed up \(date.formatted(.relative(presentation: .named)))"
+            case .pending(let date):
+                if let date {
+                    return
+                        "Waiting to back up recent changes. Last backup \(date.formatted(.relative(presentation: .named)))."
+                }
+                return "Waiting for the first backup."
+            case .needsAttention(let message, let date):
+                if let date {
+                    return
+                        "\(message) Last backup \(date.formatted(.relative(presentation: .named)))."
+                }
+                return message
+        }
+    }
+
+    private var cloudNeedsAttention: Bool {
+        if case .needsAttention = cloudStatus { return true }
+        return false
+    }
+
+    private var cloudAccountMismatch: Bool {
+        if case .needsAttention(let message, _) = cloudStatus {
+            return message.contains("different Apple account")
+        }
+        return false
+    }
+
+    private func setCloudEnabled(_ value: Bool) async {
+        guard let cloud = AppBackup.cloud else { return }
+        do { try await cloud.setEnabled(value) } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refresh()
+        if value { await backUpNow() }
+    }
+
+    private func backUpNow() async {
+        busy = "Backing up to iCloud…"
+        await AppBackup.opportunity(force: true)
+        busy = nil
+        await refresh()
+    }
+
+    private func adoptAccount() async {
+        do { try await AppBackup.cloud?.adoptCurrentAccount() } catch {
+            errorMessage = error.localizedDescription
+        }
+        await backUpNow()
+    }
+
+    private func loadCloudPoints() async {
+        guard let cloud = AppBackup.cloud else { return }
+        busy = "Looking for iCloud backups…"
+        defer { busy = nil }
+        do {
+            let points = try await cloud.recoveryPoints()
+            if points.isEmpty {
+                errorMessage = "There are no backups in iCloud yet."
+            } else {
+                cloudPoints = points
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func openCloud(_ point: CloudBackupGeneration) async {
+        guard let cloud = AppBackup.cloud else { return }
+        busy = "Downloading backup…"
+        defer { busy = nil }
+        do {
+            let archive = try await cloud.download(point.id)
+            let report = try await AppBackup.service.preview(archive)
+            preview = RestorePreview(archive: archive, report: report, fromSafetyCopy: false)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     // MARK: Actions
 
     private func refresh() async {
+        if let cloud = AppBackup.cloud {
+            cloudEnabled = await cloud.currentState.enabled
+            cloudStatus = await cloud.status
+        }
         pending = try? await AppBackup.service.pendingRestore()
         reconnections = await AppBackup.reconnections.pending()
         safetyArchives = await AppBackup.service.safetyArchives()
@@ -328,7 +478,10 @@ private struct RestorePreviewSheet: View {
                             time: .shortened
                         )
                     )
-                    LabeledContent("On", value: deviceName(preview.archive.manifest.deviceClass))
+                    LabeledContent(
+                        "On",
+                        value: backupDeviceName(preview.archive.manifest.deviceClass)
+                    )
                     ForEach(BackupSummary.lines(preview.archive.manifest), id: \.self) { Text($0) }
                 }
                 if !preview.archive.manifest.isComplete {
@@ -370,14 +523,44 @@ private struct RestorePreviewSheet: View {
         .frame(minWidth: 460, minHeight: 420)
         #endif
     }
+}
 
-    private func deviceName(_ deviceClass: String) -> String {
-        switch deviceClass {
-            case "tablet": "iPad"
-            case "phone": "iPhone"
-            case "mac": "Mac"
-            default: deviceClass
+private struct CloudRecoveryPointsSheet: View {
+    let points: [CloudBackupGeneration]
+    let choose: (CloudBackupGeneration) -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            List(points) { point in
+                Button {
+                    choose(point)
+                } label: {
+                    VStack(alignment: .leading) {
+                        Text(point.createdAt.formatted(date: .abbreviated, time: .shortened))
+                        Text(backupDeviceName(point.deviceClass))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("iCloud Backups")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: cancel) }
+            }
         }
+        #if os(macOS)
+        .frame(minWidth: 360, minHeight: 360)
+        #endif
+    }
+}
+
+private func backupDeviceName(_ deviceClass: String) -> String {
+    switch deviceClass {
+        case "tablet": "iPad"
+        case "phone": "iPhone"
+        case "mac": "Mac"
+        default: deviceClass
     }
 }
 
