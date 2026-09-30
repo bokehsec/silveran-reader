@@ -47,6 +47,6 @@ Before cutover, one of these must be decided and tested:
 
 1. **Checkpointed history.** Allow a compaction that replaces a fully superseded ancestry with a single recorded "base" revision, carried in snapshots, when no delivery is queued for it. Needs a snapshot schema change and a rule for what remote replicas may still reference.
 2. **Coarser revisions.** Commit an annotation revision when an editing burst ends (pen lifted for N seconds, section left, app backgrounded) instead of per stroke, keeping per-stroke durability in the existing file or a short-lived journal.
-3. **Defer the repository** until a replicating provider exists (Storyteller annotation support or live iCloud sync, Phase 6/7). Until then the protected per-book files plus retained backups (Phases 1, 3, 4) meet the durability and recovery goals.
+3. **Defer the repository** until live annotation sync between the person's own devices is chosen (Phase 7, not committed). Annotations are never synchronized with a book server (product decision 2026-09-30), so that is the only possible replicator. Until then the protected per-book files plus retained backups (Phases 1, 3, 4) meet the durability and recovery goals.
 
-Current recommendation: option 3 now, then option 2 combined with a bounded form of option 1 when a provider is scheduled. Backup does not depend on cutover (ADR 009). Intent rows must also gain an owner that clears them after a completed backup generation.
+Current recommendation: option 3 now, then option 2 combined with a bounded form of option 1 if live iCloud annotation sync is scheduled. Backup does not depend on cutover (ADR 009). Intent rows must also gain an owner that clears them after a completed backup generation.

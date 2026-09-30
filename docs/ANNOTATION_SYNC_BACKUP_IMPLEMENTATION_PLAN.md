@@ -1,6 +1,8 @@
-# Phased implementation plan: annotations, Storyteller and iCloud backup
+# Phased implementation plan: annotations, iCloud backup and Storyteller book sync
 
 Date: 2026-09-30. Status: Phases 1, 3 and 4 are implemented in code and awaiting device/signed-account acceptance; Phase 2 foundations exist but the reader has not been cut over; Phases 5–7 not started. No exit gate is marked passed until its device evidence exists. See the status summary and progress record below.
+
+**Scope decision (product owner, 2026-09-30):** annotations are a client-side capability. They are stored on the device and protected by iCloud backup; they are **not** synchronized with Storyteller or any other book server, even if a server later adds annotation support. Server synchronization covers books, reading position, reading status, ratings, metadata and collections only.
 
 This plan implements the direction in [the architecture review](ANNOTATION_SYNC_BACKUP_REVIEW.md) and follows [AGENTS.md](../AGENTS.md), [ARCHITECTURE.md](../ARCHITECTURE.md) and [CONTRIBUTING.md](../CONTRIBUTING.md). It owns sequencing and release gates. The review owns supporting findings and rationale; the earlier [Pencil plan](PENCIL_INK_IMPLEMENTATION_PLAN.md) and [configuration plan](ICLOUD_CONFIGURATION_IMPLEMENTATION_PLAN.md) retain their implementation history. Their narrower MVP exclusions do not limit the long-term scope.
 
@@ -18,7 +20,7 @@ Initial delivery targets iPad/Pencil authoring and Mac/iPhone annotation viewing
 | 3 | Complete portable annotation/configuration archive and safe local restore | Phase 2 | Local recovery release |
 | 4 | Automatic retained iCloud backups with tested restoration | Phase 3 | Cloud protection release |
 | 5 | Complete reflowable EPUB annotation experience | Phase 2; Phase 4 for broad authoring rollout | EPUB annotation release |
-| 6 | Verified Storyteller interoperability and supported annotation sync | Phase 0 baseline; Phase 2 for annotation replication | Interoperability release |
+| 6 | Verified Storyteller sync of books, reading position, status, ratings and metadata (no annotations) | Phase 0 baseline | Interoperability release |
 | 7 | Broader Scribe parity and additional platform capabilities | Relevant earlier foundations | Separate feature releases |
 
 Phase numbers express dependencies, not a requirement to finish every earlier phase before starting any later work. Phase 1 safety fixes can begin while Phase 0 decisions are being documented. UX prototypes and Storyteller contract tests can start early; Phase 5 implementation and Phase 6 existing-feature hardening can proceed after their own dependencies. Phase 4 must not wait for upstream annotation support.
@@ -30,9 +32,7 @@ flowchart LR
     P2 --> P3[3 Local archive and restore]
     P3 --> P4[4 Automatic iCloud backup]
     P2 --> P5[5 EPUB annotation UX]
-    P0 --> P6[6 Storyteller contract work]
-    P2 --> P6A[6 Supported annotation adapter]
-    P6 --> P6A
+    P0 --> P6[6 Storyteller book and reading-state sync]
     P4 --> R[Protected EPUB release]
     P5 --> R
     R --> P7[7 Broader parity]
@@ -130,18 +130,17 @@ Deliver in small reviewable changes:
 
 **Release boundary:** publish the tested reflowable EPUB parity matrix. Do not describe unfinished fixed-layout, notebook or AI features as included in “full Scribe parity.”
 
-## Phase 6 — Storyteller interoperability
+## Phase 6 — Storyteller sync of books and reading state
 
-**Purpose:** complete supported server integration without making unsupported capabilities a dependency for local reading or backup.
+**Purpose:** make the existing server sync of books, reading position, reading status, ratings, metadata and collections verified and robust. Annotations are out of scope for server sync (scope decision above); they never depend on the server.
 
 - **P6.1 Compatibility matrix and contract harness.** Identify representative deployed server versions and roles. Verify current authentication, progress, status, metadata, ratings and collections contracts using supported interfaces and sanitized fixtures. Do not assume that public documentation or the prior review's upstream snapshot establishes the deployed version's capabilities.
 - **P6.2 Existing sync hardening.** Audit queue durability, restart/retry, permissions, stale responses, missing books and source/account isolation. Keep private user state distinct from shared catalog changes. Preserve distinct domain conflict rules rather than generalizing every queue into timestamp-only last-writer-wins.
-- **P6.3 Annotation adapter, conditional on support.** Only implement a provider after verifying create/read/update/delete, identity, pagination and conflict semantics. Map provider IDs/revisions separately, retain unsupported fields locally, and suppress echo uploads. If the provider lacks idempotency keys, implement a documented reconciliation strategy within what its API can guarantee; do not claim exactly-once remote writes.
-- **P6.4 Conflicts and restore.** Test simultaneous edits, delete-versus-edit, out-of-order responses, duplicate events, schema mismatch, account switch and restored older data. Preserve creative revisions where lossless merge is unavailable. Show unsupported, unauthorized and temporarily unavailable as different user states.
+- **P6.3 Reading-state conflicts and restore.** Test simultaneous position updates from several devices, out-of-order responses, duplicate events, account switch and a backup restore on a device whose server state has moved on. Restore never replays old position, status or book-edit uploads (ADR 009). Show unsupported, unauthorized and temporarily unavailable as different user states.
 
-**Components:** `StorytellerActor`, `ProgressSyncActor`, `BookEditSyncActor`, source capabilities and proposed annotation-provider adapter through the shared repository. No network calls in annotation views and no annotation payloads hidden in unrelated metadata fields.
+**Components:** `StorytellerActor`, `ProgressSyncActor`, `ProgressUploadManager`, `BookEditSyncActor` and source capabilities. No annotation data is sent to the server or hidden in server metadata fields.
 
-**Exit gate:** existing supported operations pass against the declared server matrix; any annotation operation advertised as synchronized survives a verified round trip and failure/concurrency tests. If annotation support is unavailable, ship the verified subset with accurate capability UI and keep the adapter deferred. That external dependency does not block the backup or EPUB releases.
+**Exit gate:** existing supported operations pass against the declared server matrix ([STORYTELLER_COMPATIBILITY.md](STORYTELLER_COMPATIBILITY.md)) with failure and concurrency tests; the server dependency never blocks the backup or EPUB releases.
 
 ## Phase 7 — Broader parity and platform expansion
 
@@ -154,7 +153,7 @@ Deliver as separately scoped features using the established data and backup cont
 | Handwriting recognition/search | Correctable derived text linked to immutable/editable originals; measured language/accuracy coverage and reindexing behavior |
 | Optional AI assistance | Explicit privacy/data-flow policy, user control, provenance and original preservation; local annotation remains independent |
 | Android/Linux and additional Apple surfaces | Appropriate input/rendering/storage adapters, portable archive round trips and honest cloud/platform capabilities |
-| Optional live iCloud annotation sync | Separate ADR and release; reuse domain revisions/provider mapping, account isolation and conflict-safe undo; retain historical backup independently |
+| Optional live iCloud annotation sync between the person's own devices | **Not committed; product decision pending.** iCloud backup (Phase 4) is the committed annotation cloud capability. If chosen: separate ADR and release; resolve the Phase 2 revision-growth blocker first; account isolation and conflict-safe undo; retain historical backup independently |
 
 **Exit gate:** each workstream has its own updated parity matrix, migration/backup tests, device acceptance and performance criteria. No blanket “all platforms” or “full parity” claim from completion of one workstream.
 
@@ -194,7 +193,7 @@ This change creates the plan and links it from the project guidance/review. No i
 | 3 Local archive | Done: `.silveranbackup` export/import, preview, journaled resumable restore, safety copies, source reconnection | Checks 14–21 |
 | 4 iCloud backup | Done behind a build switch: CloudKit transport, scheduling, retention, account isolation, UI | Provision container; checks 22–30 on signed builds; small opt-in rollout |
 | 5 EPUB UX | P5.1 started: library-wide Annotations browser (search, filters, books not in the library, damaged-file notice, "Show in Book"), P5.5 Markdown and web-page (handwriting as SVG) export | Manual reattachment/orphan repair, margin notes (P5.2), lasso/move/resize tools (P5.3), device input/accessibility (P5.4), PDF export |
-| 6 Storyteller | P6.1 started: [compatibility matrix](STORYTELLER_COMPATIBILITY.md) — beta.41 has no annotation API, so P6.3 is deferred; known progress/status quirks already handled | Contract test harness from sanitized fixtures; re-probe on each server upgrade |
+| 6 Storyteller (books and reading state only) | P6.1 started: [compatibility matrix](STORYTELLER_COMPATIBILITY.md); known progress/status quirks already handled | Contract test harness from sanitized fixtures; multi-device position conflict tests; re-probe on each server upgrade |
 | 7 Broader parity | Not started | Separate scoping |
 
 Scope notes for the implemented phases: reading positions, status and ratings for local-folder books are stored in `library_metadata.json` inside the book folder itself, so they travel with the books (outside the notes + settings scope); server positions return from the server. The "last opened book" route is not restored. Background backup runs in the existing background-task window and the iOS background refresh task, which is also scheduled while a backup is pending.
@@ -322,3 +321,7 @@ Follow-up: web-page export draws handwriting as inline SVG with its original col
 - iPad simulator (unsigned build, product owner's test library): verified Settings > Backup & Restore (iCloud "not set up in this build" state, export to Files with a dated `.silveranbackup` name) and the Annotations browser (empty state, synthetic annotations, case-insensitive search, no-results state, books not in the library, Show in Book). The exported archive validated (all hashes) and contained no passwords, tokens or account names. Found and fixed: Show in Book opened the first page when the annotation's chapter is missing (now the saved position); books ordered by internal ID (now by title); thumbnails not centred. Synthetic data and the test export were removed afterwards; the server reading position was checked before and after and was unchanged.
 - Unsigned simulator builds can't read the keychain, so the source reconnection hint (server address/username) and server sync can't be verified there; this stays on the signed-device checklist.
 - Storyteller beta.41 (read-only, product owner's session): no annotation routes or capability; recorded in [STORYTELLER_COMPATIBILITY.md](STORYTELLER_COMPATIBILITY.md).
+
+### 2026-09-30 — Scope decision: annotations are client-side only
+
+The product owner confirmed that annotations are never synchronized with Storyteller or another book server; they stay on the device and are protected by iCloud backup. Server sync covers books, reading position, status, ratings, metadata and collections. The plan's Phase 6, AGENTS.md, ARCHITECTURE.md, ADR 003 and the Storyteller compatibility matrix were updated; the Storyteller annotation adapter and its conflict work were removed. Live iCloud annotation sync between the person's own devices (Phase 7) is not committed and awaits a product decision. Oddities seen during the work are now tracked in [OBSERVED_ODDITIES.md](OBSERVED_ODDITIES.md).
