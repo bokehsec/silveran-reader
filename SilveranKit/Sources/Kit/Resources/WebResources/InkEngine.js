@@ -4,6 +4,7 @@ import { MarkLayer } from "./InkMarks.js";
 import { installInkAwareCFI, rangeFromCFI } from "./InkFilters.js";
 import { ensureInkStyle, placeNotes, clearNotes } from "./InkLayout.js";
 import { proposeStroke, hitTestNotes, visibleWidth } from "./InkGeometry.js";
+import { selectInLasso } from "./InkSelection.js";
 
 /**
  * InkEngine - the page's half of Apple Pencil ink (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.1).
@@ -183,6 +184,15 @@ export default class InkEngine {
     return { section: href, ...hitTestNotes({
       doc: contents.doc, notes: section?.notes ?? [], points, radius, markLayer: this.#markLayers.get(contents.doc) ?? null,
     }) };
+  }
+
+  /** The strokes a lasso path encloses on the current page; see InkSelection.selectInLasso. */
+  select(lasso) {
+    const contents = this.#currentContents();
+    if (!contents) return { section: null, selection: null };
+    const href = this.#href(contents.index);
+    const notes = this.#sections.get(href)?.notes ?? [];
+    return { section: href, selection: selectInLasso({ doc: contents.doc, notes, lasso }) };
   }
 
   /**

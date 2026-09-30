@@ -111,6 +111,88 @@ public struct InkHit: Codable, Sendable, Hashable {
     public var isEmpty: Bool { markIds.isEmpty && strokes.isEmpty }
 }
 
+/// A move and/or resize of strokes inside one note, in the note's own coordinates: points are
+/// scaled about (`originX`, `originY`), then moved by (`dx`, `dy`). Line widths and pressure are
+/// unchanged. `InkSelection.js` (`transformPoints`, `clampTransform`) does the same sums for the
+/// page's live preview; the two test suites share their numeric examples.
+public struct InkStrokeTransform: Codable, Sendable, Hashable {
+    public static let minScale = 0.25
+    public static let maxScale = 4.0
+
+    public var scale: Double
+    public var dx: Double
+    public var dy: Double
+    public var originX: Double
+    public var originY: Double
+
+    public init(
+        scale: Double = 1,
+        dx: Double = 0,
+        dy: Double = 0,
+        originX: Double = 0,
+        originY: Double = 0,
+    ) {
+        self.scale = scale
+        self.dx = dx
+        self.dy = dy
+        self.originX = originX
+        self.originY = originY
+    }
+
+    public var isFinite: Bool {
+        [scale, dx, dy, originX, originY].allSatisfy(\.isFinite)
+    }
+
+    public var isIdentity: Bool {
+        scale == 1 && dx == 0 && dy == 0
+    }
+
+    /// The transform limited so the strokes stay inside their note: scale within
+    /// `minScale...maxScale`, and the strokes' padded box (half a line width on each side) not
+    /// pushed further past the note's left or top edge (a note's height is measured down from 0).
+    /// Ink already past an edge is not pulled back by a move that never touched it. Nil if the
+    /// transform is not finite or the strokes have no points.
+    func clamped(keeping strokes: [InkStroke]) -> InkStrokeTransform? {
+        guard isFinite else { return nil }
+        var left = Double.infinity
+        var top = Double.infinity
+        for stroke in strokes {
+            let half = stroke.width / 2
+            for point in stroke.points where point.count >= 2 {
+                left = min(left, point[0] - half)
+                top = min(top, point[1] - half)
+            }
+        }
+        guard left.isFinite, top.isFinite else { return nil }
+        let s = min(Self.maxScale, max(Self.minScale, scale))
+        let scaledLeft = originX + s * (left - originX)
+        let scaledTop = originY + s * (top - originY)
+        return InkStrokeTransform(
+            scale: s,
+            dx: max(dx, min(0, -scaledLeft)),
+            dy: max(dy, min(0, -scaledTop)),
+            originX: originX,
+            originY: originY,
+        )
+    }
+
+    /// `points` ([x, y] or [x, y, pressure]) transformed, coordinates rounded to a tenth like
+    /// stored ink.
+    func apply(to points: [[Double]]) -> [[Double]] {
+        points.map { point in
+            guard point.count >= 2 else { return point }
+            var moved = point
+            moved[0] = Self.round1(originX + scale * (point[0] - originX) + dx)
+            moved[1] = Self.round1(originY + scale * (point[1] - originY) + dy)
+            return moved
+        }
+    }
+
+    private static func round1(_ value: Double) -> Double {
+        (value * 10).rounded() / 10
+    }
+}
+
 /// The word anchor the page worked out for a version 1 note (`nil` if its CFI no longer resolves).
 public struct InkMigratedAnchor: Codable, Sendable, Hashable {
     public var id: String
@@ -130,13 +212,19 @@ public enum InkOperation: Sendable, Equatable {
     case addMark(href: String, mark: InkMark)
     /// Removes strokes from notes (a note left with no strokes goes too) and whole marks.
     case erase(href: String, strokes: [InkStrokeRef], markIDs: [String], at: Date)
+    /// Moves and/or resizes strokes of one note (P5.3). The transform is limited to keep the
+    /// strokes inside the note (`InkStrokeTransform.clamped`); a move that changes no point does
+    /// nothing. Indexes that do not name a stroke are ignored.
+    case transformStrokes(
+        href: String, noteID: String, indexes: [Int], transform: InkStrokeTransform, at: Date)
     /// Replaces a section outright. Not undoable; used to migrate version 1 ink.
     case replaceSection(href: String, section: SectionInk)
 
     public var href: String {
         switch self {
             case .addNote(let href, _), .appendToNote(let href, _, _, _), .addMark(let href, _),
-                .erase(let href, _, _, _), .replaceSection(let href, _):
+                .erase(let href, _, _, _), .transformStrokes(let href, _, _, _, _),
+                .replaceSection(let href, _):
                 href
         }
     }
@@ -151,6 +239,7 @@ public enum InkOperation: Sendable, Equatable {
         switch self {
             case .addNote(_, let note): note.id
             case .appendToNote(_, let noteID, _, _): noteID
+            case .transformStrokes(_, let noteID, _, _, _): noteID
             case .addMark(_, let mark): mark.id
             case .erase, .replaceSection: nil
         }
@@ -199,6 +288,27 @@ public enum InkOperation: Sendable, Equatable {
                 let markCount = section.marks.count
                 section.marks.removeAll { markIDs.contains($0.id) }
                 return changed || section.marks.count != markCount
+
+            case .transformStrokes(_, let noteID, let indexes, let transform, let at):
+                guard let noteIndex = section.notes.firstIndex(where: { $0.id == noteID }) else {
+                    return false
+                }
+                let valid = Set(indexes).filter { section.notes[noteIndex].strokes.indices.contains($0) }
+                guard !valid.isEmpty,
+                    let applied = transform.clamped(
+                        keeping: valid.map { section.notes[noteIndex].strokes[$0] }
+                    )
+                else { return false }
+                var changed = false
+                for index in valid {
+                    let before = section.notes[noteIndex].strokes[index].points
+                    let after = applied.apply(to: before)
+                    guard after != before else { continue }
+                    section.notes[noteIndex].strokes[index].points = after
+                    changed = true
+                }
+                if changed { section.notes[noteIndex].updatedAt = at }
+                return changed
 
             case .replaceSection(_, let replacement):
                 guard replacement != section else { return false }

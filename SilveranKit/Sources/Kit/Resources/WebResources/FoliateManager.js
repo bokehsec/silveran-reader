@@ -1661,6 +1661,11 @@ class FoliateManager {
     return JSON.stringify(this.#inkEngine.hitTest(JSON.parse(pointsJSON), radius));
   }
 
+  /** The strokes a lasso path (viewport points) encloses on the current page, or null. */
+  inkSelect(lassoJSON) {
+    return JSON.stringify(this.#inkEngine.select(JSON.parse(lassoJSON)));
+  }
+
   /** The CFI of a note, to navigate to it (null when its section is not loaded or it is not placed). */
   inkLocate(href, id) {
     return JSON.stringify({ cfi: this.#inkEngine.locate(href, id) });
