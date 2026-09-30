@@ -186,7 +186,9 @@ struct MediaGridView: View {
     }
 
     private func saveColumnCustomization() {
-        guard let data = try? JSONEncoder().encode(columnCustomization) else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        guard let data = try? encoder.encode(columnCustomization) else { return }
         UserDefaults.standard.set(data, forKey: Self.columnCustomizationKey)
     }
 
@@ -797,6 +799,13 @@ struct MediaGridView: View {
         .onChange(of: cachedDisplayItems) { _, _ in
             updateTableSortedItems(forceResort: true)
             handleInitialSelectionIfNeeded()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .silveranConfigurationPreferencesApplied)
+        ) { _ in
+            columnCustomization = Self.loadColumnCustomization()
+            enabledCreatorRoles = Self.loadEnabledCreatorRoles()
+            columnResetToken += 1
         }
         .onChange(of: columnCustomization) { _, _ in
             saveColumnCustomization()

@@ -17,13 +17,17 @@ private final class FakeEngine: InkEngineCalling {
     var migrationAnswers: [InkMigratedAnchor] = []
     var migrationCalls: [[String]] = []
     var migrationFails = false
+    var onMigration: (() async -> Void)?
+    var onProposal: (() async -> Void)?
     var hits: [InkHit] = []
     var hitTests: [(points: [[Double]], radius: Double)] = []
     var renderDelay: Duration = .zero
 
     func inkPropose(_ stroke: InkStrokeInput) async throws -> InkProposal {
         proposed.append(stroke)
-        return proposals.isEmpty ? InkProposal(op: .none, reason: "nothing queued") : proposals.removeFirst()
+        await onProposal?()
+        return proposals.isEmpty
+            ? InkProposal(op: .none, reason: "nothing queued") : proposals.removeFirst()
     }
 
     func inkRender(href: String, section: SectionInk, focus: String?) async throws {
@@ -38,6 +42,7 @@ private final class FakeEngine: InkEngineCalling {
 
     func inkMigrate(href: String, notes: [InkNote]) async throws -> [InkMigratedAnchor] {
         migrationCalls.append(notes.map(\.id))
+        await onMigration?()
         if migrationFails { throw ReaderCommsBridgeError.jsNotAvailable }
         return migrationAnswers
     }
@@ -107,14 +112,41 @@ struct InkSessionModelTests {
         let session = await openSession(directory: directory, engine: engine)
 
         #expect(session.apply(.addNote(href: "c1", note: note("a"))))
-        #expect(session.apply(.appendToNote(href: "c1", noteID: "a", stroke: InkStroke(points: [[9, 9]]), at: stamp)))
+        #expect(
+            session.apply(
+                .appendToNote(
+                    href: "c1",
+                    noteID: "a",
+                    stroke: InkStroke(points: [[9, 9]]),
+                    at: stamp
+                )
+            )
+        )
         #expect(session.section("c1").notes.first?.strokes.count == 2)
 
-        #expect(session.apply(.erase(href: "c1", strokes: [InkStrokeRef(noteId: "a", index: 0)], markIDs: [], at: stamp)))
+        #expect(
+            session.apply(
+                .erase(
+                    href: "c1",
+                    strokes: [InkStrokeRef(noteId: "a", index: 0)],
+                    markIDs: [],
+                    at: stamp
+                )
+            )
+        )
         #expect(session.section("c1").notes.first?.strokes == [InkStroke(points: [[9, 9]])])
 
         // Erasing a note's last stroke removes the note, and the text closes up.
-        #expect(session.apply(.erase(href: "c1", strokes: [InkStrokeRef(noteId: "a", index: 0)], markIDs: [], at: stamp)))
+        #expect(
+            session.apply(
+                .erase(
+                    href: "c1",
+                    strokes: [InkStrokeRef(noteId: "a", index: 0)],
+                    markIDs: [],
+                    at: stamp
+                )
+            )
+        )
         #expect(session.section("c1").notes.isEmpty)
         #expect(session.ink.sections["c1"] == nil)
 
@@ -131,11 +163,33 @@ struct InkSessionModelTests {
         let engine = FakeEngine()
         let session = await openSession(directory: directory, engine: engine)
 
-        #expect(!session.apply(.appendToNote(href: "c1", noteID: "ghost", stroke: InkStroke(points: []), at: stamp)))
-        #expect(!session.apply(.erase(href: "c1", strokes: [InkStrokeRef(noteId: "ghost", index: 0)], markIDs: ["x"], at: stamp)))
+        #expect(
+            !session.apply(
+                .appendToNote(href: "c1", noteID: "ghost", stroke: InkStroke(points: []), at: stamp)
+            )
+        )
+        #expect(
+            !session.apply(
+                .erase(
+                    href: "c1",
+                    strokes: [InkStrokeRef(noteId: "ghost", index: 0)],
+                    markIDs: ["x"],
+                    at: stamp
+                )
+            )
+        )
         session.apply(.addNote(href: "c1", note: note("a")))
         #expect(!session.apply(.addNote(href: "c1", note: note("a"))), "the same id twice")
-        #expect(!session.apply(.erase(href: "c1", strokes: [InkStrokeRef(noteId: "a", index: 7)], markIDs: [], at: stamp)))
+        #expect(
+            !session.apply(
+                .erase(
+                    href: "c1",
+                    strokes: [InkStrokeRef(noteId: "a", index: 7)],
+                    markIDs: [],
+                    at: stamp
+                )
+            )
+        )
         await session.flush()
         #expect(engine.renders.count == 1)
         session.undo()
@@ -154,7 +208,9 @@ struct InkSessionModelTests {
         session.apply(
             .erase(
                 href: "c1",
-                strokes: [InkStrokeRef(noteId: "a", index: 0), InkStrokeRef(noteId: "a", index: 2)],
+                strokes: [
+                    InkStrokeRef(noteId: "a", index: 0), InkStrokeRef(noteId: "a", index: 2),
+                ],
                 markIDs: ["m1"],
                 at: stamp,
             )
@@ -179,7 +235,9 @@ struct InkSessionModelTests {
 
         session.apply(.addNote(href: "c1", note: note("a")))
         session.apply(.addNote(href: "c2", note: note("b")))
-        session.apply(.appendToNote(href: "c1", noteID: "a", stroke: InkStroke(points: [[5, 5]]), at: stamp))
+        session.apply(
+            .appendToNote(href: "c1", noteID: "a", stroke: InkStroke(points: [[5, 5]]), at: stamp)
+        )
         #expect(session.canUndo && !session.canRedo)
 
         session.undo()
@@ -218,7 +276,9 @@ struct InkSessionModelTests {
         let directory = makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let session = await openSession(directory: directory, engine: FakeEngine())
-        for i in 0..<(InkSession.undoLimit + 5) { session.apply(.addNote(href: "c1", note: note("n\(i)"))) }
+        for i in 0..<(InkSession.undoLimit + 5) {
+            session.apply(.addNote(href: "c1", note: note("n\(i)")))
+        }
         var undone = 0
         while session.undo() { undone += 1 }
         #expect(undone == InkSession.undoLimit)
@@ -240,7 +300,60 @@ struct InkSessionModelTests {
         #expect(!reopened.canUndo)
     }
 
+    @Test("A rebuilt web view reattaching to the open book keeps the undo history and redraws")
+    func reattachKeepsUndo() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = await openSession(directory: directory, engine: FakeEngine())
+        await session.sectionReady(href: "c1")
+        session.apply(.addNote(href: "c1", note: note("a")))
+        await session.flush()
+
+        let rebuilt = FakeEngine()
+        session.engine = rebuilt
+        await session.open(bookID: bookID)
+        await session.flush()
+        #expect(session.canUndo)
+        #expect(session.section("c1").notes.map(\.id) == ["a"])
+        #expect(rebuilt.renders.contains { $0.href == "c1" })
+    }
+
     // MARK: Persistence
+
+    @Test("Close drains an accepted stroke before releasing its renderer")
+    func closeDrainsStroke() async throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        var response: CheckedContinuation<Void, Never>?
+        engine.onProposal = {
+            await withCheckedContinuation { response = $0 }
+        }
+        engine.proposals = [
+            InkProposal(
+                op: .note,
+                section: "c1",
+                anchor: anchor(40),
+                stroke: InkStroke(points: [[1, 2]])
+            )
+        ]
+        let session = await openSession(directory: directory, engine: engine, ids: ["accepted"])
+        let stroke = Task {
+            await session.finishStroke(InkStrokeInput(points: [[100, 200], [110, 210]]))
+        }
+        while response == nil { await Task.yield() }
+        let closing = Task { await session.detachRenderer() }
+        await Task.yield()
+        #expect(session.engine === engine)
+        response?.resume()
+        await stroke.value
+        #expect(await closing.value)
+        #expect(session.engine == nil)
+        #expect(
+            await InkActor(directory: directory).ink(bookID: bookID).sections["c1"]?.notes.map(\.id)
+                == ["accepted"]
+        )
+    }
 
     @Test("Rapid changes are saved in the order they were made")
     func persistenceOrdering() async {
@@ -278,7 +391,9 @@ struct InkSessionModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let engine = FakeEngine()
         let local = InkStroke(points: [[3, 4], [5, 6]])
-        engine.proposals = [InkProposal(op: .note, section: "c1", anchor: anchor(40), stroke: local)]
+        engine.proposals = [
+            InkProposal(op: .note, section: "c1", anchor: anchor(40), stroke: local)
+        ]
         let session = await openSession(directory: directory, engine: engine, ids: ["note-1"])
 
         await session.finishStroke(InkStrokeInput(points: [[100, 200], [110, 210]]))
@@ -289,7 +404,10 @@ struct InkSessionModelTests {
         #expect(saved?.anchor == anchor(40))
         #expect(saved?.strokes == [local])
         #expect(saved?.createdAt == stamp)
-        #expect(engine.renders.last?.focus == "note-1", "the page is told which note to bring into view")
+        #expect(
+            engine.renders.last?.focus == "note-1",
+            "the page is told which note to bring into view"
+        )
     }
 
     @Test("Strokes are applied in the order the Pencil wrote them, one at a time")
@@ -298,9 +416,24 @@ struct InkSessionModelTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let engine = FakeEngine()
         engine.proposals = [
-            InkProposal(op: .note, section: "c1", anchor: anchor(1), stroke: InkStroke(points: [[1, 1]])),
-            InkProposal(op: .append, section: "c1", noteId: "n1", stroke: InkStroke(points: [[2, 2]])),
-            InkProposal(op: .append, section: "c1", noteId: "n1", stroke: InkStroke(points: [[3, 3]])),
+            InkProposal(
+                op: .note,
+                section: "c1",
+                anchor: anchor(1),
+                stroke: InkStroke(points: [[1, 1]])
+            ),
+            InkProposal(
+                op: .append,
+                section: "c1",
+                noteId: "n1",
+                stroke: InkStroke(points: [[2, 2]])
+            ),
+            InkProposal(
+                op: .append,
+                section: "c1",
+                noteId: "n1",
+                stroke: InkStroke(points: [[3, 3]])
+            ),
         ]
         let session = await openSession(directory: directory, engine: engine, ids: ["n1"])
 
@@ -333,8 +466,13 @@ struct InkSessionModelTests {
         let engine = FakeEngine()
         engine.proposals = [
             InkProposal(
-                op: .mark, section: "c1", stroke: InkStroke(points: [[0, 0]]), markKind: .strike,
-                start: anchor(3), end: anchor(9), geometry: InkMarkGeometry(points: [[0, 1]], refH: 20),
+                op: .mark,
+                section: "c1",
+                stroke: InkStroke(points: [[0, 0]]),
+                markKind: .strike,
+                start: anchor(3),
+                end: anchor(9),
+                geometry: InkMarkGeometry(points: [[0, 1]], refH: 20),
             )
         ]
         let session = await openSession(directory: directory, engine: engine, ids: ["mk"])
@@ -347,12 +485,21 @@ struct InkSessionModelTests {
 
     // MARK: Tools
 
-    @Test("With the pen in hand a finished stroke is written; with the eraser it erases what the path touched")
+    @Test(
+        "With the pen in hand a finished stroke is written; with the eraser it erases what the path touched"
+    )
     func toolsDecideWhatAStrokeDoes() async {
         let directory = makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let engine = FakeEngine()
-        engine.proposals = [InkProposal(op: .note, section: "c1", anchor: anchor(1), stroke: InkStroke(points: [[1, 1]]))]
+        engine.proposals = [
+            InkProposal(
+                op: .note,
+                section: "c1",
+                anchor: anchor(1),
+                stroke: InkStroke(points: [[1, 1]])
+            )
+        ]
         let session = await openSession(directory: directory, engine: engine, ids: ["n1"])
 
         session.tool = InkTool(mode: .highlighter, color: "#ffd60a", width: 14)
@@ -401,7 +548,9 @@ struct InkSessionModelTests {
         let session = await openSession(directory: directory, engine: engine)
         session.apply(.addNote(href: "c1", note: note("a", strokes: 2)))
         session.apply(.addMark(href: "c1", mark: mark("m1")))
-        engine.hits = [InkHit(section: "c1", markIds: ["m1"], strokes: [InkStrokeRef(noteId: "a", index: 1)])]
+        engine.hits = [
+            InkHit(section: "c1", markIds: ["m1"], strokes: [InkStrokeRef(noteId: "a", index: 1)])
+        ]
         await session.erase(points: [[1, 1]])
         #expect(session.section("c1").marks.isEmpty)
         #expect(session.section("c1").notes[0].strokes.count == 1)
@@ -425,7 +574,11 @@ struct InkSessionModelTests {
     func sectionReadyBeforeOpen() async {
         let directory = makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        await InkActor(directory: directory).setSection(SectionInk(notes: [note("a")]), href: "c1", bookID: bookID)
+        await InkActor(directory: directory).setSection(
+            SectionInk(notes: [note("a")]),
+            href: "c1",
+            bookID: bookID
+        )
 
         let engine = FakeEngine()
         let session = InkSession(store: InkActor(directory: directory))
@@ -460,19 +613,36 @@ struct InkSessionModelTests {
     // MARK: Migration
 
     private func version1Section() throws -> SectionInk {
-        let ink = try JSONDecoder().decode(BookInk.self, from: Data(InkModelsTests.version1JSON.utf8))
+        let ink = try JSONDecoder().decode(
+            BookInk.self,
+            from: Data(InkModelsTests.version1JSON.utf8)
+        )
         return try #require(ink.sections["OEBPS/ch1.xhtml"])
     }
 
-    @Test("Version 1 notes get word anchors the first time their section loads, and are saved as version 2")
+    @Test(
+        "Version 1 notes get word anchors the first time their section loads, and are saved as version 2"
+    )
     func migration() async throws {
         let directory = makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        await InkActor(directory: directory).setSection(try version1Section(), href: "OEBPS/ch1.xhtml", bookID: bookID)
+        await InkActor(directory: directory).setSection(
+            try version1Section(),
+            href: "OEBPS/ch1.xhtml",
+            bookID: bookID
+        )
 
         let engine = FakeEngine()
         engine.migrationAnswers = [
-            InkMigratedAnchor(id: "ink-abc", anchor: TextAnchor(offset: 120, prefix: "still ", exact: "see the arcs", suffix: " of")),
+            InkMigratedAnchor(
+                id: "ink-abc",
+                anchor: TextAnchor(
+                    offset: 120,
+                    prefix: "still ",
+                    exact: "see the arcs",
+                    suffix: " of"
+                )
+            ),
             InkMigratedAnchor(id: "ink-def", anchor: nil),
         ]
         let session = InkSession(store: InkActor(directory: directory))
@@ -485,7 +655,10 @@ struct InkSessionModelTests {
         let notes = session.section("OEBPS/ch1.xhtml").notes
         #expect(notes[0].anchor.offset == 120)
         #expect(notes[0].legacyCFI == nil)
-        #expect(notes[1].legacyCFI == nil, "a CFI that no longer resolves is not retried; the quote anchor stays")
+        #expect(
+            notes[1].legacyCFI == nil,
+            "a CFI that no longer resolves is not retried; the quote anchor stays"
+        )
         #expect(notes[1].anchor.offset == -1)
         #expect(!session.canUndo, "migration is not an undo step")
         // Drawn after migrating, with the new anchors.
@@ -504,7 +677,11 @@ struct InkSessionModelTests {
     func migrationRetries() async throws {
         let directory = makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        await InkActor(directory: directory).setSection(try version1Section(), href: "OEBPS/ch1.xhtml", bookID: bookID)
+        await InkActor(directory: directory).setSection(
+            try version1Section(),
+            href: "OEBPS/ch1.xhtml",
+            bookID: bookID
+        )
 
         let engine = FakeEngine()
         engine.migrationFails = true
@@ -517,16 +694,54 @@ struct InkSessionModelTests {
         #expect(engine.renders.count == 1, "still drawn, by the quote")
 
         engine.migrationFails = false
-        engine.migrationAnswers = [InkMigratedAnchor(id: "ink-abc", anchor: anchor(7)), InkMigratedAnchor(id: "ink-def", anchor: anchor(8))]
+        engine.migrationAnswers = [
+            InkMigratedAnchor(id: "ink-abc", anchor: anchor(7)),
+            InkMigratedAnchor(id: "ink-def", anchor: anchor(8)),
+        ]
         await session.sectionReady(href: "OEBPS/ch1.xhtml")
         #expect(!session.ink.needsMigration)
+    }
+
+    @Test("A late legacy migration answer cannot change a different book")
+    func migrationCannotCrossBooks() async throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = InkActor(directory: directory)
+        let other = BookID(sourceID: "other-source", uuid: "other-book")
+        let href = "OEBPS/ch1.xhtml"
+        let original = try version1Section()
+        try await store.setSection(original, href: href, bookID: bookID).get()
+        try await store.setSection(original, href: href, bookID: other).get()
+        let engine = FakeEngine()
+        var started = false
+        var resume: CheckedContinuation<Void, Never>?
+        engine.onMigration = {
+            started = true
+            await withCheckedContinuation { resume = $0 }
+        }
+        engine.migrationAnswers = [InkMigratedAnchor(id: "ink-abc", anchor: anchor(7))]
+        let session = InkSession(store: store)
+        session.engine = engine
+        await session.open(bookID: bookID)
+        let preparing = Task { await session.sectionReady(href: href) }
+        while !started { await Task.yield() }
+        await session.open(bookID: other)
+        resume?.resume()
+        await preparing.value
+        await session.flush()
+        #expect(session.section(href) == original)
+        #expect(await store.ink(bookID: other).sections[href] == original)
     }
 
     @Test("A page that answers for only some notes leaves the others waiting")
     func partialMigration() async throws {
         let directory = makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        await InkActor(directory: directory).setSection(try version1Section(), href: "OEBPS/ch1.xhtml", bookID: bookID)
+        await InkActor(directory: directory).setSection(
+            try version1Section(),
+            href: "OEBPS/ch1.xhtml",
+            bookID: bookID
+        )
         let engine = FakeEngine()
         engine.migrationAnswers = [InkMigratedAnchor(id: "ink-abc", anchor: anchor(7))]
         let session = InkSession(store: InkActor(directory: directory))

@@ -57,6 +57,7 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
                 tools?.pencilDown()
                 liveView.begin(at: convert(sample), tool: session.tool)
             case .moved(let samples, let predicted):
+                session.penMoved()
                 liveView.append(samples.map(convert), predicted: predicted.map(convert))
             case .cancelled:
                 liveView.cancel()

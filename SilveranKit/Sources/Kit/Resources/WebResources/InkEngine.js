@@ -185,6 +185,19 @@ export default class InkEngine {
     }) };
   }
 
+  /**
+   * True when (x, y), in `doc`'s viewport, is on handwriting: inside a note's area or on a mark
+   * (within `slop` points). A tap there is never a page turn.
+   */
+  inkAt(doc, x, y, slop = 12) {
+    for (const el of doc.querySelectorAll(INK_TAG)) {
+      const r = el.getBoundingClientRect();
+      if (x >= r.left - slop && x <= r.right + slop && y >= r.top - slop && y <= r.bottom + slop) return true;
+    }
+    const layer = this.#markLayers.get(doc);
+    return !!layer && layer.hitTest([[x, y]], slop).length > 0;
+  }
+
   /** The CFI of a note or mark in a loaded section, to navigate to it. Null if it is not loaded or not placed. */
   locate(href, id) {
     const contents = this.#contentsFor(href);

@@ -42,6 +42,366 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-024 — Protect saved Pencil tool choices from tolerant decoding and replacement
+
+- Date: 2026-09-30
+- Status: Fixed (automated; iPad interaction and full archive acceptance remain open)
+- Platforms: Shared Kit preference contract; iPadOS Pencil reader presentation
+- Components: `InkToolPreferenceStore.swift`, `ConfigurationPersistence.swift`, `InkToolController.swift`, `InkToolPreferenceBanner.swift`, `EbookPlayerView.swift`, `InkToolPreferenceStoreTests.swift`
+- Related links: [configuration inventory](docs/ANNOTATION_CONFIGURATION_FIELD_INVENTORY.md), [protected configuration ADR](docs/decisions/007-protected-configuration-recovery.md)
+
+#### Symptom
+
+If `SilveranInkTools.v1` contains a future tool field, unknown mode, duplicate JSON key, damaged shape or a non-Data value, the old `InkToolStore.load()` silently presents default choices. Selecting another tool then writes the default projection over the stored value, losing information that could have been recovered by a future version. A write failure was also swallowed, so the reader could not distinguish a current in-memory choice from a saved preference. A synthetic unknown-mode fixture proves the tolerant decoder returns the default pen; no personal preference was inspected or confirmed user incident claimed.
+
+#### Root cause
+
+The `InkToolSettings` domain decoder deliberately falls back for renderer/general use. The persistence boundary reused that decoder with `try?`, then encoded and wrote through a view-owned `UserDefaults` helper without checking the original value, schema, write result or reader replacement. That violated the configuration recovery rule: a viewing fallback cannot authorize mutation of an unreadable or unsupported original.
+
+#### Change
+
+The portable `InkToolSettingsPersistenceCodec` now validates the known top-level and nested fields, modes, colors, widths and duplicate/escaped JSON keys before a preference receives write permission. A main-actor Kit owner retains missing/valid/corrupt/unsupported state, the exact Data original where available, a pending choice and the last failure. It validates the live UserDefaults value against its observed original before encoding and writing, checks local readback, supports explicit retry/reload and exports the original and pending choice. The iPad reader uses this owner across WebView replacements and shows retry/export status. It never overwrites a protected original. The tolerant public `InkToolSettings` decoder remains unchanged for non-persistence callers. UserDefaults readback is local API acceptance, not an fsync or a cloud backup guarantee.
+
+#### Validation
+
+Focused `scripts/test --filter 'InkToolPreferenceStoreTests|InkToolTests|ConfigurationPersistenceSafetyTests'` passes **21 tests in three suites**. Synthetic tests prove the legacy decoder's fallback, strict refusal, exact Data original export/preservation, non-Data protection, injected write failure/pending retry and stale external-value refusal. A first full `scripts/test` run concurrent with three Apple builds had **12 deadline failures** in pre-existing two-second Pencil writing-lock waits; the isolated rerun `scripts/test` passes **292 tests in 23 suites** (`/tmp/silveran-tool-preference-final-tests-quiet.log`). `SILVERAN_DISABLE_CODE_SIGNING=1 scripts/macbuild`, the same setting with `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=39E12943-158F-4DF0-873D-D689FEFEF90F,arch=arm64' scripts/iosbuild`, and with `SILVERAN_WATCHOS_DESTINATION='platform=watchOS Simulator,id=F2CE2EF4-1E36-4207-955D-965220C17BC6,arch=arm64' scripts/watchbuild` all pass. Scoped `swift format lint`, `git diff --check` and local documentation link checks exit 0; the existing reader `.forEach` style warning remains. No real iPad Pencil/VoiceOver/manual recovery, Android/Linux/tvOS or signed restore acceptance was run.
+
+#### Compatibility and follow-up
+
+The UserDefaults key and normally encoded tool choices stay compatible; `{}` and absent known fields retain documented defaults. Future/damaged values remain intact and visible as recovery states. New unsaved choices survive reader replacement in app memory but not process loss when preferences cannot accept a write. Full archive capture of the original, current choice and required asset dependencies remains Phase 3 work. No cloud authority, server credential or annotation document is changed.
+
+### BF-023 — A failed flat-color migration can advance its completion sentinel
+
+- Date: 2026-09-30
+- Status: Fixed (automated; device startup and archive acceptance remain open)
+- Platforms: Shared Kit startup configuration migration
+- Components: `FlatColorThemeMigration.swift`, `ConfigurationPersistence.swift`, `SettingsActor`, filesystem migration sentinel and `FlatColorThemeMigrationTests.swift`
+- Related links: [protected configuration ADR](docs/decisions/007-protected-configuration-recovery.md), [implementation plan](docs/ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md)
+
+#### Symptom
+
+With a pre-theme configuration containing custom flat reader colors, a settings write failure left the source unchanged but advanced `flat-color-theme-v1`. A later launch skipped conversion, so the custom theme was never created. A prior bad marker also blocked repair. This was reproduced using a synthetic configuration and an injected write failure; no personal file or confirmed user incident was involved.
+
+#### Root cause
+
+`migrateFlatColorsToCustomTheme` caught and logged the settings write error, returned normally, and its caller wrote the sentinel unconditionally. The guard then trusted that sentinel on every later launch. The separate raw JSON check used `JSONSerialization`, which did not accept this host's valid UTF-32 configuration encoding, and did not prove that the settings owner had read the same bytes or could persist them. Protected/unreadable viewing defaults could therefore be mistaken for a completed no-op migration.
+
+#### Change
+
+The migration now inspects the validated source through the protected configuration codec and checks that it matches one atomic `SettingsActor` snapshot. An absent `themes` section and custom flat fields trigger conversion regardless of an old sentinel. A present section, including one deliberately emptied by the user, remains authoritative. `SettingsActor.applyMigration` checks the observed owner generation, pending edits and live original before a no-op or write. Before conversion, `FilesystemActor` retains the exact original at `Config/MigrationBackups/flat-color-theme-v1/<SHA-256>.json`, refusing a mismatched existing copy or failed checkpoint. It writes the sentinel only after the settings commit succeeds; errors propagate to the existing startup deferral path. A missing source remains unmarked. No renderer, cloud or credential path was changed.
+
+#### Validation
+
+The two initial regressions failed with **five issues** on the old implementation (`scripts/test --filter FlatColorThemeMigrationTests`; `/tmp/silveran-theme-migration-before-fix.log`): the failed write did not throw and marked completion, while an old marker blocked three expected theme values. After the fix, `scripts/test --filter 'FlatColorThemeMigrationTests|ConfigurationPersistenceSafetyTests|ConfigurationSyncTests'` passed **46 tests in four suites**. `scripts/test` passed **288 tests in 22 suites**. `SILVERAN_DISABLE_CODE_SIGNING=1 scripts/macbuild`, the same setting with `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=39E12943-158F-4DF0-873D-D689FEFEF90F,arch=arm64' scripts/iosbuild`, and with `SILVERAN_WATCHOS_DESTINATION='platform=watchOS Simulator,id=F2CE2EF4-1E36-4207-955D-965220C17BC6,arch=arm64' scripts/watchbuild` all passed. Scoped `swift format lint` and `git diff --check` exit 0; an existing `request_notify` naming warning remains. Tests cover failed commit/retry, wrong recovery-copy contents, checkpoint path failure, failure after commit but before marker, stale owner/live bytes, protected/unreadable/pending inputs, intentional theme deletion, missing/default-only inputs and UTF-32 originals. No physical power-loss, real-device startup, Android/Linux/tvOS or complete backup/restore acceptance was run.
+
+#### Compatibility and follow-up
+
+Existing incorrectly advanced sentinels are advisory: a known valid pre-theme source still converts. A successfully converted source has an explicit `themes` section, so a missing or failed sentinel can be retried without duplicating themes. Old unknown/corrupt/unreadable originals remain protected and unmodified. The new retained migration originals are a required future full-archive participant; they do not themselves constitute complete backup. Full archive/cutover and device/cloud acceptance remain separate work.
+
+### BF-022 — Protect configuration originals and retain failed local edits
+
+- Date: 2026-09-30
+- Status: Fixed (automated; real-device and signed cloud acceptance remain open)
+- Platforms: Shared Kit configuration owner; macOS and iOS/iPadOS recovery presentation
+- Components: `SettingsActor.swift`, `ConfigurationPersistence.swift`, `ConfigurationPatch.swift`, `SettingsViewModel.swift`, `SettingsView.swift`, `SettingsPersistenceBanner.swift`, `EbookPlayerView.swift`, `AppleConfigurationSyncCoordinator.swift`, configuration regression suites
+- Related links: [ADR 007](docs/decisions/007-protected-configuration-recovery.md)
+
+#### Symptom
+
+A damaged global configuration could be overwritten by defaults during initialization. A file with unsupported nested settings, a wrongly typed known field or an incomplete custom theme could appear to load and then lose those values during an unrelated settings save. Reliable disposable fixtures use malformed JSON, an unknown reading object, a string in `fontSize`, or a custom theme missing required editable fields. The regression fixtures use synthetic configuration in temporary directories.
+
+#### Root cause
+
+Initialization's catch block attempted to save defaults over a failed read. Root/nested decoders used `try?` defaults, and theme-array decode failures became empty arrays. Ordinary Codable discarded unknown keys. The persistence boundary therefore could not distinguish genuinely missing optional fields from present damaged/unsupported data. Generic patch application also passed nested records through those tolerant decoders before persistence could inspect them.
+
+#### Change
+
+The owner reads explicit missing/valid/corrupt/unsupported/unreadable outcomes, keeps exact readable original bytes and never writes during initialization. A protected codec validates known keys, types, nullable fields and required theme records before existing decoders; recognized snake-case keys map explicitly, including acronyms such as CSS. Known legacy defaults/conversions remain supported. Duplicate raw/escaped JSON keys, alias collisions and unsupported closed values cannot be silently discarded. Foundation performs grammar/string/Unicode decoding, with a narrow raw-key uniqueness pass; UTF-8 BOM and UTF-16/32 cases are covered. Generic patches use the same protected codec. Every commit checks the live original and refuses unreadable/unknown or externally changed data before writeback.
+
+Failed accepted local changes remain separate typed pending patches in the actor, with retry and recovery export APIs; committed configuration and change observers advance only after a successful atomic write. New local choices supersede failed ones, including returning a field to its committed value. Remote-origin commits retain local pending edits for deliberate local retry. One owner snapshot presents committed/load/pending state together. Editors compare against the presented editing projection, so a retry/reset retains unrelated incoming fields and can cancel a prior failed choice.
+
+Reader and settings banners show failure/recovery, retry and system recovery export. Exact originals and pending/editor patches can be exported together without claiming a complete backup. The reader view model surfaces failed debounced saves instead of swallowing them. KVS explicit device export and queued flush pause while local settings need recovery or have unsaved pending changes; existing account/permission/quota/version behavior remains. No change notification advertises a failed candidate as committed.
+
+#### Validation
+
+Before the fix, `scripts/test --filter ConfigurationPersistenceSafetyTests` failed both initial regression tests with nine issues: launch changed malformed original bytes, and unrelated writes succeeded while stripping unsupported/damaged data. Final `scripts/test --filter 'ConfigurationPersistenceSafetyTests|ConfigurationPatchTests|ConfigurationCoordinatorTests'` passes **37 tests in three suites**. Coverage includes full theme/nullable-field equality, known aliases/defaults, duplicate/escaped keys, BOM/UTF-16/32, pending accumulation/supersession/cancellation, incoming remote commits, external file changes, unreadable/missing distinction, exact-original recovery export, nested patch protection, actual reader editor closure/replacement/retry and refused publication of protected defaults.
+
+Final `scripts/test` passes **279 tests in 21 suites**. Unsigned compile checks pass:
+
+- `SILVERAN_DISABLE_CODE_SIGNING=1 scripts/macbuild`
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=39E12943-158F-4DF0-873D-D689FEFEF90F,arch=arm64' scripts/iosbuild`
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_WATCHOS_DESTINATION='platform=watchOS Simulator,id=F2CE2EF4-1E36-4207-955D-965220C17BC6,arch=arm64' scripts/watchbuild`
+
+`git diff --check` passes. Scoped `swift format lint` exits 0; existing `request_notify` naming and reader `.forEach` style warnings remain. No renderer JavaScript changes; the preceding WebHarness run passed 120 tests. No private configuration content appears in regression fixtures/evidence. Android SDK/NDK/Swift tooling, a running Linux Docker daemon and a tvOS simulator runtime remain unavailable. Real-device recovery/export/VoiceOver, non-Apple runtime and signed preference/cloud delivery acceptance remain unverified.
+
+#### Compatibility and follow-up
+
+Supported configuration stays on its existing JSON layout; no storage engine or cloud authority changes. Unknown formats are retained and blocked for mutation rather than downgraded. Pending edits after a failed write are memory recovery only and are not claimed to survive process loss. Full archive participants, journaled multi-owner restore, real-device UI and signed cloud acceptance remain open.
+
+### BF-021 — Inspect unknown SQLite identity before changing journal mode
+
+- Date: 2026-09-30
+- Status: Fixed (automated; device and cloud acceptance remain open)
+- Platforms: Shared Kit repository; regression executed on macOS
+- Components: `AnnotationDatabase.swift`, `AnnotationSnapshotTests.swift`
+- Related links: [ADR 005](docs/decisions/005-annotation-snapshots-and-transactional-restore.md)
+
+#### Symptom
+
+Opening an unidentified schema-0 SQLite file could reject it after already changing its persistent journal mode. The file's bytes changed despite mutation refusal. Reproduce with a disposable database containing an unrelated table, `user_version=0` and WAL-mode header bytes. The repository remains inactive in the reader, so no user library exposure has been established.
+
+#### Root cause
+
+The initialization sequence set `PRAGMA journal_mode=DELETE` before checking whether a version-0 database was empty. That PRAGMA can change the SQLite file header and checkpoint WAL state. Identity and mutation permission were therefore checked too late.
+
+#### Change
+
+Inspect version-0 schema identity before persistent configuration PRAGMAs. Only an empty version-0 database may proceed to owned schema creation. Supported repository schemas retain their configured rollback-journal behavior and explicit transactional upgrade; unknown original bytes remain untouched. Snapshot/restore features are separately described in ADR 005 and do not activate legacy cutover.
+
+#### Validation
+
+`scripts/test --filter 'AnnotationSnapshotTests|AnnotationCrashRecoveryTests'` passes 11 tests in two suites, including byte-for-byte refusal of an unidentified WAL database. A controlled `scripts/test --filter protectsUnidentifiedWAL` run with the old guard ordering fails the original-byte equality assertion (one test, one issue, exit 1). A `finally` block restores the fixed source before subsequent checks. Final `scripts/test` passes **254 tests in 19 suites**.
+
+Final unsigned compile checks pass:
+
+- `SILVERAN_DISABLE_CODE_SIGNING=1 scripts/macbuild`
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=39E12943-158F-4DF0-873D-D689FEFEF90F,arch=arm64' scripts/iosbuild`
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_WATCHOS_DESTINATION='platform=watchOS Simulator,id=F2CE2EF4-1E36-4207-955D-965220C17BC6,arch=arm64' scripts/watchbuild`
+
+Scoped `swift format lint` for the five changed/new annotation Swift files, `scripts/verify-sqlite-vendor`, `git diff --check` and local documentation target checks pass. No renderer JavaScript changes in this increment; the preceding WebHarness run passed 120 tests. The Android SDK/NDK/Swift toolchain is absent, the Linux Docker daemon is unavailable, and no tvOS simulator runtime is installed.
+
+No personal database or book data is used. Linux/Android runtime, real-device power loss, full migration/cutover and signed cloud acceptance remain unverified. Process-loss fixtures establish only the selected engine boundaries described in ADR 005.
+
+#### Compatibility and follow-up
+
+No unknown database is migrated or repaired automatically. Owned repository schema 1 upgrades to schema 2 atomically for recovery checkpoints; older schema-1-only repository code refuses schema 2. Reader actors remain authoritative on existing legacy formats. Full local archive/configuration recovery and app-level restore journaling remain open.
+
+Subsequent migration work in [ADR 006](docs/decisions/006-legacy-annotation-capture-and-staging.md) adds schema 3 for exact legacy capture and staging verification. Current owned schema-1/2 databases upgrade directly to schema 3 in one transaction; prior repository builds refuse that newer marker. BF-021's identity-before-journal guard remains unchanged and covered in the combined suite.
+
+### BF-020 — Preserve ambiguous and Unicode annotation targets
+
+- Date: 2026-09-30
+- Status: Fixed (automated; device acceptance remains open)
+- Platforms: Shared Kit identity/anchors; EPUB JavaScript renderer on all reader surfaces
+- Components: `InkAnchoring.js`, `InkModels.swift`, `AnnotationAnchors.swift`, `AnnotationEditions.swift`, shared anchor fixtures and Swift/WebHarness tests
+- Related links: [ADR 004](docs/decisions/004-edition-anchors-and-creative-conflicts.md)
+
+#### Symptom
+
+Ink over repeated words could move to the wrong passage after an edition change, because the renderer picked whichever occurrence was nearest its old offset. It also trusted a matching quote at that offset despite duplicate passages. Selectors ending halfway through an emoji's UTF-16 pair could fail to cross the JSON bridge correctly. Synthetic reproduction: `echo x echo y echo z echo w` with quote `echo`/offset 16 resolves to 14 in the old module; 31 ASCII characters followed by an emoji produces a malformed 32-unit quotation.
+
+#### Root cause
+
+Offset proximity was treated as identity evidence. The fallback resolver selected one candidate rather than retaining ambiguity, and early offset matching bypassed context uniqueness. `String.slice` context boundaries could split a Unicode scalar; Swift expects valid Unicode JSON. Neither behavior is safe for durable edition-independent targets.
+
+#### Change
+
+Add versioned exact/remapped/ambiguous/unresolved outcomes. A unique context, quotation or boundary can resolve; repeated passages remain ambiguous even at the saved offset. The scalar rendering wrapper returns no position for ambiguity, leaving the creative payload in Swift and using existing orphan reporting. Recovery candidates stop at 256 without choosing a winner. Selector windows preserve complete surrogate pairs. Offsets remain UTF-16 and existing whitespace normalization remains version 1; no silent Unicode canonical normalization is introduced.
+
+Kit implements the same pure resolution contract. Explicit edition models use maintained SHA-256 fingerprints and finite, provenance-bearing href mappings. Unknown edition identity, changed content and unverified source/account mappings remain unresolved. The attachment result preserves the entire original target. Edition storage/migration and typed-highlight renderer adoption remain gated; the new model does not import files or publish annotations.
+
+#### Validation
+
+Old tracked module reproduced guessed offset 14 and an ill-formed emoji quotation using a disposable `/tmp` copy and Node. `scripts/test` passes 242 tests in 17 suites; `npm test` from `SilveranKit/Tests/WebHarness` passes 120 tests. Sixteen shared JSON fixtures agree between Swift and JavaScript for repeated/overlapping text, context loss, emoji, combining sequences, RTL, boundaries and unknown versions. Additional tests cover candidate bounds, Unicode windows, standard SHA-256 output, changed hrefs, explicit ownership, fingerprint mismatch and retained originals. Final unsigned Mac, arm64 iOS simulator and watchOS simulator builds pass, using the exact commands in BF-019. `scripts/verify-sqlite-vendor` and `git diff --check` pass.
+
+No private book/device handwriting was used. Real Pencil/reflow, a representative EPUB corpus, manual reattachment/accessibility, and Linux/Android runtime acceptance remain unverified. No tvOS simulator runtime is installed; Android SDK/NDK/toolchain and a running Linux Docker daemon are unavailable.
+
+#### Compatibility and follow-up
+
+Legacy annotation files are unchanged. Some formerly guessed annotations now appear orphaned and remain recoverable rather than being silently attached elsewhere. Nominal selector windows can extend by one UTF-16 unit to preserve a scalar. New edition models are inactive pending journaled migration and verified cutover; no blanket phase completion or cloud behavior is claimed.
+
+### BF-019 — Retain unsaved ink across reader closure and renderer replacement
+
+- Date: 2026-09-30
+- Status: Fixed (automated; device acceptance remains open)
+- Platforms: Shared Kit lifecycle; Apple reader
+- Components: `ReadingSession.swift`, `InkSession.swift`, `ReaderCommsBridge.swift`, `EbookPlayerViewModel.swift`, `InkLifecycleSafetyTests.swift`
+- Related links: [ADR 001](docs/decisions/001-protected-legacy-ink-persistence.md), [implementation progress](docs/ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md#implementation-progress)
+
+#### Symptom
+
+After a failed ink write, closing the reader could destroy its only pending editing state. Opening the same book again created a fresh view-owned ink session and loaded the old committed file. A replaced WebView could also report late orphan/section events to the current session. Reproduce with an injected disk-full error, a note edit, reader closure/reopen, or an old bridge callback after replacement.
+
+#### Root cause
+
+The reader view model owned durable editing lifecycle state while the existing per-book ReadingSessionStore owned the book lifecycle. Flush failures did not affect session retention. Close detached reading managers without draining ink work. Bridge events and asynchronous migration/render tasks did not distinguish renderer generations, and an old view's asynchronous disappearance could detach the replacement view's shared session.
+
+#### Change
+
+ReadingSessionStore supplies one source/book-scoped ink session to both the reader view model and reading session. Ending the reading session retains a strong owner for pending edits; after success and renderer detachment it keeps a weak reference so a replacement view already holding the session reuses the same identity. Dead weak entries are pruned, without retaining every closed book. Failed state remains available for retry/export on reopen. Close and background drain accepted strokes, persistence and rendering. Detachment blocks further input while draining, invalidates the renderer afterward, and returns save status. Flush repeats when accepted work or mutation revisions advance during its waits.
+
+Renderer generations reject stale queued redraw/migration responses; bridge callbacks check current engine ownership before changing session state. Same-book direct replacement retains readiness and undo history, while detachment clears readiness. Close captures bridge and renderer identity and leaves a replacement alone, including the interval before its bridge attaches; the view's disappearance uses `closeView` with its own optional bridge. Observer removal stays within the owned session lifecycle. Audio/headless reading behavior and legacy ink storage formats remain in place.
+
+#### Validation
+
+`scripts/test --filter Ink` passed 73 tests after correcting replacement redraw handling. The lifecycle/repository increment's full `scripts/test` passed 233 tests in 15 suites; the final combined run passes 243 tests in 17 suites. Coverage includes failed-edit retention/export, replacement-owner identity reuse, stale bridge rejection, old-owner detach refusal, draining an accepted stroke before renderer release, existing ordered strokes/migration/redraw/undo and repository prototype tests. Deterministic timestamps in synthetic equality fixtures avoid Foundation Date conversion rounding; they do not use private annotations. `npm test` from WebHarness passed 102 tests for this increment (120 after the anchor increment).
+
+Unsigned `SILVERAN_DISABLE_CODE_SIGNING=1 scripts/macbuild`, `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=39E12943-158F-4DF0-873D-D689FEFEF90F,arch=arm64' scripts/iosbuild`, and `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_WATCHOS_DESTINATION='platform=watchOS Simulator,id=F2CE2EF4-1E36-4207-955D-965220C17BC6,arch=arm64' scripts/watchbuild` passed for the lifecycle/repository increment. Later final foundation builds are recorded in the plan. `git diff --check` and `scripts/verify-sqlite-vendor` pass.
+
+Real Pencil, process termination, memory pressure, VoiceOver and signed cloud tests have not been performed. Android SDK/NDK and Swift Android toolchain are absent; the Linux Docker daemon is unavailable. Session retention cannot make a failed disk write survive process death, and no such guarantee is claimed.
+
+#### Compatibility and follow-up
+
+No legacy storage migration. Pending edits remain explicitly unsaved and must be retried/exported before process loss. P2 durable repository migration and real-device lifecycle acceptance remain separate release gates. No annotation or configuration was uploaded.
+
+### BF-018 — Commit bookmarks and highlights before acknowledging them
+
+- Date: 2026-09-30
+- Status: Fixed
+- Platforms: Shared Kit; Apple Mac/iOS reader/editor recovery
+- Components: `BookmarkActor.swift`, `FilesystemActor.swift`, `HighlightPersistence.swift`, protected `BookLocator` disk decoding in `MediaModels.swift`, reader view model and recovery/editor views, `HighlightPersistenceSafetyTests.swift`
+- Related links: [ADR 002](docs/decisions/002-protected-highlight-commits.md), [implementation progress](docs/ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md#implementation-progress)
+
+#### Symptom
+
+After a highlight/bookmark creation, edit or deletion failed to reach disk, the reader could still update its list/rendering and dismiss the note editor as if saved. Failed bulk deletion could clear memory while the file remained. A corrupted locator could lose fields on the next save; unknown payloads could be stripped. Reproduce with an injected disk-full/delete-permission error, or a Highlights V2 record containing an unknown/malformed locator field. No personal annotation data is required.
+
+#### Root cause
+
+BookmarkActor mutated its cache before persistence and swallowed filesystem errors, then notified observers. Asynchronous read/mutate/save calls allowed reentrancy between ownership boundaries. `deleteAllHighlights` did not load/validate the original first. The locator's intentionally lenient network decoder and Codable's unknown-key behavior were reused on durable annotations, permitting a read to discard content before replacement.
+
+#### Change
+
+The existing filesystem actor now owns a non-suspending protected read/mutate/validate/atomic-write or delete operation. All save/delete paths check the original, known field shapes, IDs and source/book ownership. Protected disk decoding rejects malformed optional locator types without changing ordinary network/renderer tolerance. BookmarkActor queries committed state and returns explicit results; it retains failed commands in source/book order, retries stable IDs without duplicate adds, blocks later commands from overtaking failure, and notifies observers only after a local commit.
+
+Apple reader/editor handling updates the projection and dismisses the editor after success. Failed drafts remain available; retry and diagnostic export appear within the sheet and reader. Further edit/save controls pause while commands need recovery. The shared actor retains pending commands across reader instances. Recovery export includes exact original bytes and pending commands, with a generation check; it is not an automatically applied archive or a new storage authority. Existing source identity, Highlights V2 format, ISO timestamp precision and valid migration behavior remain unchanged.
+
+#### Validation
+
+- `scripts/test`: passed **225 tests in 13 suites** on the final source, including existing identity/highlight migration, ink model/session/bridge and new protected persistence suites.
+- `npm test` from `SilveranKit/Tests/WebHarness`: passed **102 tests**; no JavaScript was changed by these increments after that run.
+- `SILVERAN_DISABLE_CODE_SIGNING=1 scripts/macbuild`: passed on the final source.
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=39E12943-158F-4DF0-873D-D689FEFEF90F,arch=arm64' scripts/iosbuild`: passed on the final source.
+- Initial `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='generic/platform=iOS Simulator' scripts/iosbuild`: failed in x86_64 StoryAlign `WordAligner.swift`, matching the prior configuration record; the arm64 build passed without dependency changes.
+- `git diff --check`: passed. New/small edited Swift files were formatted with `swift format --in-place`; the repository-wide formatter was not run over unrelated existing worktree changes. Local links in the plan, baseline, ADRs and bugfix log were checked.
+- These are macOS automated tests and unsigned compile checks. Real Pencil/editor/export-dialog/VoiceOver interaction, close/process-termination recovery, signed iCloud acceptance and Android/Linux/TV/watch builds were not performed. No cloud/server operation was performed.
+
+#### Compatibility and follow-up
+
+No migration or dependency addition. Previously tolerated damaged/unknown files now require recovery and cannot be bulk-deleted through ordinary APIs. Pending commands have not been durably saved and cannot survive process loss; retry/export is explicit. This recovery envelope has no automatic import/replay, and historical/full-configuration backup remains future work. Cross-process/replicated conflicts and full Phase 1 lifecycle acceptance remain open; older versions do not have write protection.
+
+### BF-017 — Protect ink originals and report failed local saves
+
+- Date: 2026-09-30
+- Status: Fixed
+- Platforms: Shared Kit persistence/session; Apple Mac/iOS recovery UI
+- Components: `InkActor.swift`, `InkModels.swift`, `InkSession.swift`, `EbookPlayerViewModel.swift`, `EbookPlayerView.swift`, new `InkPersistenceBanner.swift`; ink model and persistence regression suites
+- Related links: [ADR 001](docs/decisions/001-protected-legacy-ink-persistence.md), [implementation plan](docs/ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md#implementation-progress)
+
+#### Symptom
+
+Opening malformed, future-format or partly damaged ink could show missing/changed handwriting, and the next edit could replace the original with a smaller or empty collection. Missing IDs were regenerated during reads; unknown drawing tools/mark kinds were converted into known types. A disk-full/unwritable-path failure left edits visible in memory and `flush` completed with no indication that they were unsaved. The reader provided no retry/export recovery action. Synthetic files and an injected file-write-out-of-space error reproduce these integrity failures without personal data.
+
+#### Root cause
+
+Model decoders used `try?` plus empty/default collections and random IDs; unknown fields were discarded and `BookInk.version` did not enforce supported schemas. `InkActor` cached the candidate before persistence, logged write errors without returning them, and suspended while resolving its file path inside the mutation sequence. `InkSession` tracked only the editing model, and task completion was indistinguishable from successful persistence. A reload/switch could replace pending state.
+
+#### Change
+
+Protected loads now distinguish missing/valid/partially recoverable/corrupt/unsupported-version/unreadable. Safe known optional defaults remain, but required IDs/payloads, explicit collection types, creative enums and stroke geometry decode strictly. Disk reads reject unknown fields and ambiguous mixed anchor payloads. Readable records from damaged known-format files are a read-only projection; original bytes are preserved for export and ordinary mutation is refused. Unsupported schemas are never interpreted as current data.
+
+The existing actor resolves its root before a non-suspending read/mutate/atomic-write sequence, rechecks disk content on every mutation, validates candidates, and returns a commit result including deletion failures. It no longer caches uncommitted candidates. Source-scoped BookID, path layout, schemas 1/2 and valid legacy CFI migration remain unchanged; there is no new authoritative store.
+
+The session separates immediate editing state from confirmed commits, tracks pending section revisions, retains failed edits for retry/export, and does not allow another section's successful write to conceal unsaved work. Flush waits for accepted strokes as well as persistence/rendering and reports pending work. Same-book reattachment preserves undo/pending state; a switch cannot discard uncommitted edits, and superseded loads are guarded. Backgrounding flushes ink before progress networking. Apple reader recovery controls show errors, retry saving, and export original bytes or the current single-book editing snapshot through SwiftUI's system exporter.
+
+#### Validation
+
+- `scripts/test`: passed **225 tests in 13 suites** on the final source, including existing identity/highlight migration, ink model/session/bridge and new protected persistence suites.
+- `npm test` from `SilveranKit/Tests/WebHarness`: passed **102 tests**; no JavaScript was changed by these increments after that run.
+- `SILVERAN_DISABLE_CODE_SIGNING=1 scripts/macbuild`: passed on the final source.
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=39E12943-158F-4DF0-873D-D689FEFEF90F,arch=arm64' scripts/iosbuild`: passed on the final source.
+- Initial `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='generic/platform=iOS Simulator' scripts/iosbuild`: failed in x86_64 StoryAlign `WordAligner.swift`, matching the prior configuration record; the arm64 build passed without dependency changes.
+- `git diff --check`: passed. New/small edited Swift files were formatted with `swift format --in-place`; the repository-wide formatter was not run over unrelated existing worktree changes. Local links in the plan, baseline, ADRs and bugfix log were checked.
+- These are macOS automated tests and unsigned compile checks. Real Pencil/editor/export-dialog/VoiceOver interaction, close/process-termination recovery, signed iCloud acceptance and Android/Linux/TV/watch builds were not performed. No cloud/server operation was performed.
+
+#### Compatibility and follow-up
+
+No format migration or dependency addition. Damaged files that previously appeared editable now require recovery; unknown original bytes remain intact. Failed writes cannot guarantee crash survival: edits remain in the owning reader session, and the warning asks users to retry/export before closing. Session destruction/close/cancellation acceptance, historical backup, whole-library import/restore, bookmark/highlight reliability and large-book performance remain later plan work. Older builds lack this write protection and must not be used to mutate protected files. No cloud completion claim or remote publication was added.
+
+### BF-016 — Failed settings writes left the in-memory configuration changed
+
+- Date: 2026-09-30
+- Status: Fixed
+- Platforms: Shared persistence; automated validation on macOS
+- Components: `SilveranKit/Sources/Kit/Actors/SettingsActor.swift`, `SilveranKit/Tests/SilveranTests/ConfigurationSyncTests.swift`
+- Related links: `docs/ICLOUD_CONFIGURATION_IMPLEMENTATION_PLAN.md`
+
+#### Symptom
+
+If the configuration directory is unwritable or cannot be used as a directory, a settings update throws, but subsequent readers could still see the unsaved value. A reliable test creates a file where the settings directory should be and attempts to change the font size.
+
+#### Root cause
+
+`updateConfig` assigned `config = updated` before writing the JSON file. A persistence error left actor memory ahead of disk, violating the successful-local-commit boundary that cloud publication also needs.
+
+#### Change
+
+A shared commit method atomically writes the candidate configuration before assigning actor state and notifying either UI observers or sync observers. Identical configurations are no-ops. Existing local JSON format and platform invariants remain unchanged. This does not alter the older startup fallback behavior for an unreadable configuration file.
+
+#### Validation
+
+`ConfigurationPatchTests.failedPersistenceDoesNotPublishMemory` asserts that the write throws and actor state remains unchanged. `scripts/test` passed 206 tests on the final source, including 23 configuration tests. Unsigned Mac/arm64 iOS simulator builds and signed Mac/iOS device builds passed; both signed bundles have matching KVS entitlements and pass `codesign --verify --deep --strict`. Exact build commands and provisioning recovery are recorded in `docs/ICLOUD_CONFIGURATION_SYNC.md`. Device and non-Apple runtime validation remain outstanding.
+
+#### Compatibility and follow-up
+
+None known. Existing callers still receive persistence errors; failed candidates are no longer visible as committed settings.
+
+### BF-015 — Reader settings saves omitted highlight swatches and labels
+
+- Date: 2026-09-30
+- Status: Fixed
+- Platforms: macOS and iOS/iPadOS reader settings; automated validation on macOS
+- Components: `SilveranKit/Sources/AppleKit/MobileDesktop/SettingsViewModel.swift`, `SilveranKit/Tests/SilveranTests/ConfigurationSyncTests.swift`
+- Related links: `docs/ICLOUD_CONFIGURATION_IMPLEMENTATION_PLAN.md`
+
+#### Symptom
+
+A reader settings edit to a user highlight color or label could appear in the active editor without reaching the persisted global configuration. A later reload or another device would not retain the edit.
+
+#### Root cause
+
+`SettingsViewModel.persistNow` supplied modes and themes to `updateConfig` but omitted all six `userHighlightColor` and `userHighlightLabel` properties. These properties were loaded into the view model but were absent from its persistence mapping.
+
+#### Change
+
+The editor snapshot used for field-level persistence includes all highlight swatches and labels. Unrelated settings are still loaded from the current actor snapshot rather than overwritten by editor defaults.
+
+#### Validation
+
+`ConfigurationCoordinatorTests.pendingEditorSaveKeepsIncomingPlaybackAndHighlightEdits` edits a highlight label and color, schedules a save, applies a concurrent remote playback edit, and verifies the label persists with both other changes. `scripts/test` passed 206 tests on the final source, including 23 configuration tests. Unsigned Mac/arm64 iOS simulator builds and signed Mac/iOS device builds passed; both signed bundles have matching KVS entitlements and pass `codesign --verify --deep --strict`. Exact build commands and provisioning recovery are recorded in `docs/ICLOUD_CONFIGURATION_SYNC.md`. Physical-device UI acceptance remains outstanding.
+
+#### Compatibility and follow-up
+
+None known. Existing persisted fields and JSON format are retained.
+
+### BF-014 — Debounced settings editors could overwrite unrelated incoming changes
+
+- Date: 2026-09-30
+- Status: Fixed
+- Platforms: macOS and iOS/iPadOS settings; shared patch logic; automated validation on macOS
+- Components: `SettingsViewModel.swift`, `Views/SettingsView.swift`, `Kit/Actors/SettingsActor.swift`, `Kit/Configuration/ConfigurationPatch.swift`, `ConfigurationSyncTests.swift`
+- Related links: `docs/ICLOUD_CONFIGURATION_IMPLEMENTATION_PLAN.md`
+
+#### Symptom
+
+With a settings save pending, an unrelated settings update from another actor/client could be replaced by the editor's stale values. iCloud makes this reproducible by delivering a playback-speed change while a font-size edit waits for its 300 ms debounce.
+
+#### Root cause
+
+Both settings editors submitted full snapshots. The reader view model skipped observer reloads while saving; the settings view also ignored reloads during a pending save and shortly after one. Untouched fields therefore became stale writes. The Mac reader editor additionally submitted fallback values for fields only editable on iOS.
+
+#### Change
+
+A portable patch compares the last actor baseline with the actual editor snapshot. SettingsActor applies only changed fields to its current configuration. Both editors merge incoming values into untouched fields, retaining pending user edits to the same field. Mac snapshots preserve iOS-only values. Remote-origin commits notify UI observers without being republished to iCloud. Missing patch keys retain existing values; explicit nil clears remain distinct.
+
+#### Validation
+
+`ConfigurationPatchTests.editsPreserveUnrelatedIncomingFields` and `explicitClearDiffersFromAbsence` cover the merge contract. `ConfigurationCoordinatorTests.pendingEditorSaveKeepsIncomingPlaybackAndHighlightEdits` covers the actual reader view model with an injected SettingsActor. `scripts/test` passed 206 tests on the final source, including 23 configuration tests. Unsigned Mac/arm64 iOS simulator builds and signed Mac/iOS device builds passed; both signed bundles have matching KVS entitlements and pass `codesign --verify --deep --strict`. Exact build commands and provisioning recovery are recorded in `docs/ICLOUD_CONFIGURATION_SYNC.md`. SettingsView interaction and physical-device iCloud delivery remain manual acceptance items.
+
+#### Compatibility and follow-up
+
+None known. Same-field pending user edits take precedence until submitted; later iCloud per-key outcomes may replace them. This does not promise lossless concurrent edits to an aggregate theme or navigation configuration.
+
 ### BF-013 — The page could turn while writing with Apple Pencil
 
 - Date: 2026-09-30

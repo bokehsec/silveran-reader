@@ -1,0 +1,321 @@
+[
+  {
+    "name": "exact unique quotation",
+    "text": "alpha beta gamma",
+    "anchor": {
+      "offset": 6,
+      "exact": "beta",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "exact",
+      "offset": 6,
+      "candidates": [
+        6
+      ],
+      "matchedBy": "quotation",
+      "reason": null
+    }
+  },
+  {
+    "name": "moved unique quotation",
+    "text": "new alpha beta gamma",
+    "anchor": {
+      "offset": 6,
+      "exact": "beta",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "remapped",
+      "offset": 10,
+      "candidates": [
+        10
+      ],
+      "matchedBy": "quotation",
+      "reason": null
+    }
+  },
+  {
+    "name": "repeated words with stale offset",
+    "text": "echo x echo y echo z echo w",
+    "anchor": {
+      "offset": 16,
+      "exact": "echo",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "ambiguous",
+      "offset": null,
+      "candidates": [
+        0,
+        7,
+        14,
+        21
+      ],
+      "matchedBy": "quotation",
+      "reason": "repeated-passage"
+    }
+  },
+  {
+    "name": "repeated words even at stored offset",
+    "text": "echo x echo y echo z echo w",
+    "anchor": {
+      "offset": 14,
+      "exact": "echo",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "ambiguous",
+      "offset": null,
+      "candidates": [
+        0,
+        7,
+        14,
+        21
+      ],
+      "matchedBy": "quotation",
+      "reason": "repeated-passage"
+    }
+  },
+  {
+    "name": "unique context distinguishes repeats",
+    "text": "echo x echo y echo z echo w",
+    "anchor": {
+      "offset": 14,
+      "exact": "echo",
+      "prefix": "y ",
+      "suffix": " z"
+    },
+    "version": 1,
+    "expected": {
+      "status": "exact",
+      "offset": 14,
+      "candidates": [
+        14
+      ],
+      "matchedBy": "context",
+      "reason": null
+    }
+  },
+  {
+    "name": "lost context retains ambiguous candidates",
+    "text": "echo x echo y",
+    "anchor": {
+      "offset": 0,
+      "exact": "echo",
+      "prefix": "removed ",
+      "suffix": "context"
+    },
+    "version": 1,
+    "expected": {
+      "status": "ambiguous",
+      "offset": null,
+      "candidates": [
+        0,
+        7
+      ],
+      "matchedBy": "quotation",
+      "reason": "repeated-passage"
+    }
+  },
+  {
+    "name": "boundary without following quotation",
+    "text": "alpha beta gamma",
+    "anchor": {
+      "offset": 10,
+      "exact": "",
+      "prefix": "beta",
+      "suffix": " gamma"
+    },
+    "version": 1,
+    "expected": {
+      "status": "exact",
+      "offset": 10,
+      "candidates": [
+        10
+      ],
+      "matchedBy": "boundary",
+      "reason": null
+    }
+  },
+  {
+    "name": "empty selector",
+    "text": "text",
+    "anchor": {
+      "offset": -1,
+      "exact": "",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "unresolved",
+      "offset": null,
+      "candidates": [],
+      "matchedBy": null,
+      "reason": "empty-selector"
+    }
+  },
+  {
+    "name": "missing quotation",
+    "text": "other words",
+    "anchor": {
+      "offset": 0,
+      "exact": "gone",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "unresolved",
+      "offset": null,
+      "candidates": [],
+      "matchedBy": null,
+      "reason": "quotation-missing"
+    }
+  },
+  {
+    "name": "negative offset invalid",
+    "text": "text",
+    "anchor": {
+      "offset": -2,
+      "exact": "text",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "unresolved",
+      "offset": null,
+      "candidates": [],
+      "matchedBy": null,
+      "reason": "invalid-selector"
+    }
+  },
+  {
+    "name": "unsupported normalization",
+    "text": "text",
+    "anchor": {
+      "offset": 0,
+      "exact": "text",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 2,
+    "expected": {
+      "status": "unresolved",
+      "offset": null,
+      "candidates": [],
+      "matchedBy": null,
+      "reason": "unsupported-anchor-version"
+    }
+  },
+  {
+    "name": "emoji before quotation uses UTF16",
+    "text": "😀 words end",
+    "anchor": {
+      "offset": 3,
+      "exact": "words",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "exact",
+      "offset": 3,
+      "candidates": [
+        3
+      ],
+      "matchedBy": "quotation",
+      "reason": null
+    }
+  },
+  {
+    "name": "combining sequence preserved",
+    "text": "é words",
+    "anchor": {
+      "offset": 3,
+      "exact": "words",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "exact",
+      "offset": 3,
+      "candidates": [
+        3
+      ],
+      "matchedBy": "quotation",
+      "reason": null
+    }
+  },
+  {
+    "name": "no silent Unicode canonical normalization",
+    "text": "é words",
+    "anchor": {
+      "offset": 0,
+      "exact": "é",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "unresolved",
+      "offset": null,
+      "candidates": [],
+      "matchedBy": null,
+      "reason": "quotation-missing"
+    }
+  },
+  {
+    "name": "RTL keeps logical UTF16 order",
+    "text": "قبل نص عربي بعد",
+    "anchor": {
+      "offset": 0,
+      "exact": "نص عربي",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "remapped",
+      "offset": 4,
+      "candidates": [
+        4
+      ],
+      "matchedBy": "quotation",
+      "reason": null
+    }
+  },
+  {
+    "name": "overlapping quotation stays ambiguous",
+    "text": "aaaa",
+    "anchor": {
+      "offset": 1,
+      "exact": "aa",
+      "prefix": "",
+      "suffix": ""
+    },
+    "version": 1,
+    "expected": {
+      "status": "ambiguous",
+      "offset": null,
+      "candidates": [
+        0,
+        1,
+        2
+      ],
+      "matchedBy": "quotation",
+      "reason": "repeated-passage"
+    }
+  }
+]

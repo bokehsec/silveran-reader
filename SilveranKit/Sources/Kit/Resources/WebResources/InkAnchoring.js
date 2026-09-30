@@ -20,6 +20,8 @@ export const isInkElement = node => node?.nodeType === 1 && node.localName === I
 
 /** Characters of context kept on each side of an anchor. */
 export const CONTEXT_LENGTH = 32;
+/** Bound recovery candidates without choosing an arbitrary match or allocating a chapter-sized list. */
+export const ANCHOR_CANDIDATE_LIMIT = 256;
 /** Characters of text an anchor keeps (`exact`); a mark keeps the words it covers instead. */
 export const EXACT_LENGTH = 32;
 export const MARK_EXACT_LENGTH = 200;
@@ -206,13 +208,19 @@ export function buildTextIndex(root) {
 
 /** An anchor for the `length` characters of `text` at `offset`. */
 export function makeAnchor(text, offset, length = EXACT_LENGTH) {
-  const at = Math.max(0, Math.min(offset, text.length));
-  const end = Math.min(text.length, at + length);
+  // JSON selectors must contain complete Unicode scalars, even at a 32-code-unit boundary.
+  const boundary = value => {
+    const at = Math.max(0, Math.min(value, text.length));
+    const previous = text.charCodeAt(at - 1), next = text.charCodeAt(at);
+    return previous >= 0xD800 && previous <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF ? at - 1 : at;
+  };
+  const at = boundary(offset);
+  const end = boundary(at + length);
   return {
     offset: at,
-    prefix: text.slice(Math.max(0, at - CONTEXT_LENGTH), at),
+    prefix: text.slice(boundary(at - CONTEXT_LENGTH), at),
     exact: text.slice(at, end),
-    suffix: text.slice(end, end + CONTEXT_LENGTH),
+    suffix: text.slice(end, boundary(end + CONTEXT_LENGTH)),
   };
 }
 
@@ -225,43 +233,43 @@ export function anchorForBoundary(index, container, offset) {
 const occurrences = (text, needle) => {
   const found = [];
   if (!needle) return found;
-  for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + 1)) found.push(at);
+  for (let at = text.indexOf(needle); at !== -1 && found.length < ANCHOR_CANDIDATE_LIMIT; at = text.indexOf(needle, at + 1)) found.push(at);
   return found;
 };
 
-const nearest = (candidates, target) => {
-  if (!candidates.length) return null;
-  const goal = target >= 0 ? target : 0;
-  return candidates.reduce((best, c) => (Math.abs(c - goal) < Math.abs(best - goal) ? c : best));
-};
-
-/**
- * Where an anchor points in `text`, or null if its words are not there (the ink is then
- * orphaned: kept, not drawn). Tried in order: the words at the stored offset; the words with
- * their context, nearest the stored offset; the words alone, nearest the stored offset.
+/** A typed, non-mutating resolution. UTF-16 offsets use normalization version 1.
+ * Repeated passages stay ambiguous even when one is nearest the old offset.
+ * Offset proximity is not evidence of edition identity.
  */
-export function resolveAnchor(text, anchor) {
-  if (!anchor) return null;
+export function resolveAnchorOutcome(text, anchor, version = 1) {
+  const unresolved = reason => ({ status: "unresolved", offset: null, candidates: [], matchedBy: null, reason });
+  if (version !== 1) return unresolved("unsupported-anchor-version");
+  if (!anchor || typeof text !== "string") return unresolved("missing-selector");
   const { offset = -1, prefix = "", exact = "", suffix = "" } = anchor;
-
-  if (offset >= 0 && offset <= text.length) {
-    if (exact) {
-      if (text.startsWith(exact, offset)) return offset;
-    } else if (prefix && text.slice(Math.max(0, offset - prefix.length), offset) === prefix) {
-      return offset;
-    }
-  }
-
+  if (!Number.isSafeInteger(offset) || offset < -1 ||
+      [prefix, exact, suffix].some(value => typeof value !== "string")) return unresolved("invalid-selector");
+  const result = (candidates, matchedBy) => {
+    if (!candidates.length) return null;
+    if (candidates.length !== 1) return { status: "ambiguous", offset: null, candidates, matchedBy, reason: "repeated-passage" };
+    const at = candidates[0];
+    return { status: at === offset ? "exact" : "remapped", offset: at, candidates, matchedBy, reason: null };
+  };
   if (exact) {
-    const withContext = nearest(occurrences(text, prefix + exact + suffix), offset);
-    if (withContext != null) return withContext + prefix.length;
-    const alone = nearest(occurrences(text, exact), offset);
-    if (alone != null) return alone;
-  } else if (prefix) {
-    const at = nearest(occurrences(text, prefix + suffix), offset);
-    if (at != null) return at + prefix.length;
+    if (prefix || suffix) {
+      const contextual = result(occurrences(text, prefix + exact + suffix).map(at => at + prefix.length), "context");
+      if (contextual) return contextual;
+    }
+    return result(occurrences(text, exact), "quotation") ?? unresolved("quotation-missing");
   }
-  return null;
+  if (prefix || suffix) {
+    return result(occurrences(text, prefix + suffix).map(at => at + prefix.length), "boundary") ?? unresolved("context-missing");
+  }
+  return unresolved("empty-selector");
+}
+
+/** Rendering projects only a uniquely resolved target; originals remain in Swift for recovery. */
+export function resolveAnchor(text, anchor) {
+  return resolveAnchorOutcome(text, anchor).offset;
 }
 
 /**

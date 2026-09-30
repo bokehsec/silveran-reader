@@ -49,12 +49,12 @@ private class SettingsReloader: ObservableObject {
 
 public struct SettingsView: View {
     @State private var config = SilveranGlobalConfig()
+    @State private var baseline = SilveranGlobalConfig()
     @State private var isLoaded = false
     @State private var saveError: String?
+    @State private var persistenceMessage: String?
     @State private var showResetConfirmation = false
     @State private var persistTask: Task<Void, Never>?
-    @State private var isReloadingFromActor = false
-    @State private var lastPersistTime: Date = .distantPast
     @StateObject private var reloader = SettingsReloader()
     #if os(macOS)
     @State private var selectedTab: SettingsTab = .readerSettings
@@ -71,6 +71,13 @@ public struct SettingsView: View {
                 ProgressView()
                     .controlSize(.large)
             }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            SettingsPersistenceBanner(
+                message: persistenceMessage,
+                retry: retrySettings,
+                export: exportSettingsRecovery
+            )
         }
         .task(loadConfig)
         .onChange(of: config) { _, newValue in persistConfig(newValue: newValue) }
@@ -131,106 +138,78 @@ public struct SettingsView: View {
 
     private func loadConfig() async {
         guard !isLoaded else { return }
-        let loaded = await SettingsActor.shared.config
+        let owned = await SettingsActor.shared.persistenceSnapshot()
+        let loaded = owned.config
+        var projection = loaded
+        do { projection = try owned.pendingChanges?.applying(to: loaded) ?? loaded } catch {
+            persistenceMessage = error.localizedDescription
+        }
+        persistenceMessage = owned.loadResult.message ?? owned.saveFailure
+        let editing = projection
         await MainActor.run {
-            isReloadingFromActor = true
-            config = loaded
+            baseline = editing
+            config = editing
             isLoaded = true
-            isReloadingFromActor = false
         }
     }
 
     private func reloadConfig() async {
-        guard persistTask == nil else { return }
-        let timeSinceLastPersist = Date().timeIntervalSince(lastPersistTime)
-        guard timeSinceLastPersist > 1.0 else { return }
-        let loaded = await SettingsActor.shared.config
-        await MainActor.run {
-            isReloadingFromActor = true
-            config = loaded
-            isReloadingFromActor = false
+        let owned = await SettingsActor.shared.persistenceSnapshot()
+        let loaded = owned.config
+        var projection = loaded
+        do { projection = try owned.pendingChanges?.applying(to: loaded) ?? loaded } catch {
+            persistenceMessage = error.localizedDescription
         }
+        persistenceMessage = owned.loadResult.message ?? owned.saveFailure
+        let merged =
+            (try? ConfigurationPatch.merging(baseline: baseline, edited: config, latest: projection))
+            ?? projection
+        baseline = projection
+        config = merged
     }
 
     private func persistConfig(newValue: SilveranGlobalConfig) {
-        guard isLoaded, !isReloadingFromActor else { return }
-
-        lastPersistTime = Date()
+        guard isLoaded, newValue != baseline else { return }
         persistTask?.cancel()
         persistTask = Task {
-            defer { persistTask = nil }
-            try? await Task.sleep(for: .milliseconds(300))
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
             guard !Task.isCancelled else { return }
-
+            let submitted = config
+            let previous = baseline
             do {
-                try await SettingsActor.shared.updateConfig(
-                    fontSize: newValue.reading.fontSize,
-                    fontFamily: newValue.reading.fontFamily,
-                    lineSpacing: newValue.reading.lineSpacing,
-                    marginLeftRight: newValue.reading.marginLeftRight,
-                    marginTopBottom: newValue.reading.marginTopBottom,
-                    wordSpacing: newValue.reading.wordSpacing,
-                    letterSpacing: newValue.reading.letterSpacing,
-                    textAlignment: newValue.reading.textAlignment,
-                    highlightColor: .some(newValue.reading.highlightColor),
-                    highlightThickness: newValue.reading.highlightThickness,
-                    backgroundColor: .some(newValue.reading.backgroundColor),
-                    foregroundColor: .some(newValue.reading.foregroundColor),
-                    customCSS: .some(newValue.reading.customCSS),
-                    enableMarginClickNavigation: newValue.reading.enableMarginClickNavigation,
-                    singleColumnMode: newValue.reading.singleColumnMode,
-                    scrollingMode: newValue.reading.scrollingMode,
-                    pageTurnStyle: newValue.reading.pageTurnStyle,
-                    animatePageTurnsDuringReadaloud: newValue.reading.animatePageTurnsDuringReadaloud,
-                    defaultPlaybackSpeed: newValue.playback.defaultPlaybackSpeed,
-                    enableReadingBar: newValue.readingBar.enabled,
-                    showPlayerControls: newValue.readingBar.showPlayerControls,
-                    showProgressBar: newValue.readingBar.showProgressBar,
-                    showProgress: newValue.readingBar.showProgress,
-                    showTimeRemainingInBook: newValue.readingBar.showTimeRemainingInBook,
-                    showTimeRemainingInChapter: newValue.readingBar.showTimeRemainingInChapter,
-                    showPageNumber: newValue.readingBar.showPageNumber,
-                    overlayTransparency: newValue.readingBar.overlayTransparency,
-                    alwaysShowMiniPlayer: newValue.readingBar.alwaysShowMiniPlayer,
-                    progressSyncIntervalSeconds: newValue.sync.progressSyncIntervalSeconds,
-                    metadataRefreshIntervalSeconds: newValue.sync.metadataRefreshIntervalSeconds,
-                    autoSyncToNewerServerPosition: newValue.sync.autoSyncToNewerServerPosition,
-                    showAudioIndicator: newValue.library.showAudioIndicator,
-                    tapToPlayPreferredPlayer: newValue.library.tapToPlayPreferredPlayer,
-                    preferAudioOverEbook: newValue.library.preferAudioOverEbook,
-                    accentColorHex: newValue.library.accentColorHex,
-                    userHighlightColor1: newValue.reading.userHighlightColor1,
-                    userHighlightColor2: newValue.reading.userHighlightColor2,
-                    userHighlightColor3: newValue.reading.userHighlightColor3,
-                    userHighlightColor4: newValue.reading.userHighlightColor4,
-                    userHighlightColor5: newValue.reading.userHighlightColor5,
-                    userHighlightColor6: newValue.reading.userHighlightColor6,
-                    userHighlightLabel1: newValue.reading.userHighlightLabel1,
-                    userHighlightLabel2: newValue.reading.userHighlightLabel2,
-                    userHighlightLabel3: newValue.reading.userHighlightLabel3,
-                    userHighlightLabel4: newValue.reading.userHighlightLabel4,
-                    userHighlightLabel5: newValue.reading.userHighlightLabel5,
-                    userHighlightLabel6: newValue.reading.userHighlightLabel6,
-                    userHighlightMode: newValue.reading.userHighlightMode,
-                    readaloudHighlightMode: newValue.reading.readaloudHighlightMode,
-                    tabBarSlot1: newValue.library.tabBarSlot1,
-                    tabBarSlot2: newValue.library.tabBarSlot2,
-                    tvSubtitleFontSize: newValue.reading.tvSubtitleFontSize,
-                    tvBackgroundStyle: newValue.reading.tvReaderAppearance.backgroundStyle,
-                    selectedLightThemeId: newValue.themes.selectedLightThemeId,
-                    selectedDarkThemeId: newValue.themes.selectedDarkThemeId,
-                    customThemes: newValue.themes.customThemes,
-                )
+                try await SettingsActor.shared.applyUserChanges(from: previous, to: submitted)
+                baseline = submitted
+                persistenceMessage = nil
+                await reloadConfig()
             } catch {
-                await MainActor.run {
-                    saveError = error.localizedDescription
-                }
+                saveError = error.localizedDescription
+                persistenceMessage = error.localizedDescription
             }
+            persistTask = nil
         }
     }
 
     private func resetAllSettings() {
         config = SilveranGlobalConfig()
+    }
+
+    private func retrySettings() async {
+        persistTask?.cancel()
+        let submitted = config
+        let previous = baseline
+        _ = await SettingsActor.shared.retryLoad()
+        do {
+            try await SettingsActor.shared.applyUserChanges(from: previous, to: submitted)
+            baseline = submitted
+            persistenceMessage = nil
+            saveError = nil
+            await reloadConfig()
+        } catch { persistenceMessage = error.localizedDescription }
+    }
+
+    private func exportSettingsRecovery() async throws -> Data {
+        let draft = try ConfigurationPatch.difference(from: baseline, to: config)
+        return try await SettingsActor.shared.exportRecovery(including: draft)
     }
 }
 
@@ -335,6 +314,8 @@ extension SettingsView {
     fileprivate var iosContent: some View {
         NavigationStack {
             Form {
+                Section { ICloudSettingsSection() }
+
                 Section("General") {
                     GeneralSettingsFields(sync: $config.sync)
                 }
@@ -500,6 +481,8 @@ private struct MacGeneralSettingsView: View {
 
     var body: some View {
         MacSettingsContainer(tab: .general) {
+            ICloudSettingsSection()
+            Divider()
             VStack(alignment: .leading, spacing: 18) {
                 Text("Storyteller Server Sync")
                     .font(.headline)

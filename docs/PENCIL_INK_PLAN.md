@@ -1,5 +1,7 @@
 # Apple Pencil Ink (iPadOS) — Implementation Plan
 
+Long-term direction: [annotation, sync and backup review](ANNOTATION_SYNC_BACKUP_REVIEW.md). This document retains the historical spike/MVP scope. Its exclusions and estimates do not define full Scribe parity or the complete backup requirement; current data-integrity rules in [AGENTS.md](../AGENTS.md) take precedence.
+
 Status: Phase 0 spike in progress (simulator checks pass; device checks pending) · Platform: iPadOS only · Date: 2026-09-29
 Source MVP: `~/dev.local/Marginalia` (standalone iPad EPUB reader, v0.1, uncommitted)
 

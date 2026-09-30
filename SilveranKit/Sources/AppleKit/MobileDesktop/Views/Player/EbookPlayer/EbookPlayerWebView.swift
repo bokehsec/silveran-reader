@@ -508,17 +508,21 @@ private func makeWebViewConfiguration2(
 struct EbookPlayerWebView: View {
     let ebookPath: URL?
     @Binding var commsBridge: ReaderCommsBridge?
+    /// The book's ink session; it outlives this web view (see `EbookPlayerViewModel.inkSession`).
+    let inkSession: InkSession?
     let onBridgeReady: ((ReaderCommsBridge) -> Void)?
     let onContentPurged: (() -> Void)?
 
     init(
         ebookPath: URL?,
         commsBridge: Binding<ReaderCommsBridge?>,
+        inkSession: InkSession? = nil,
         onBridgeReady: ((ReaderCommsBridge) -> Void)?,
         onContentPurged: (() -> Void)? = nil,
     ) {
         self.ebookPath = ebookPath
         self._commsBridge = commsBridge
+        self.inkSession = inkSession
         self.onBridgeReady = onBridgeReady
         self.onContentPurged = onContentPurged
     }
@@ -527,6 +531,7 @@ struct EbookPlayerWebView: View {
         WebViewWrapper2(
             ebookPath: ebookPath,
             commsBridge: $commsBridge,
+            inkSession: inkSession,
             onBridgeReady: onBridgeReady,
             onContentPurged: onContentPurged,
         )
@@ -541,6 +546,7 @@ struct EbookPlayerWebView: View {
 private struct WebViewWrapper2: View {
     let ebookPath: URL?
     @Binding var commsBridge: ReaderCommsBridge?
+    let inkSession: InkSession?
     let onBridgeReady: ((ReaderCommsBridge) -> Void)?
     let onContentPurged: (() -> Void)?
     @State private var webView: WKWebView?
@@ -549,6 +555,7 @@ private struct WebViewWrapper2: View {
         WebViewRepresentable2(
             webView: $webView,
             commsBridge: $commsBridge,
+            inkSession: inkSession,
             ebookPath: ebookPath,
             onBridgeReady: onBridgeReady,
             onReaderReady: {
@@ -622,6 +629,7 @@ private struct WebViewWrapper2: View {
 private struct WebViewRepresentable2: PlatformViewRepresentable {
     @Binding var webView: WKWebView?
     @Binding var commsBridge: ReaderCommsBridge?
+    let inkSession: InkSession?
     let ebookPath: URL?
     let onBridgeReady: ((ReaderCommsBridge) -> Void)?
     let onReaderReady: () -> Void
@@ -683,7 +691,7 @@ private struct WebViewRepresentable2: PlatformViewRepresentable {
         DispatchQueue.main.async {
             self.webView = wkWebView
             let evaluator = WKWebViewJSEvaluator(webView: wkWebView)
-            let bridge = ReaderCommsBridge(js: evaluator)
+            let bridge = ReaderCommsBridge(js: evaluator, inkSession: inkSession ?? InkSession())
             context.coordinator.jsEvaluator = evaluator
             context.coordinator.commsBridge = bridge
 

@@ -88,8 +88,11 @@ public final class SettingsViewModel {
     public var builtInThemeOverrides: [ReaderTheme] = []
 
     public var isLoaded: Bool = false
+    public var persistenceMessage: String?
 
+    @ObservationIgnored private let settings: SettingsActor
     @ObservationIgnored private var observerID: UUID?
+    @ObservationIgnored private var baseline = SilveranGlobalConfig()
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
     public var readingBarConfig: SilveranGlobalConfig.ReadingBar {
@@ -131,7 +134,8 @@ public final class SettingsViewModel {
         "\(userHighlightColor1)\(userHighlightColor2)\(userHighlightColor3)\(userHighlightColor4)\(userHighlightColor5)\(userHighlightColor6)"
     }
 
-    public init() {
+    public init(settings: SettingsActor = .shared) {
+        self.settings = settings
         Task {
             await loadSettings()
             await registerObserver()
@@ -140,14 +144,31 @@ public final class SettingsViewModel {
 
     deinit {
         if let id = observerID {
+            let settings = settings
             Task {
-                await SettingsActor.shared.removeObserver(id: id)
+                await settings.removeObserver(id: id)
             }
         }
     }
 
     private func loadSettings() async {
-        let config = await SettingsActor.shared.config
+        let owned = await settings.persistenceSnapshot()
+        let latest = owned.config
+        persistenceMessage = owned.loadResult.message ?? owned.saveFailure
+        var projection = latest
+        do { projection = try owned.pendingChanges?.applying(to: latest) ?? latest } catch {
+            persistenceMessage = error.localizedDescription
+        }
+        let config =
+            isLoaded
+            ? (try? ConfigurationPatch.merging(
+                baseline: baseline,
+                edited: snapshot,
+                latest: projection
+            ))
+                ?? projection
+            : projection
+        baseline = projection
 
         fontSize = config.reading.fontSize
         fontFamily = config.reading.fontFamily
@@ -226,9 +247,8 @@ public final class SettingsViewModel {
     }
 
     private func registerObserver() async {
-        let id = await SettingsActor.shared.request_notify { @MainActor [weak self] in
+        let id = await settings.request_notify { @MainActor [weak self] in
             guard let self else { return }
-            guard self.saveTask == nil else { return }
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 await self.loadSettings()
@@ -412,64 +432,121 @@ public final class SettingsViewModel {
         saveTask = Task {
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
-            try? await persistNow()
+            do { try await persistNow() } catch { persistenceMessage = error.localizedDescription }
             saveTask = nil
         }
     }
 
+    private var snapshot: SilveranGlobalConfig {
+        var result = baseline
+        result.reading.fontSize = fontSize
+        result.reading.fontFamily = fontFamily
+        result.reading.lineSpacing = lineSpacing
+        result.reading.marginLeftRight = marginLeftRight
+        result.reading.marginTopBottom = marginTopBottom
+        result.reading.wordSpacing = wordSpacing
+        result.reading.letterSpacing = letterSpacing
+        result.reading.textAlignment = textAlignment
+        result.reading.highlightColor = highlightColor
+        result.reading.highlightThickness = highlightThickness
+        result.reading.backgroundColor = backgroundColor
+        result.reading.foregroundColor = foregroundColor
+        result.reading.customCSS = customCSS
+        result.reading.enableMarginClickNavigation = enableMarginClickNavigation
+        result.reading.singleColumnMode = singleColumnMode
+        result.reading.scrollingMode = scrollingMode
+        result.reading.pageTurnStyle = pageTurnStyle
+        result.reading.animatePageTurnsDuringReadaloud = animatePageTurnsDuringReadaloud
+        result.playback.defaultPlaybackSpeed = defaultPlaybackSpeed
+        result.playback.defaultVolume = defaultVolume
+        result.playback.statsExpanded = statsExpanded
+        result.playback.lockViewToAudio = lockViewToAudio
+        result.readingBar.enabled = enableReadingBar
+        result.readingBar.showPlayerControls = showPlayerControls
+        result.readingBar.showProgressBar = showProgressBar
+        result.readingBar.showProgress = showProgress
+        result.readingBar.showTimeRemainingInBook = showTimeRemainingInBook
+        result.readingBar.showTimeRemainingInChapter = showTimeRemainingInChapter
+        result.readingBar.showPageNumber = showPageNumber
+        result.readingBar.overlayTransparency = overlayTransparency
+        #if os(iOS)
+        result.readingBar.alwaysShowMiniPlayer = alwaysShowMiniPlayerValue
+        #endif
+        #if os(iOS)
+        result.readingBar.showOverlaySkipBackward = showOverlaySkipBackwardValue
+        #endif
+        #if os(iOS)
+        result.readingBar.showOverlaySkipForward = showOverlaySkipForwardValue
+        #endif
+        #if os(iOS)
+        result.readingBar.showOverlayPlayPause = showOverlayPlayPauseValue
+        #endif
+        #if os(iOS)
+        result.readingBar.showMiniPlayerStats = showMiniPlayerStatsValue
+        #endif
+        result.sync.progressSyncIntervalSeconds = progressSyncIntervalSeconds
+        result.sync.metadataRefreshIntervalSeconds = metadataRefreshIntervalSeconds
+        result.sync.autoSyncToNewerServerPosition = autoSyncToNewerServerPosition
+        result.library.showAudioIndicator = showAudioIndicator
+        #if os(iOS)
+        result.library.tapToPlayPreferredPlayer = tapToPlayPreferredPlayerValue
+        #endif
+        #if os(iOS)
+        result.library.preferAudioOverEbook = preferAudioOverEbookValue
+        #endif
+        result.library.accentColorHex = accentColorHex
+        result.reading.userHighlightMode = userHighlightMode
+        result.reading.readaloudHighlightMode = readaloudHighlightMode
+        #if os(iOS)
+        result.library.tabBarSlot1 = tabBarSlot1Value
+        #endif
+        #if os(iOS)
+        result.library.tabBarSlot2 = tabBarSlot2Value
+        #endif
+        result.themes.selectedLightThemeId = selectedLightThemeId
+        result.themes.selectedDarkThemeId = selectedDarkThemeId
+        result.themes.customThemes = customThemes
+        result.themes.builtInThemeOverrides = builtInThemeOverrides
+        result.reading.userHighlightColor1 = userHighlightColor1
+        result.reading.userHighlightLabel1 = userHighlightLabel1
+        result.reading.userHighlightColor2 = userHighlightColor2
+        result.reading.userHighlightLabel2 = userHighlightLabel2
+        result.reading.userHighlightColor3 = userHighlightColor3
+        result.reading.userHighlightLabel3 = userHighlightLabel3
+        result.reading.userHighlightColor4 = userHighlightColor4
+        result.reading.userHighlightLabel4 = userHighlightLabel4
+        result.reading.userHighlightColor5 = userHighlightColor5
+        result.reading.userHighlightLabel5 = userHighlightLabel5
+        result.reading.userHighlightColor6 = userHighlightColor6
+        result.reading.userHighlightLabel6 = userHighlightLabel6
+        return result
+    }
+
     private func persistNow() async throws {
-        try await SettingsActor.shared.updateConfig(
-            fontSize: fontSize,
-            fontFamily: fontFamily,
-            lineSpacing: lineSpacing,
-            marginLeftRight: marginLeftRight,
-            marginTopBottom: marginTopBottom,
-            wordSpacing: wordSpacing,
-            letterSpacing: letterSpacing,
-            textAlignment: textAlignment,
-            highlightColor: .some(highlightColor),
-            highlightThickness: highlightThickness,
-            backgroundColor: .some(backgroundColor),
-            foregroundColor: .some(foregroundColor),
-            customCSS: .some(customCSS),
-            enableMarginClickNavigation: enableMarginClickNavigation,
-            singleColumnMode: singleColumnMode,
-            scrollingMode: scrollingMode,
-            pageTurnStyle: pageTurnStyle,
-            animatePageTurnsDuringReadaloud: animatePageTurnsDuringReadaloud,
-            defaultPlaybackSpeed: defaultPlaybackSpeed,
-            defaultVolume: defaultVolume,
-            statsExpanded: statsExpanded,
-            lockViewToAudio: lockViewToAudio,
-            enableReadingBar: enableReadingBar,
-            showPlayerControls: showPlayerControls,
-            showProgressBar: showProgressBar,
-            showProgress: showProgress,
-            showTimeRemainingInBook: showTimeRemainingInBook,
-            showTimeRemainingInChapter: showTimeRemainingInChapter,
-            showPageNumber: showPageNumber,
-            overlayTransparency: overlayTransparency,
-            alwaysShowMiniPlayer: alwaysShowMiniPlayerValue,
-            showOverlaySkipBackward: showOverlaySkipBackwardValue,
-            showOverlaySkipForward: showOverlaySkipForwardValue,
-            showOverlayPlayPause: showOverlayPlayPauseValue,
-            showMiniPlayerStats: showMiniPlayerStatsValue,
-            progressSyncIntervalSeconds: progressSyncIntervalSeconds,
-            metadataRefreshIntervalSeconds: metadataRefreshIntervalSeconds,
-            autoSyncToNewerServerPosition: autoSyncToNewerServerPosition,
-            showAudioIndicator: showAudioIndicator,
-            tapToPlayPreferredPlayer: tapToPlayPreferredPlayerValue,
-            preferAudioOverEbook: preferAudioOverEbookValue,
-            accentColorHex: accentColorHex,
-            userHighlightMode: userHighlightMode,
-            readaloudHighlightMode: readaloudHighlightMode,
-            tabBarSlot1: tabBarSlot1Value,
-            tabBarSlot2: tabBarSlot2Value,
-            selectedLightThemeId: selectedLightThemeId,
-            selectedDarkThemeId: selectedDarkThemeId,
-            customThemes: customThemes,
-            builtInThemeOverrides: builtInThemeOverrides,
-        )
+        let submitted = snapshot
+        let previous = baseline
+        try await settings.applyUserChanges(from: previous, to: submitted)
+        baseline = submitted
+        persistenceMessage = nil
+        await loadSettings()
+    }
+
+    public func retrySettingsSave() async {
+        saveTask?.cancel()
+        let submitted = snapshot
+        let previous = baseline
+        _ = await settings.retryLoad()
+        do {
+            try await settings.applyUserChanges(from: previous, to: submitted)
+            baseline = submitted
+            persistenceMessage = nil
+            await loadSettings()
+        } catch { persistenceMessage = error.localizedDescription }
+    }
+
+    public func exportSettingsRecovery() async throws -> Data {
+        let draft = try ConfigurationPatch.difference(from: baseline, to: snapshot)
+        return try await settings.exportRecovery(including: draft)
     }
 
     #if os(iOS)

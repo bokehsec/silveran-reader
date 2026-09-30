@@ -1,7 +1,7 @@
 // Run: node --test SilveranKit/Tests/WebHarness
 import assert from "node:assert/strict";
 import test from "node:test";
-import { InkTouchGuard, WRITING_TIMEOUT_MS } from "../../Sources/Kit/Resources/WebResources/InkTouchGuard.js";
+import { InkTouchGuard, PEN_CLICK_WINDOW_MS, WRITING_TIMEOUT_MS } from "../../Sources/Kit/Resources/WebResources/InkTouchGuard.js";
 
 const touchEvent = (type, touches) => {
   const e = new Event(type, { bubbles: true, cancelable: true });
@@ -19,9 +19,11 @@ const click = (type, pointerType) => {
 /** A window with the guard installed first, then the handlers the reader registers after it. */
 const setup = ({ enabled = true, suspended = false } = {}) => {
   const timers = [];
+  const clock = { now: 1_000_000 };
   const guard = new InkTouchGuard({
     setTimer: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
     clearTimer: id => { if (timers[id - 1]) timers[id - 1].cancelled = true; },
+    now: () => clock.now,
   });
   guard.configure({ enabled, suspended: () => suspended });
   const win = new EventTarget();
@@ -32,7 +34,7 @@ const setup = ({ enabled = true, suspended = false } = {}) => {
     win.addEventListener(type, e => seen.push(type), { capture: true });
   }
   const send = e => { win.dispatchEvent(e); };
-  return { guard, win, seen, send, timers };
+  return { guard, win, seen, send, timers, clock };
 };
 
 test("a Pencil touch sequence never reaches the swipe and drag handlers", () => {
@@ -86,6 +88,55 @@ test("a touch that began before writing keeps its start and end paired", () => {
   guard.setWriting(true);
   send(touchEvent("touchend", [finger(3)]));
   assert.deepEqual(seen, ["touchstart", "touchend"]);
+});
+
+test("a palm already down when writing starts stops moving the page, and its end is not a swipe", () => {
+  const { guard, win, seen, send } = setup();
+  let interrupted = null;
+  win.addEventListener("touchend", e => { interrupted = guard.isInterrupted(e); }, { capture: true });
+  send(touchEvent("touchstart", [finger(3)]));
+  send(touchEvent("touchmove", [finger(3)]));
+  guard.setWriting(true);
+  send(touchEvent("touchmove", [finger(3)]));
+  send(touchEvent("touchmove", [finger(3)]));
+  send(touchEvent("touchend", [finger(3)]));
+  assert.deepEqual(seen, ["touchstart", "touchmove", "touchend"]);
+  assert.equal(interrupted, true);
+
+  // The next touch, after writing, is an ordinary one.
+  guard.setWriting(false);
+  send(touchEvent("touchstart", [finger(3)]));
+  send(touchEvent("touchmove", [finger(3)]));
+  send(touchEvent("touchend", [finger(3)]));
+  assert.deepEqual(seen.slice(3), ["touchstart", "touchmove", "touchend"]);
+  assert.equal(interrupted, false);
+});
+
+test("a finger resting when the Pencil lands again is treated like a palm; re-asserting changes nothing", () => {
+  const { guard, seen, send } = setup();
+  guard.setWriting(true);
+  guard.setWriting(false);
+  send(touchEvent("touchstart", [finger(5)]));
+  guard.setWriting(true);
+  guard.setWriting(true);
+  send(touchEvent("touchmove", [finger(5)]));
+  assert.deepEqual(seen, ["touchstart"], "frozen when writing started");
+  guard.setWriting(false);
+  send(touchEvent("touchend", [finger(5)]));
+  assert.deepEqual(seen, ["touchstart", "touchend"]);
+});
+
+test("a click right after a Pencil touch is dropped even when not marked as the pen's", () => {
+  const { seen, send, clock } = setup();
+  send(touchEvent("touchstart", [stylus(1)]));
+  send(touchEvent("touchend", [stylus(1)]));
+  clock.now += 50;
+  send(click("click", undefined));
+  send(click("dblclick", "touch"));
+  assert.deepEqual(seen, []);
+  clock.now += PEN_CLICK_WINDOW_MS;
+  send(click("click", "touch"));
+  assert.deepEqual(seen, ["click"]);
 });
 
 test("a dropped touch stops being tracked once it ends", () => {

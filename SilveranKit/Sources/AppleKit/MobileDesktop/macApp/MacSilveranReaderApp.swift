@@ -27,6 +27,7 @@ struct SilveranReaderApp: App {
         SidebarSelectionColor.install()
         Task {
             guard await SilveranRuntime.start() else { return }
+            await AppleConfigurationSyncCoordinator.shared.start()
 
             do {
                 let webResourcesURL = try KitResources.webResourcesDirectory()
@@ -75,6 +76,7 @@ struct SilveranReaderApp: App {
                 debugLog("[macApp] App becoming active")
                 Task {
                     guard await SilveranRuntime.start() else { return }
+                    await AppleConfigurationSyncCoordinator.shared.foreground()
                     await BookServiceActor.shared.setActive(true, source: .mac)
                 }
             case .inactive:

@@ -13,7 +13,7 @@ import UIKit
 @MainActor
 final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteractionDelegate {
     private let session: InkSession
-    private let store: InkToolStore
+    private let store: InkToolPreferenceStore
     private let picker: PKToolPicker
     private let responder = InkResponderView()
     private let penItem: PKToolPickerInkingItem
@@ -29,10 +29,10 @@ final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteracti
     private static let penID = "silveran.ink.pen"
     private static let markerID = "silveran.ink.highlighter"
 
-    init(session: InkSession, host: UIView, store: InkToolStore = InkToolStore()) {
+    init(session: InkSession, host: UIView, store: InkToolPreferenceStore = .shared) {
         self.session = session
         self.store = store
-        settings = store.load()
+        settings = store.presented
         undoProxy = InkUndoProxy(session: session)
 
         penItem = PKToolPickerInkingItem(
@@ -60,7 +60,8 @@ final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteracti
 
         picker.addObserver(self)
         picker.selectedToolItemIdentifier = identifier(for: settings.selected)
-        previousIdentifier = settings.selected == .eraser ? Self.penID : identifier(for: settings.selected)
+        previousIdentifier =
+            settings.selected == .eraser ? Self.penID : identifier(for: settings.selected)
         session.tool = settings.current
 
         session.onUndoStateChanged = { [weak self] in self?.undoProxy.stateChanged() }
@@ -92,7 +93,9 @@ final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteracti
         }
         picker.setVisible(true, forFirstResponder: responder)
         let became = responder.isFirstResponder || responder.becomeFirstResponder()
-        debugLog("[InkTools] Palette requested; first responder: \(became), visible: \(picker.isVisible)")
+        debugLog(
+            "[InkTools] Palette requested; first responder: \(became), visible: \(picker.isVisible)"
+        )
     }
 
     /// The Pencil touched the page: pick up whatever the palette shows now, bring the palette up the
@@ -123,13 +126,17 @@ final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteracti
         if let inking = item as? PKToolPickerInkingItem {
             let tool = inking.inkingTool
             let mode: InkTool.Mode = inking.identifier == Self.markerID ? .highlighter : .pen
-            settings.select(InkTool(mode: mode, color: tool.color.inkHex, width: Double(tool.width)))
+            settings.select(
+                InkTool(mode: mode, color: tool.color.inkHex, width: Double(tool.width))
+            )
         } else if item is PKToolPickerEraserItem {
             settings.select(.eraser)
         }
         if settings.current != session.tool {
             session.tool = settings.current
-            store.save(settings)
+            do { try store.save(settings) } catch {
+                debugLog("[InkTools] Preference save needs recovery: \(error)")
+            }
         }
         if item.identifier != eraserItem.identifier { previousIdentifier = item.identifier }
     }
@@ -147,11 +154,17 @@ final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteracti
 
     // MARK: Pencil double-tap and squeeze
 
-    nonisolated func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+    nonisolated func pencilInteraction(
+        _ interaction: UIPencilInteraction,
+        didReceiveTap tap: UIPencilInteraction.Tap
+    ) {
         MainActor.assumeIsolated { perform(UIPencilInteraction.preferredTapAction) }
     }
 
-    nonisolated func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
+    nonisolated func pencilInteraction(
+        _ interaction: UIPencilInteraction,
+        didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze
+    ) {
         MainActor.assumeIsolated {
             guard squeeze.phase == .ended else { return }
             perform(UIPencilInteraction.preferredSqueezeAction)
@@ -202,8 +215,12 @@ final class InkUndoProxy: UndoManager {
         super.init()
     }
 
-    nonisolated override var canUndo: Bool { MainActor.assumeIsolated { session?.canUndo ?? false } }
-    nonisolated override var canRedo: Bool { MainActor.assumeIsolated { session?.canRedo ?? false } }
+    nonisolated override var canUndo: Bool {
+        MainActor.assumeIsolated { session?.canUndo ?? false }
+    }
+    nonisolated override var canRedo: Bool {
+        MainActor.assumeIsolated { session?.canRedo ?? false }
+    }
     nonisolated override var undoActionName: String { "Handwriting" }
     nonisolated override var redoActionName: String { "Handwriting" }
 
@@ -221,39 +238,28 @@ final class InkUndoProxy: UndoManager {
     }
 }
 
-/// The remembered tools, on this device.
-struct InkToolStore {
-    private static let key = "SilveranInkTools.v1"
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
-
-    func load() -> InkToolSettings {
-        guard let data = defaults.data(forKey: Self.key),
-            let settings = try? JSONDecoder().decode(InkToolSettings.self, from: data)
-        else { return InkToolSettings() }
-        return settings
-    }
-
-    func save(_ settings: InkToolSettings) {
-        if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: Self.key) }
-    }
-}
-
 extension UIColor {
     /// "#rrggbb" as the colour looks on a light page (dynamic colours resolve for light appearance).
     var inkHex: String {
         let resolved = resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        var r: CGFloat = 0
+        var g: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 0
         resolved.getRed(&r, green: &g, blue: &b, alpha: &a)
-        return String(format: "#%02x%02x%02x", Int((r * 255).rounded()), Int((g * 255).rounded()), Int((b * 255).rounded()))
+        return String(
+            format: "#%02x%02x%02x",
+            Int((r * 255).rounded()),
+            Int((g * 255).rounded()),
+            Int((b * 255).rounded())
+        )
     }
 
     convenience init(inkHex hex: String) {
         var value: UInt64 = 0
-        Scanner(string: hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))).scanHexInt64(&value)
+        Scanner(string: hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))).scanHexInt64(
+            &value
+        )
         self.init(
             red: CGFloat((value >> 16) & 0xFF) / 255,
             green: CGFloat((value >> 8) & 0xFF) / 255,

@@ -5,3 +5,7 @@ APP_BUNDLE_ID = com.example.SilveranReader
 WATCH_APP_BUNDLE_ID = $(APP_BUNDLE_ID).watchkitapp
 KEYCHAIN_GROUP_SUFFIX = com.example.silveran.shared
 KEYCHAIN_SERVICE = com.example.silveran.storyteller
+
+// Optional: override to isolate test preference data. Enable iCloud Key-value
+// storage for your App ID and use a store allowed by its provisioning profile.
+// ICLOUD_KVS_IDENTIFIER = $(TeamIdentifierPrefix)$(APP_BUNDLE_ID)

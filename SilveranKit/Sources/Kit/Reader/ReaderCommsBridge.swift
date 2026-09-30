@@ -100,15 +100,28 @@ public final class ReaderCommsBridge {
         self.inkSession = inkSession
         inkSession.engine = self
         inkSession.onWritingUpdate = { [weak self] writing in
-            self?.pushInkWriting(writing)
+            self?.pushInkState("window.foliateManager?.setInkWriting(\(writing))")
+        }
+        inkSession.onPencilModeChanged = { [weak self] in
+            self?.pushInkState("window.foliateManager?.inkSetContext('{\"pencilMode\":true}')")
+        }
+        // A web view rebuilt for a book already written in starts in Pencil mode.
+        if inkSession.isPencilMode {
+            pushInkState("window.foliateManager?.inkSetContext('{\"pencilMode\":true}')")
         }
     }
 
-    /// Tells JS the writing lock changed so it drops touches while the Pencil is on the page.
-    private func pushInkWriting(_ writing: Bool) {
+    /// Lock and mode changes reach JS strictly in the order they happened. Each change used to be
+    /// its own task, so a release could arrive before the Pencil-down it followed and leave JS
+    /// dropping finger touches until its 10 s safety timeout.
+    private var inkStateTail: Task<Void, Never>?
+
+    private func pushInkState(_ script: String) {
         guard let js else { return }
-        Task { @SilveranUIActor in
-            _ = try? await js.evaluate("window.foliateManager?.setInkWriting(\(writing))")
+        let previous = inkStateTail
+        inkStateTail = Task { @SilveranUIActor in
+            await previous?.value
+            _ = try? await js.evaluate(script)
         }
     }
 
@@ -149,7 +162,7 @@ public final class ReaderCommsBridge {
     /// JS detected a margin click for navigation
     public func sendSwiftMarginClickNav(_ message: MarginClickNavMessage) {
         debugLog(
-            "[ReaderCommsBridge] sendSwiftMarginClickNav - direction: \(message.direction), source: \(message.source ?? "tap")"
+            "[ReaderCommsBridge] sendSwiftMarginClickNav - direction: \(message.direction), source: \(message.source ?? "unknown")"
         )
         if message.source == "swipe", pageTurnAnimator?.suppressesSwipeNavigation == true {
             debugLog("[ReaderCommsBridge] Ignoring swipe handled by native drag turn")
@@ -160,6 +173,12 @@ public final class ReaderCommsBridge {
         // while writing) and must be allowed to finish.
         if message.source != "drag", inkSession.isWriting {
             debugLog("[ReaderCommsBridge] Ignoring navigation while writing with the Pencil")
+            return
+        }
+        // Once the Pencil has written in this book, taps never turn the page (JS already treats
+        // them as a controls toggle; this covers a tap that raced the mode change).
+        if message.source == "tap", inkSession.isPencilMode {
+            debugLog("[ReaderCommsBridge] Ignoring margin tap in Pencil mode")
             return
         }
         onMarginClickNav?(message)
@@ -550,7 +569,9 @@ public final class ReaderCommsBridge {
     /// JS loaded a section and is waiting for its Apple Pencil ink
     public func sendSwiftInkSectionReady(_ message: InkSectionReadyMessage) {
         debugLog("[ReaderCommsBridge] sendSwiftInkSectionReady - \(message.href)")
+        guard inkSession.engine === self else { return }
         Task { @SilveranUIActor in
+            guard inkSession.engine === self else { return }
             await inkSession.sectionReady(href: message.href)
         }
     }
@@ -558,6 +579,7 @@ public final class ReaderCommsBridge {
     /// JS could not place some ink in this edition of the book
     public func sendSwiftInkOrphaned(_ message: InkOrphanedMessage) {
         debugLog("[ReaderCommsBridge] sendSwiftInkOrphaned - \(message.href): \(message.ids.count)")
+        guard inkSession.engine === self else { return }
         inkSession.setOrphans(href: message.href, ids: message.ids)
     }
 

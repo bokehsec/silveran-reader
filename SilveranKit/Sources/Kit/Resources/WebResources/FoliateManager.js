@@ -7,29 +7,9 @@ import InkEngine from "./InkEngine.js";
 import { runInkSelfTest } from "./InkSelfTest.js";
 import { InkTouchGuard } from "./InkTouchGuard.js";
 import { maybeRunInkDebug } from "./InkDebug.js";
+import { classifySwipe, PENCIL_MODE_SWIPE_RULES, SWIPE_RULES } from "./SwipeClassifier.js";
 
-// Discrete swipe detection (page curl mode): a horizontal flick of at least
-// SWIPE_MIN_DISTANCE px that is clearly more horizontal than vertical, or a
-// shorter but fast flick.
-const SWIPE_MIN_DISTANCE = 30;
-const SWIPE_FAST_DISTANCE = 12;
-const SWIPE_FAST_VELOCITY = 0.35; // px per ms
-const SWIPE_DIRECTION_RATIO = 1.3;
 const TURN_PAGE_TIMEOUT_MS = 1500;
-
-/**
- * Classifies a completed touch as a page-turn swipe. Returns the visual
- * navigation direction ("left" = content moves right / goLeft), or null.
- */
-export const classifySwipe = ({ dx, dy, dt }) => {
-  const ax = Math.abs(dx);
-  const ay = Math.abs(dy);
-  if (ax < SWIPE_FAST_DISTANCE || ax < ay * SWIPE_DIRECTION_RATIO) return null;
-  const velocity = dt > 0 ? ax / dt : 0;
-  if (ax < SWIPE_MIN_DISTANCE && velocity < SWIPE_FAST_VELOCITY) return null;
-  // Finger moving left reveals the page to the right, like the paginator's drag.
-  return dx < 0 ? "right" : "left";
-};
 
 const nextAnimationFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
 
@@ -225,6 +205,11 @@ class FoliateManager {
     return new BookmarkManager();
   })();
   #inkEngine = new InkEngine();
+  /**
+   * The Pencil has written in this book (Swift sets it on the first stroke). Taps then never
+   * turn the page, only a deliberate swipe does, so reaching for the writing can't flip it.
+   */
+  #inkPencilMode = false;
   // The web side of the Pencil writing lock; see InkTouchGuard.js.
   #inkTouchGuard = new InkTouchGuard();
 
@@ -390,6 +375,7 @@ class FoliateManager {
       event.stopPropagation();
       window.webkit?.messageHandlers?.MarginClickNav?.postMessage({
         direction: event.key === "ArrowLeft" ? "left" : "right",
+        source: "key",
       });
       return;
     }
@@ -531,6 +517,14 @@ class FoliateManager {
       return;
     }
 
+    // A tap on handwriting, or any tap once the Pencil has written in this book, is never a
+    // page turn; it shows or hides the reader controls like a tap in the middle of the page.
+    const doc = event.target?.ownerDocument ?? event.view?.document;
+    if (this.#inkPencilMode || (doc && this.#inkEngine.inkAt(doc, event.clientX, event.clientY))) {
+      this.#reportOverlayToggle();
+      return;
+    }
+
     const pageWidth = this.#singleColumnMode
       ? window.innerWidth
       : Math.floor(window.innerWidth / 2);
@@ -595,12 +589,14 @@ class FoliateManager {
       if (!gesture) return;
       this.#swipeGesture = null;
       e.stopPropagation();
+      // A palm that was down when the Pencil started writing: its travel is not a swipe.
+      if (this.#inkTouchGuard.isInterrupted(e)) return;
       const touch = e.changedTouches[0];
       const direction = classifySwipe({
         dx: touch.screenX - gesture.x,
         dy: touch.screenY - gesture.y,
         dt: e.timeStamp - gesture.t,
-      });
+      }, this.#inkPencilMode ? PENCIL_MODE_SWIPE_RULES : SWIPE_RULES);
       if (!direction) return;
       debugLog("FoliateManager", "Swipe detected, direction:", direction);
       // Visual direction, like the paginator's drag; Swift routes it through EPM.
@@ -680,6 +676,7 @@ class FoliateManager {
     // Don't navigate here - let Swift handle it through EPM like arrow keys
     window.webkit?.messageHandlers?.MarginClickNav?.postMessage({
       direction: effectiveDirection,
+      source: "tap",
     });
   }
 
@@ -1636,10 +1633,11 @@ class FoliateManager {
     this.#inkTouchGuard.setWriting(writing);
   }
 
-  /** Mode and theme: { enabled?, background?, isWriting? }. */
+  /** Mode and theme: { enabled?, background?, isWriting?, pencilMode? }. */
   inkSetContext(jsonString) {
-    const { isWriting, ...context } = JSON.parse(jsonString);
+    const { isWriting, pencilMode, ...context } = JSON.parse(jsonString);
     if (isWriting !== undefined) this.#inkTouchGuard.setWriting(isWriting);
+    if (pencilMode !== undefined) this.#inkPencilMode = !!pencilMode;
     this.#inkEngine.setContext(context);
   }
 

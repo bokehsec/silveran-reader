@@ -128,6 +128,7 @@ struct SilveranReaderApp: App {
         let prerequisites = Task {
             let started = CFAbsoluteTimeGetCurrent()
             guard await SilveranRuntime.start() else { return false }
+            await AppleConfigurationSyncCoordinator.shared.start()
             await vm.start()
             await AppleWatchActor.shared.activate()
             await ProgressUploadManager.shared.setBackstopScheduler {
@@ -248,6 +249,7 @@ struct SilveranReaderApp: App {
         debugLog("[SilveranReaderApp] App becoming active")
         Task {
             guard await SilveranRuntime.start() else { return }
+            await AppleConfigurationSyncCoordinator.shared.foreground()
             await BookServiceActor.shared.setActive(true, source: .app)
         }
     }

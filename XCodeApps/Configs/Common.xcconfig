@@ -8,3 +8,6 @@ MAC_APP_GROUP_ID = $(DEVELOPMENT_TEAM).group.$(APP_BUNDLE_ID)
 KEYCHAIN_GROUP_SUFFIX = com.kyonifer.silveran.shared
 KEYCHAIN_SERVICE = com.kyonifer.silveran.storyteller
 KEYCHAIN_ACCESS_GROUP = $(AppIdentifierPrefix)$(KEYCHAIN_GROUP_SUFFIX)
+
+// One signed KVS namespace shared by the macOS and iOS apps.
+ICLOUD_KVS_IDENTIFIER = $(TeamIdentifierPrefix)$(APP_BUNDLE_ID)

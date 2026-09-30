@@ -37,6 +37,41 @@ public final class ReadingSessionStore {
     public static let shared = ReadingSessionStore()
 
     private var sessions: [BookID: ReadingSession] = [:]
+    private var inkSessions: [BookID: InkSession] = [:]
+    private final class WeakInkSession {
+        weak var value: InkSession?
+        init(_ value: InkSession) { self.value = value }
+    }
+    private var releasedInkSessions: [BookID: WeakInkSession] = [:]
+
+    /// Same ownership boundary as reading sessions, retained independently when a save fails.
+    public func inkSession(for bookID: BookID) -> InkSession {
+        if let existing = inkSessions[bookID] { return existing }
+        if let existing = releasedInkSessions.removeValue(forKey: bookID)?.value {
+            inkSessions[bookID] = existing
+            return existing
+        }
+        if releasedInkSessions.count > 128 {
+            releasedInkSessions = releasedInkSessions.filter { $0.value.value != nil }
+        }
+        let created = InkSession()
+        inkSessions[bookID] = created
+        return created
+    }
+
+    /// Used by tests to supply the existing writer's fault-injection boundary.
+    func installInkSession(_ session: InkSession, for bookID: BookID) {
+        precondition(inkSessions[bookID] == nil)
+        inkSessions[bookID] = session
+    }
+
+    func releaseInkIfSaved(for bookID: BookID, session: InkSession) {
+        guard inkSessions[bookID] === session, !session.hasPendingChanges, session.engine == nil
+        else { return }
+        // A replacement view may hold this session before creating/attaching its bridge.
+        releasedInkSessions[bookID] = WeakInkSession(session)
+        inkSessions[bookID] = nil
+    }
 
     private init() {}
 
@@ -73,6 +108,7 @@ public final class ReadingSessionStore {
             category: category,
             localMediaPath: localMediaPath,
             settings: settings ?? HeadlessReaderSettings(),
+            inkSession: inkSession(for: metadata.id)
         )
         sessions[metadata.id] = session
         return session
@@ -90,6 +126,7 @@ public final class ReadingSessionStore {
     func remove(_ session: ReadingSession) {
         if sessions[session.bookID] === session {
             sessions.removeValue(forKey: session.bookID)
+            releaseInkIfSaved(for: session.bookID, session: session.inkSession)
         }
     }
 }
@@ -100,6 +137,7 @@ public final class ReadingSessionStore {
 @Observable
 public final class ReadingSession {
     public let bookID: BookID
+    public let inkSession: InkSession
     public let metadata: BookMetadata
     public let category: LocalMediaCategory
     public var localMediaPath: URL?
@@ -142,7 +180,9 @@ public final class ReadingSession {
         category: LocalMediaCategory,
         localMediaPath: URL?,
         settings: any ReaderSettingsReading,
+        inkSession: InkSession = InkSession()
     ) {
+        self.inkSession = inkSession
         self.bookID = metadata.id
         self.metadata = metadata
         self.category = category
@@ -667,6 +707,7 @@ public final class ReadingSession {
     }
 
     public func handleSceneEnteredBackground() async {
+        await inkSession.flush()
         mediaOverlayManager?.isInBackground = true
         let wasPlaying = await SMILPlayerActor.shared.getCurrentState()?.isPlaying ?? false
         if wasPlaying {
@@ -674,10 +715,37 @@ public final class ReadingSession {
         }
     }
 
-    public func close(_ policy: ReadingSessionClosePolicy) async {
+    @discardableResult
+    public func closeView(_ policy: ReadingSessionClosePolicy, bridge: ReaderCommsBridge?) async
+        -> Bool
+    {
+        guard commsBridge === bridge, bridge != nil || inkSession.engine == nil else {
+            return !inkSession.hasPendingChanges
+        }
+        return await close(policy, ifOwnedBy: bridge)
+    }
+
+    @discardableResult
+    public func close(
+        _ policy: ReadingSessionClosePolicy,
+        ifOwnedBy expectedBridge: ReaderCommsBridge? = nil
+    ) async -> Bool {
+        if let expectedBridge,
+            commsBridge !== expectedBridge || inkSession.engine !== expectedBridge
+        {
+            return !inkSession.hasPendingChanges
+        }
+        let capturedBridge = commsBridge
+        let capturedRenderer = inkSession.engine
+        let saved = await inkSession.detachRenderer(ifOwnedBy: expectedBridge)
+        guard commsBridge === capturedBridge,
+            inkSession.engine == nil || inkSession.engine === capturedRenderer
+        else {
+            return saved && !inkSession.hasPendingChanges
+        }
         switch policy {
             case .detachView:
-                guard !isEnded else { return }
+                guard !isEnded else { return saved && !inkSession.hasPendingChanges }
                 debugLog("[ReadingSession] Detaching view from session for \(bookID)")
                 isViewAttached = false
                 commsBridge = nil
@@ -697,7 +765,7 @@ public final class ReadingSession {
                 detachFromAudioSession()
 
             case .endSession:
-                guard !isEnded else { return }
+                guard !isEnded else { return saved && !inkSession.hasPendingChanges }
                 isEnded = true
                 debugLog("[ReadingSession] Ending session for \(bookID)")
                 removeIncomingPositionObserver()
@@ -714,6 +782,7 @@ public final class ReadingSession {
                 await AudioSessionActor.shared.close(ifOwnedBy: bookID)
                 ReadingSessionStore.shared.remove(self)
         }
+        return saved && !inkSession.hasPendingChanges
     }
 
     private func clearViewHooks() {

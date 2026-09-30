@@ -1,5 +1,15 @@
 # Architecture
 
+## Product direction
+
+Silveran's long-term direction is Kindle Scribe-class EPUB annotation, Storyteller interoperability for supported capabilities, and automatic, recoverable iCloud backup of annotations and configuration. [The feasibility and architecture review](docs/ANNOTATION_SYNC_BACKUP_REVIEW.md) records the current gaps, proposed boundaries, and staged acceptance criteria. [AGENTS.md](AGENTS.md) makes the engineering and data-integrity requirements mandatory.
+
+The existing portable-core architecture remains the foundation. Annotation data and recovery policy belong in Kit; platform input and cloud transports are adapters; Foliate and the JavaScript bridge handle layout and rendering. Local persistence, synchronization, and historical backup have distinct responsibilities. The current per-book JSON stores remain authoritative until verified migration; iCloud preference synchronization does not implement complete backup/restore. [ADR 003](docs/decisions/003-transactional-annotation-repository.md) selects the portable SQLite repository, implemented behind an inactive domain API, and [ADR 004](docs/decisions/004-edition-anchors-and-creative-conflicts.md) defines edition/anchor/conflict contracts. [ADR 005](docs/decisions/005-annotation-snapshots-and-transactional-restore.md) adds consistent logical annotation snapshots and transactional restore with retained checkpoints and quarantined delivery. [ADR 006](docs/decisions/006-legacy-annotation-capture-and-staging.md) commits exact legacy originals before restartable, verified staging. Full configuration/assets archives, cloud transport and reader cutover remain separately gated work.
+
+Earlier Pencil and configuration plans describe narrower milestones. Their exclusions do not narrow the long-term goals, and historical assumptions about tolerant decoding or device backup do not override the current data-integrity requirements.
+
+The [phased implementation plan](docs/ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md) defines the incremental path from the current stores to durable annotations, local recovery, automatic iCloud backup, expanded annotation workflows and verified Storyteller interoperability.
+
 Our goal is to develop Silveran around a low-dependency Swift core that can be used on any platform Swift runs on. To that end, the majority of the algorithmic code lives in [`SilveranKit`](https://github.com/kyonifer/silveran-reader/tree/main/SilveranKit/Sources/Kit), including EPUB parsing, playback coordination, library persistence, and Storyteller API logic. When that code needs platform services, such as audio playback or keychain storage, it calls facade protocols that each platform implements and provides through dependency injection.
 
 This repository builds that core library plus the app shells that use it. At a high level:

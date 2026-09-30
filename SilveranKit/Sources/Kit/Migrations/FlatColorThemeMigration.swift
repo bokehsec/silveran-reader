@@ -3,26 +3,80 @@ import Foundation
 extension FilesystemActor {
     private static let flatColorThemeMigrationID = "flat-color-theme-v1"
 
-    func runFlatColorThemeMigrationIfNeeded() async throws {
-        guard !migrationSentinelExists(Self.flatColorThemeMigrationID) else { return }
-
-        if try storedConfigPredatesThemes() {
-            await migrateFlatColorsToCustomTheme()
+    func runFlatColorThemeMigrationIfNeeded(settings: SettingsActor = .shared) async throws {
+        let observed = await settings.persistenceSnapshot()
+        guard observed.loadResult.canPersist, observed.pendingChanges == nil else {
+            throw ConfigurationPersistenceFailure(
+                state: observed.loadResult.state,
+                message:
+                    "Saved settings require recovery before flat-color theme migration can continue."
+            )
         }
-        try writeMigrationSentinel(Self.flatColorThemeMigrationID)
-    }
-
-    private func storedConfigPredatesThemes() throws -> Bool {
+        // No input means no migration to acknowledge. Check the owner even on this no-op.
+        guard let original = observed.loadResult.original else {
+            try await settings.applyMigration(from: observed, to: observed.config)
+            return
+        }
         let url = getConfigDirectory()
             .appendingPathComponent("SilveranGlobalConfig.json", isDirectory: false)
-        guard FileManager.default.fileExists(atPath: url.path) else { return false }
-        let data = try Data(contentsOf: url)
-        let rawKeys = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        return rawKeys?["themes"] == nil
+        guard try Data(contentsOf: url) == original else {
+            throw ConfigurationPersistenceFailure(
+                state: observed.loadResult.state,
+                message: "Saved settings changed during migration. Retry reading before migrating."
+            )
+        }
+        // Old builds could advance the sentinel after a failed write. The source, not that
+        // advisory marker, determines eligibility. An explicit themes section is authoritative,
+        // including an intentionally empty array after a user deletes a converted theme.
+        var updated = observed.config
+        if !(try ConfigurationPersistenceCodec.containsThemeSection(in: original)),
+            let theme = flatColorTheme(from: observed.config.reading)
+        {
+            try preserveFlatColorThemeOriginal(original)
+            updated.themes.customThemes = [theme]
+            updated.themes.selectedLightThemeId = theme.id
+            updated.themes.selectedDarkThemeId = theme.id
+        }
+        try await settings.applyMigration(from: observed, to: updated)
+        if !migrationSentinelExists(Self.flatColorThemeMigrationID) {
+            try writeMigrationSentinel(Self.flatColorThemeMigrationID)
+        }
     }
 
-    private func migrateFlatColorsToCustomTheme() async {
-        let reading = await SettingsActor.shared.config.reading
+    func flatColorThemeRecoveryURL(for original: Data) -> URL {
+        getConfigDirectory()
+            .appendingPathComponent("MigrationBackups", isDirectory: true)
+            .appendingPathComponent(Self.flatColorThemeMigrationID, isDirectory: true)
+            .appendingPathComponent(AnnotationContentFingerprint(data: original).hex + ".json")
+    }
+
+    private func preserveFlatColorThemeOriginal(_ original: Data) throws {
+        let url = flatColorThemeRecoveryURL(for: original)
+        do {
+            let existing = try Data(contentsOf: url)
+            guard existing == original else {
+                throw ConfigurationPersistenceFailure(
+                    state: .corrupt,
+                    message:
+                        "The theme migration recovery copy differs from its identity. Preserve it before retrying."
+                )
+            }
+            return
+        } catch {
+            let error = error as NSError
+            let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError
+            let missing =
+                (error.domain == NSPOSIXErrorDomain && error.code == 2)
+                || (error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError
+                    && (underlying == nil
+                        || (underlying?.domain == NSPOSIXErrorDomain && underlying?.code == 2)))
+            guard missing else { throw error }
+        }
+        try ensureDirectoryExists(at: url.deletingLastPathComponent())
+        try original.write(to: url, options: .atomic)
+    }
+
+    private func flatColorTheme(from reading: SilveranGlobalConfig.Reading) -> ReaderTheme? {
         let defaults = SilveranGlobalConfig.Reading()
         let hasCustomColors =
             reading.backgroundColor != defaults.backgroundColor
@@ -45,9 +99,9 @@ extension FilesystemActor {
             || reading.userHighlightMode != defaults.userHighlightMode
             || reading.customCSS != defaults.customCSS
 
-        guard hasCustomColors else { return }
+        guard hasCustomColors else { return nil }
 
-        let customTheme = ReaderTheme(
+        return ReaderTheme(
             name: "My Custom Theme",
             isBuiltIn: false,
             backgroundColor: reading.backgroundColor ?? kDefaultBackgroundColorLight,
@@ -71,18 +125,5 @@ extension FilesystemActor {
             customCSS: reading.customCSS,
         )
 
-        do {
-            try await SettingsActor.shared.updateConfig(
-                selectedLightThemeId: customTheme.id,
-                selectedDarkThemeId: customTheme.id,
-                customThemes: [customTheme],
-            )
-            debugLog(
-                "[SilveranMigrations] Migrated flat color settings to custom theme "
-                    + "'\(customTheme.name)'"
-            )
-        } catch {
-            debugLog("[SilveranMigrations] Flat color theme migration failed to save: \(error)")
-        }
     }
 }

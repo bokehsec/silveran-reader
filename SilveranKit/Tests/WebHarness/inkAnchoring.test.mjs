@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  buildTextIndex, makeAnchor, resolveAnchor, anchorForBoundary, INK_TAG, EXACT_LENGTH, CONTEXT_LENGTH,
+  buildTextIndex, makeAnchor, resolveAnchor, resolveAnchorOutcome, anchorForBoundary, INK_TAG, EXACT_LENGTH, CONTEXT_LENGTH,
 } from "../../Sources/Kit/Resources/WebResources/InkAnchoring.js";
 import { ebookChapter, readAlongChapter, PARAGRAPHS } from "./fixtures/chapters.mjs";
 import { loadSection, findText } from "./domSupport.mjs";
@@ -102,7 +102,7 @@ test("resolve: the words at the stored offset", () => {
   assert.equal(resolveAnchor(text, anchor), text.indexOf("five"));
 });
 
-test("resolve: the words moved, found by context, nearest the old offset", () => {
+test("resolve: moved words are found by unique context", () => {
   const original = "the cat sat. the cat ran. the cat slept.";
   const anchor = makeAnchor(original, original.indexOf("the cat ran"), 11);
   // The chapter gained a sentence at the start; the second occurrence's context still matches.
@@ -110,17 +110,24 @@ test("resolve: the words moved, found by context, nearest the old offset", () =>
   assert.equal(resolveAnchor(edited, anchor), edited.indexOf("the cat ran"));
 });
 
-test("resolve: context lost, the words alone are found nearest the old offset", () => {
+test("resolve: context lost, unique words still resolve", () => {
   const original = "alpha unique-phrase omega";
   const anchor = makeAnchor(original, original.indexOf("unique-phrase"), 13);
   const edited = "ALPHA CHANGED unique-phrase OMEGA CHANGED";
   assert.equal(resolveAnchor(edited, anchor), edited.indexOf("unique-phrase"));
 });
 
-test("resolve: repeated words pick the occurrence nearest the stored offset", () => {
+test("resolve: repeated words remain ambiguous and preserve the original selector", () => {
   const text = "echo x echo y echo z echo w";
   const anchor = { offset: text.indexOf("echo z") + 2, prefix: "", exact: "echo", suffix: "" };
-  assert.equal(resolveAnchor(text, anchor), text.indexOf("echo z"));
+  const original = structuredClone(anchor);
+  assert.equal(resolveAnchor(text, anchor), null);
+  const outcome = resolveAnchorOutcome(text, anchor);
+  assert.equal(outcome.status, "ambiguous");
+  assert.deepEqual(outcome.candidates, [0, 7, 14, 21]);
+  assert.deepEqual(anchor, original);
+  // Landing exactly on one occurrence does not prove its identity in a replaced edition.
+  assert.equal(resolveAnchor(text, { ...anchor, offset: 14 }), null);
 });
 
 test("resolve: words that are gone are orphaned, never guessed", () => {
@@ -258,4 +265,30 @@ test("if the end can't be found, a short mark is still its words; a long mark is
 test("a mark whose words are gone is orphaned", () => {
   const mark = markOver("some words that used to be here", "words that used");
   assert.equal(resolveMarkOffsets("completely different chapter text", mark), null);
+});
+
+import { readFileSync } from "node:fs";
+const anchorFixtures = JSON.parse(readFileSync(new URL("../Fixtures/annotation-anchors-v1.json", import.meta.url), "utf8"));
+for (const fixture of anchorFixtures) {
+  test(`shared anchor contract: ${fixture.name}`, () => {
+    assert.deepEqual(resolveAnchorOutcome(fixture.text, fixture.anchor, fixture.version), fixture.expected);
+  });
+}
+
+test("anchor candidates are bounded without choosing a repeated passage", () => {
+  const result = resolveAnchorOutcome("a".repeat(10_000), { offset: 5_000, exact: "a" });
+  assert.equal(result.status, "ambiguous");
+  assert.equal(result.offset, null);
+  assert.equal(result.candidates.length, 256);
+});
+
+test("selector lengths and boundaries preserve complete emoji scalars for Swift JSON decoding", () => {
+  const text = "x".repeat(31) + "😀" + "y".repeat(40);
+  for (const offset of [0, 31, 32, 33, 64]) {
+    const anchor = makeAnchor(text, offset);
+    for (const field of ["prefix", "exact", "suffix"]) {
+      assert.ok(anchor[field].isWellFormed(), `${field} at ${offset}`);
+      assert.equal(JSON.parse(JSON.stringify(anchor))[field], anchor[field]);
+    }
+  }
 });

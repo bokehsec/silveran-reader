@@ -3,9 +3,9 @@ import Foundation
 // Apple Pencil ink for one book, data model v2 (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.3).
 //
 // Ink is anchored to the words of a section, not to positions in its markup, so it lands in
-// the same place in the ebook and the read-along edition. Decoding is tolerant like
-// SettingsActor: unknown fields are ignored and missing fields take defaults, so an older
-// or newer build never loses a book's ink to a decoding error.
+// the same place in the ebook and the read-along edition. Required creative payloads and
+// identities decode strictly. Only absent optional fields with known safe defaults are filled.
+// Protected disk reads also reject unknown fields, retaining the original for recovery.
 
 public struct BookInk: Codable, Sendable, Hashable {
     /// Schema version written to disk. Version 1 (the Phase 0 spike) stored notes with a CFI.
@@ -25,10 +25,31 @@ public struct BookInk: Codable, Sendable, Hashable {
     /// True when some note still carries a version 1 CFI that has not been turned into a word anchor.
     public var needsMigration: Bool { sections.values.contains(where: \.needsMigration) }
 
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case version, sections
+    }
+
     public init(from decoder: Decoder) throws {
+        try checkInkKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.stringValue)))
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        version = (try? container.decode(Int.self, forKey: .version)) ?? 1
-        sections = (try? container.decode([String: SectionInk].self, forKey: .sections)) ?? [:]
+        version =
+            container.contains(.version) ? try container.decode(Int.self, forKey: .version) : 1
+        guard (1...Self.currentVersion).contains(version) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .version,
+                in: container,
+                debugDescription: "Unsupported ink schema"
+            )
+        }
+        sections = try container.decode([String: SectionInk].self, forKey: .sections)
+        let ids = sections.values.flatMap { $0.notes.map(\.id) + $0.marks.map(\.id) }
+        guard Set(ids).count == ids.count else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .sections,
+                in: container,
+                debugDescription: "Duplicate ink identity"
+            )
+        }
     }
 }
 
@@ -44,16 +65,23 @@ public struct SectionInk: Codable, Sendable, Hashable {
     public var isEmpty: Bool { notes.isEmpty && marks.isEmpty }
     public var needsMigration: Bool { notes.contains { $0.legacyCFI != nil } }
 
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case notes, marks
+    }
+
     public init(from decoder: Decoder) throws {
+        try checkInkKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.stringValue)))
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        notes = (try? container.decode([InkNote].self, forKey: .notes)) ?? []
-        marks = (try? container.decode([InkMark].self, forKey: .marks)) ?? []
+        notes =
+            container.contains(.notes) ? try container.decode([InkNote].self, forKey: .notes) : []
+        marks =
+            container.contains(.marks) ? try container.decode([InkMark].self, forKey: .marks) : []
     }
 }
 
 /// A place in a section's text, found again by its words. See `docs/PENCIL_INK_IMPLEMENTATION_PLAN.md` 2.4.
 ///
-/// `offset` is a character position in the section's normalized text (whitespace collapsed,
+/// `offset` is a UTF-16 code-unit position in the section's normalized text (whitespace collapsed,
 /// ink and scripts skipped). `exact` is the text at `offset` (up to 32 characters, or the
 /// covered text of a mark), and `prefix`/`suffix` are the 32 characters of context on either
 /// side. An `offset` of -1 means "unknown"; the anchor is then found by its text alone.
@@ -70,12 +98,17 @@ public struct TextAnchor: Codable, Sendable, Hashable {
         self.suffix = suffix
     }
 
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case offset, prefix, exact, suffix
+    }
+
     public init(from decoder: Decoder) throws {
+        try checkInkKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.stringValue)))
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        offset = (try? container.decode(Int.self, forKey: .offset)) ?? -1
-        prefix = (try? container.decode(String.self, forKey: .prefix)) ?? ""
-        exact = (try? container.decode(String.self, forKey: .exact)) ?? ""
-        suffix = (try? container.decode(String.self, forKey: .suffix)) ?? ""
+        offset = try container.decodeIfPresent(Int.self, forKey: .offset) ?? -1
+        prefix = try container.decodeIfPresent(String.self, forKey: .prefix) ?? ""
+        exact = try container.decodeIfPresent(String.self, forKey: .exact) ?? ""
+        suffix = try container.decodeIfPresent(String.self, forKey: .suffix) ?? ""
     }
 }
 
@@ -107,27 +140,55 @@ public struct InkNote: Codable, Sendable, Hashable, Identifiable {
         self.legacyCFI = legacyCFI
     }
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case id, anchor, strokes, createdAt, updatedAt
         case legacyCFI, cfi, quote  // `cfi` and `quote` are the version 1 fields
     }
 
     public init(from decoder: Decoder) throws {
+        try checkInkKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.stringValue)))
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = (try? container.decode(String.self, forKey: .id)) ?? UUID().uuidString
-        strokes = (try? container.decode([InkStroke].self, forKey: .strokes)) ?? []
-        let created = (try? container.decode(Double.self, forKey: .createdAt)).map(Date.init(timeIntervalSince1970:))
+        id = try container.decode(String.self, forKey: .id)
+        guard !id.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .id,
+                in: container,
+                debugDescription: "Empty ink identity"
+            )
+        }
+        strokes = try container.decode([InkStroke].self, forKey: .strokes)
+        let created = (try container.decodeIfPresent(Double.self, forKey: .createdAt)).map(
+            Date.init(timeIntervalSince1970:)
+        )
         createdAt = created ?? Date(timeIntervalSince1970: 0)
         updatedAt =
-            (try? container.decode(Double.self, forKey: .updatedAt)).map(Date.init(timeIntervalSince1970:))
+            (try container.decodeIfPresent(Double.self, forKey: .updatedAt)).map(
+                Date.init(timeIntervalSince1970:)
+            )
             ?? createdAt
 
-        let quote = try? container.decodeIfPresent(String.self, forKey: .quote)
-        let version1CFI = try? container.decodeIfPresent(String.self, forKey: .cfi)
-        if let anchor = try? container.decode(TextAnchor.self, forKey: .anchor) {
+        let quote = try container.decodeIfPresent(String.self, forKey: .quote)
+        let version1CFI = try container.decodeIfPresent(String.self, forKey: .cfi)
+        if container.contains(.anchor) {
+            let anchor = try container.decode(TextAnchor.self, forKey: .anchor)
+            if decoder.userInfo[.protectedInkRead] as? Bool == true,
+                version1CFI != nil || quote != nil
+            {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .anchor,
+                    in: container,
+                    debugDescription: "Mixed legacy/current anchor payload requires recovery"
+                )
+            }
             self.anchor = anchor
-            legacyCFI = try? container.decodeIfPresent(String.self, forKey: .legacyCFI)
+            legacyCFI = try container.decodeIfPresent(String.self, forKey: .legacyCFI)
         } else {
+            guard version1CFI != nil || quote != nil else {
+                throw DecodingError.keyNotFound(
+                    CodingKeys.anchor,
+                    .init(codingPath: decoder.codingPath, debugDescription: "Missing ink anchor")
+                )
+            }
             // Version 1: the quote is all we know about the words until the CFI is resolved.
             anchor = TextAnchor(exact: quote ?? "")
             legacyCFI = version1CFI
@@ -151,7 +212,12 @@ public enum InkToolKind: String, Codable, Sendable, Hashable {
 
     public init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
-        self = InkToolKind(rawValue: raw) ?? .pen
+        guard let kind = InkToolKind(rawValue: raw) else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "Unknown ink tool")
+            )
+        }
+        self = kind
     }
 }
 
@@ -179,12 +245,26 @@ public struct InkStroke: Codable, Sendable, Hashable {
         self.points = points
     }
 
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case tool, color, width, points
+    }
+
     public init(from decoder: Decoder) throws {
+        try checkInkKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.stringValue)))
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        tool = (try? container.decode(InkToolKind.self, forKey: .tool)) ?? .pen
-        color = (try? container.decode(String.self, forKey: .color)) ?? InkStroke.defaultColor
-        width = (try? container.decode(Double.self, forKey: .width)) ?? InkStroke.defaultWidth
-        points = (try? container.decode([[Double]].self, forKey: .points)) ?? []
+        tool = try container.decodeIfPresent(InkToolKind.self, forKey: .tool) ?? .pen
+        color = try container.decodeIfPresent(String.self, forKey: .color) ?? InkStroke.defaultColor
+        width = try container.decodeIfPresent(Double.self, forKey: .width) ?? InkStroke.defaultWidth
+        points = try container.decode([[Double]].self, forKey: .points)
+        guard points.allSatisfy({ (2...3).contains($0.count) && $0.allSatisfy(\.isFinite) }),
+            width.isFinite, width > 0
+        else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .points,
+                in: container,
+                debugDescription: "Invalid ink stroke geometry"
+            )
+        }
     }
 }
 
@@ -226,18 +306,31 @@ public struct InkMark: Codable, Sendable, Hashable, Identifiable {
     }
 
     public init(from decoder: Decoder) throws {
+        try checkInkKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.stringValue)))
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = (try? container.decode(String.self, forKey: .id)) ?? UUID().uuidString
-        kind = (try? container.decode(InkMarkKind.self, forKey: .kind)) ?? .underline
-        start = (try? container.decode(TextAnchor.self, forKey: .start)) ?? TextAnchor()
-        end = (try? container.decode(TextAnchor.self, forKey: .end)) ?? TextAnchor()
-        stroke = (try? container.decode(InkStroke.self, forKey: .stroke)) ?? InkStroke(points: [])
-        geometry = (try? container.decode(InkMarkGeometry.self, forKey: .geometry)) ?? InkMarkGeometry()
-        createdAt = (try? container.decode(Double.self, forKey: .createdAt)).map(Date.init(timeIntervalSince1970:))
+        id = try container.decode(String.self, forKey: .id)
+        guard !id.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .id,
+                in: container,
+                debugDescription: "Empty ink identity"
+            )
+        }
+        kind = try container.decode(InkMarkKind.self, forKey: .kind)
+        start = try container.decode(TextAnchor.self, forKey: .start)
+        end = try container.decode(TextAnchor.self, forKey: .end)
+        stroke = try container.decode(InkStroke.self, forKey: .stroke)
+        geometry =
+            try container.decodeIfPresent(InkMarkGeometry.self, forKey: .geometry)
+            ?? InkMarkGeometry()
+        createdAt =
+            (try container.decodeIfPresent(Double.self, forKey: .createdAt)).map(
+                Date.init(timeIntervalSince1970:)
+            )
             ?? Date(timeIntervalSince1970: 0)
     }
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case id, kind, start, end, stroke, geometry, createdAt
     }
 
@@ -262,18 +355,54 @@ public struct InkMarkGeometry: Codable, Sendable, Hashable {
     /// For brackets: which margin, "left" or "right".
     public var side: String?
 
-    public init(points: [[Double]] = [], refH: Double? = nil, lines: Int? = nil, side: String? = nil) {
+    public init(
+        points: [[Double]] = [],
+        refH: Double? = nil,
+        lines: Int? = nil,
+        side: String? = nil
+    ) {
         self.points = points
         self.refH = refH
         self.lines = lines
         self.side = side
     }
 
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case points, refH, lines, side
+    }
+
     public init(from decoder: Decoder) throws {
+        try checkInkKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.stringValue)))
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        points = (try? container.decode([[Double]].self, forKey: .points)) ?? []
-        refH = try? container.decodeIfPresent(Double.self, forKey: .refH)
-        lines = try? container.decodeIfPresent(Int.self, forKey: .lines)
-        side = try? container.decodeIfPresent(String.self, forKey: .side)
+        points = try container.decodeIfPresent([[Double]].self, forKey: .points) ?? []
+        refH = try container.decodeIfPresent(Double.self, forKey: .refH)
+        lines = try container.decodeIfPresent(Int.self, forKey: .lines)
+        side = try container.decodeIfPresent(String.self, forKey: .side)
+    }
+}
+
+// Unknown fields can contain irreplaceable content. Disk loads refuse to rewrite them; renderer
+// messages may still carry layout-only fields. This flag is set exclusively by InkActor.
+extension CodingUserInfoKey {
+    static let protectedInkRead = CodingUserInfoKey(rawValue: "protectedInkRead")!
+}
+
+private struct InkCodingKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+private func checkInkKeys(_ decoder: Decoder, allowed: Set<String>) throws {
+    guard decoder.userInfo[.protectedInkRead] as? Bool == true else { return }
+    let container = try decoder.container(keyedBy: InkCodingKey.self)
+    guard container.allKeys.allSatisfy({ allowed.contains($0.stringValue) }) else {
+        throw DecodingError.dataCorrupted(
+            .init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Unknown ink fields require recovery"
+            )
+        )
     }
 }

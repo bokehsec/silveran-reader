@@ -1,5 +1,7 @@
 # Apple Pencil Ink — Implementation Plan
 
+Long-term direction: [annotation, sync and backup review](ANNOTATION_SYNC_BACKUP_REVIEW.md). The milestones below record the current ink implementation, not completion of Scribe parity. Historical references to tolerant decoding and iCloud device backup do not satisfy the current requirements: unsupported/corrupt originals must be preserved, and app-managed backup needs retained recovery points and tested restore. Follow [AGENTS.md](../AGENTS.md) for new work.
+
 Status: In progress — M0–M4 implemented, device acceptance pending · Platform: iPadOS · Date: 2026-09-30
 Design and spike record: [`PENCIL_INK_PLAN.md`](PENCIL_INK_PLAN.md). This plan supersedes its sections 4–5 where they differ (model ownership, anchoring, tools, phases).
 

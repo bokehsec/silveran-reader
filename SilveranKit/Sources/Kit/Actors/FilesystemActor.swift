@@ -35,7 +35,22 @@ public actor FilesystemActor {
     private var pendingHistoryWriteTask: Task<Void, Error>?
     private var pendingHistoryWriteId: Int = 0
 
-    public init() {}
+    private let fixedApplicationSupportDirectory: URL?
+    private let writeHighlights: @Sendable (Data, URL) throws -> Void
+    private let removeHighlights: @Sendable (URL) throws -> Void
+
+    public init(applicationSupportDirectory: URL? = nil) {
+        fixedApplicationSupportDirectory = applicationSupportDirectory
+        writeHighlights = { data, url in try data.write(to: url, options: .atomic) }
+        removeHighlights = { try FileManager.default.removeItem(at: $0) }
+    }
+
+    init(applicationSupportDirectory: URL, writeHighlights: @escaping @Sendable (Data, URL) throws -> Void,
+         removeHighlights: @escaping @Sendable (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) {
+        fixedApplicationSupportDirectory = applicationSupportDirectory
+        self.writeHighlights = writeHighlights
+        self.removeHighlights = removeHighlights
+    }
 
     public func ensureLocalStorageDirectories() throws {
         try ensureDirectoryExists(at: sourceCacheRootDirectory())
@@ -722,33 +737,48 @@ public actor FilesystemActor {
             .appendingPathComponent("Highlights", isDirectory: true)
     }
 
-    public func loadHighlights(bookID: BookID) throws -> [Highlight]? {
-        let fileURL = highlightsFileURL(bookID: bookID)
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: fileURL.path) else {
-            return nil
+    public func highlightOriginal(bookID: BookID) throws -> Data? {
+        do { return try Data(contentsOf: highlightsFileURL(bookID: bookID)) }
+        catch {
+            let error = error as NSError
+            if (error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError)
+                || (error.domain == NSPOSIXErrorDomain && error.code == 2) { return nil }
+            throw error
         }
+    }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode([Highlight].self, from: Data(contentsOf: fileURL))
+    public func loadHighlights(bookID: BookID) throws -> [Highlight]? {
+        guard let data = try highlightOriginal(bookID: bookID) else { return nil }
+        return try HighlightsCodec.decode(data, bookID: bookID)
+    }
+
+    /// Runs entirely inside the filesystem actor, with no reentrant read/modify/write gap.
+    public func mutateHighlights(_ mutation: HighlightMutation, bookID: BookID) throws {
+        let original = try loadHighlights(bookID: bookID) ?? []
+        var candidate = original
+        try mutation.apply(to: &candidate, bookID: bookID)
+        guard candidate != original else { return }
+        if candidate.isEmpty { try deleteHighlights(bookID: bookID) }
+        else { try saveHighlights(bookID: bookID, highlights: candidate) }
     }
 
     public func saveHighlights(bookID: BookID, highlights: [Highlight]) throws {
+        // Existing callers cannot bypass protection with a whole-file replacement.
+        _ = try loadHighlights(bookID: bookID)
         let fileURL = highlightsFileURL(bookID: bookID)
-        try ensureDirectoryExists(at: fileURL.deletingLastPathComponent())
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        try write(data: try encoder.encode(highlights), to: fileURL)
+        let data = try encoder.encode(highlights)
+        _ = try HighlightsCodec.decode(data, bookID: bookID)
+        try ensureDirectoryExists(at: fileURL.deletingLastPathComponent())
+        try writeHighlights(data, fileURL)
     }
 
     public func deleteHighlights(bookID: BookID) throws {
-        let fileURL = highlightsFileURL(bookID: bookID)
-        let fm = FileManager.default
-        if fm.fileExists(atPath: fileURL.path) {
-            try fm.removeItem(at: fileURL)
-        }
+        // Deletion must not bypass a failed read or unsupported payload either.
+        guard try loadHighlights(bookID: bookID) != nil else { return }
+        try removeHighlights(highlightsFileURL(bookID: bookID))
     }
 
     func highlightsV2Directory() -> URL {
@@ -1371,6 +1401,8 @@ public actor FilesystemActor {
     }
 
     private nonisolated func applicationSupportBaseDirectory() -> URL {
-        SilveranPlatform.applicationSupportDirectory()
+        fixedApplicationSupportDirectory ?? SilveranPlatform.applicationSupportDirectory()
     }
 }
+
+extension FilesystemActor: HighlightStoring {}

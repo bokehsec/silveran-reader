@@ -32,13 +32,34 @@ public final class InkSession {
     /// True from Pencil-down until `releaseDelay` after Pencil-up.
     public private(set) var isWriting = false
 
-    /// Called on every Pencil-down (so JS can refresh its own safety timeout) and when
-    /// the lock is released. The argument is the new value of `isWriting`.
+    /// Called on every Pencil-down, every `writingHeartbeat` while the Pencil stays down (so
+    /// JS never times out its copy of the lock mid-stroke), and when the lock is released.
+    /// The argument is the new value of `isWriting`.
     public var onWritingUpdate: ((Bool) -> Void)?
+
+    /// How often the lock is re-asserted to JS during one long stroke. Well under JS's own
+    /// safety timeout (`WRITING_TIMEOUT_MS`, 10 s).
+    public static let writingHeartbeat: TimeInterval = 2
+
+    /// The Pencil has written in this book. From then on a tap never turns the page and only a
+    /// deliberate swipe does, so reaching for the writing can't flip it (see FoliateManager).
+    public private(set) var isPencilMode = false
+    /// Called once, when the Pencil first writes in this book.
+    public var onPencilModeChanged: (() -> Void)?
 
     // MARK: Model
 
     public private(set) var ink = BookInk()
+    /// Last confirmed local commit, separate from the immediately rendered editing model.
+    public private(set) var committedInk = BookInk()
+    public private(set) var loadResult: InkLoadResult?
+    public private(set) var persistenceState: InkSessionPersistenceState = .saved {
+        didSet { onPersistenceStateChanged?() }
+    }
+    public var onPersistenceStateChanged: (() -> Void)?
+    public var canEdit: Bool { isOpen && loadResult?.canEdit == true }
+    private var pendingSections: [String: UInt64] = [:]
+    private var revision: UInt64 = 0
     /// Notes and marks the page could not place in this edition, by section (kept, never deleted).
     public private(set) var orphans: [String: [String]] = [:]
 
@@ -50,7 +71,40 @@ public final class InkSession {
     /// The page reported ink it could not place.
     public var onOrphansChanged: (() -> Void)?
 
-    public weak var engine: (any InkEngineCalling)?
+    public weak var engine: (any InkEngineCalling)? {
+        didSet {
+            guard oldValue !== engine else { return }
+            rendererGeneration += 1
+            if engine == nil { readySections.removeAll() }
+            migrating.removeAll()
+        }
+    }
+    private var rendererGeneration: UInt64 = 0
+    private var isDetaching = false
+    private var acceptedWork: UInt64 = 0
+    public var hasPendingChanges: Bool { !pendingSections.isEmpty }
+
+    /// Finish accepted work while the old renderer is still alive, then invalidate its callbacks.
+    /// Save failure remains explicit and the lifecycle owner retains this session for recovery.
+    @discardableResult
+    public func detachRenderer(ifOwnedBy expected: (any InkEngineCalling)? = nil) async -> Bool {
+        if let expected, engine !== expected { return !hasPendingChanges }
+        let captured = engine
+        isDetaching = true
+        let saved = await flush()
+        guard engine === captured else {
+            isDetaching = false
+            return saved && !hasPendingChanges
+        }
+        engine = nil
+        cancelDeferred()
+        releaseTask?.cancel()
+        releaseTask = nil
+        isWriting = false
+        onWritingUpdate?(false)
+        isDetaching = false
+        return saved && !hasPendingChanges
+    }
 
     /// The tool in hand (pen, highlighter or eraser, with its colour and thickness).
     public var tool: InkTool = .pen {
@@ -80,8 +134,10 @@ public final class InkSession {
 
     private var releaseTask: Task<Void, Never>?
     private var deferred: [(key: String, work: () -> Void)] = []
+    private var lastWritingAssertion: Date?
 
     private var bookID: BookID?
+    private var openGeneration: UInt64 = 0
     private var isOpen = false
     private var readySections: Set<String> = []
     private var migrating: Set<String> = []
@@ -111,10 +167,30 @@ public final class InkSession {
     // MARK: - Opening
 
     /// Loads the book's saved ink, then draws every section the page has already reported.
+    /// Opening the book that is already open (its web view was rebuilt) keeps the ink in memory
+    /// and the undo history, and only redraws.
     public func open(bookID: BookID) async {
+        if isOpen, self.bookID == bookID {
+            debugLog("[InkSession] Reattached to \(bookID.uuid); keeping undo history")
+            for href in readySections.sorted() { await prepare(href: href) }
+            return
+        }
+        openGeneration += 1
+        let generation = openGeneration
+        // Never replace recoverable pending edits with another document's state.
+        guard await flush(), generation == openGeneration else { return }
+        isOpen = false
+        let loaded = await store.load(bookID: bookID)
+        guard generation == openGeneration else { return }
         self.bookID = bookID
-        ink = await store.ink(bookID: bookID)
-        debugLog("[InkSession] Opened \(bookID.uuid): \(ink.sections.count) section(s), migration pending: \(ink.needsMigration)")
+        loadResult = loaded
+        ink = loaded.ink
+        committedInk = loaded.ink
+        persistenceState =
+            loaded.canEdit ? .saved : .recovery(loaded.message ?? "Saved ink requires recovery.")
+        debugLog(
+            "[InkSession] Opened \(bookID.uuid): \(ink.sections.count) section(s), migration pending: \(ink.needsMigration)"
+        )
         undoStack.removeAll()
         redoStack.removeAll()
         isOpen = true
@@ -143,7 +219,10 @@ public final class InkSession {
 
     private func prepare(href: String) async {
         debugLog("[InkSession] Preparing \(href)")
+        let generation = openGeneration
+        let renderer = rendererGeneration
         await migrateIfNeeded(href: href)
+        guard isOpen, generation == openGeneration, renderer == rendererGeneration else { return }
         scheduleRender(href: href, focus: nil)
     }
 
@@ -151,10 +230,12 @@ public final class InkSession {
     /// into a word anchor, and the section is saved as version 2.
     private func migrateIfNeeded(href: String) async {
         let current = section(href)
-        guard current.needsMigration, !migrating.contains(href), let engine else { return }
+        guard canEdit, current.needsMigration, !migrating.contains(href), let engine else { return }
         migrating.insert(href)
         defer { migrating.remove(href) }
 
+        let generation = openGeneration
+        let renderer = rendererGeneration
         let legacy = current.notes.filter { $0.legacyCFI != nil }
         debugLog("[InkSession] Migrating \(legacy.count) version 1 note(s) in \(href)")
         let anchors: [InkMigratedAnchor]
@@ -164,9 +245,13 @@ public final class InkSession {
             debugLog("[InkSession] Migration of \(href) failed, will retry: \(error)")
             return
         }
+        guard canEdit, generation == openGeneration, renderer == rendererGeneration else { return }
         debugLog("[InkSession] Migration answered for \(anchors.count) note(s)")
         var migrated = section(href)
-        let byID = Dictionary(anchors.map { ($0.id, $0.anchor) }, uniquingKeysWith: { first, _ in first })
+        let byID = Dictionary(
+            anchors.map { ($0.id, $0.anchor) },
+            uniquingKeysWith: { first, _ in first }
+        )
         for index in migrated.notes.indices {
             let id = migrated.notes[index].id
             guard migrated.notes[index].legacyCFI != nil, let result = byID[id] else { continue }
@@ -182,6 +267,7 @@ public final class InkSession {
     /// Applies a change: updates the model, records undo, saves, and asks the page to redraw.
     @discardableResult
     public func apply(_ operation: InkOperation) -> Bool {
+        guard canEdit else { return false }
         let href = operation.href
         let before = section(href)
         var after = before
@@ -189,7 +275,9 @@ public final class InkSession {
         commit(href: href, before: before, after: after, focus: operation.focusID)
         if operation.isUndoable {
             undoStack.append(Entry(href: href, before: before, after: after))
-            if undoStack.count > Self.undoLimit { undoStack.removeFirst(undoStack.count - Self.undoLimit) }
+            if undoStack.count > Self.undoLimit {
+                undoStack.removeFirst(undoStack.count - Self.undoLimit)
+            }
             redoStack.removeAll()
             onUndoStateChanged?()
         }
@@ -198,7 +286,7 @@ public final class InkSession {
 
     @discardableResult
     public func undo() -> Bool {
-        guard let entry = undoStack.popLast() else { return false }
+        guard canEdit, let entry = undoStack.popLast() else { return false }
         commit(href: entry.href, before: entry.after, after: entry.before, focus: nil)
         redoStack.append(entry)
         onUndoStateChanged?()
@@ -207,7 +295,7 @@ public final class InkSession {
 
     @discardableResult
     public func redo() -> Bool {
-        guard let entry = redoStack.popLast() else { return false }
+        guard canEdit, let entry = redoStack.popLast() else { return false }
         commit(href: entry.href, before: entry.before, after: entry.after, focus: nil)
         undoStack.append(entry)
         onUndoStateChanged?()
@@ -223,10 +311,13 @@ public final class InkSession {
     private func scheduleRender(href: String, focus: String?) {
         let previous = renderTail
         let section = section(href)
+        let generation = rendererGeneration
         renderTail = Task { [weak self] in
             await previous?.value
             // Redraws run one at a time, in the order the changes were made.
-            guard let engine = self?.engine else { return }
+            guard let self, generation == self.rendererGeneration, let engine = self.engine else {
+                return
+            }
             do {
                 try await engine.inkRender(href: href, section: section, focus: focus)
             } catch {
@@ -237,18 +328,63 @@ public final class InkSession {
 
     private func persist(href: String) {
         guard let bookID else { return }
+        revision += 1
+        let capturedRevision = revision
+        pendingSections[href] = capturedRevision
         let section = section(href)
+        if case .failed = persistenceState {} else { persistenceState = .saving }
         let previous = persistTail
-        persistTail = Task { [store] in
+        persistTail = Task { [self, store] in
             await previous?.value
-            await store.setSection(section, href: href, bookID: bookID)
+            let result = await store.setSection(section, href: href, bookID: bookID)
+            switch result {
+                case .success:
+                    committedInk.sections[href] = section.isEmpty ? nil : section
+                    committedInk.version = BookInk.currentVersion
+                    if pendingSections[href] == capturedRevision { pendingSections[href] = nil }
+                    if pendingSections.isEmpty { persistenceState = .saved }
+                case .failure(let error):
+                    persistenceState = .failed(error.message)
+            }
         }
     }
 
-    /// Waits until everything applied so far has been saved and drawn.
-    public func flush() async {
+    /// Retry the latest editing state of every uncommitted section through the same writer.
+    @discardableResult
+    public func retrySave() async -> Bool {
         await persistTail?.value
-        await renderTail?.value
+        for href in pendingSections.keys.sorted() { persist(href: href) }
+        return await flush()
+    }
+
+    /// Original protected bytes for recovery; otherwise a snapshot including pending edits.
+    /// This is a single-book ink export, not the planned full annotation/configuration archive.
+    public func exportData() throws -> Data {
+        if let loaded = loadResult, !loaded.canEdit, let original = loaded.original {
+            return original
+        }
+        guard loadResult?.canEdit == true else {
+            throw InkPersistenceFailure(message: "The original ink could not be read for export.")
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(ink)
+    }
+
+    /// Waits for already accepted strokes, saves and rendering. False means edits still need
+    /// recovery/retry; waiting for a failed write must not acknowledge it as saved.
+    @discardableResult
+    public func flush() async -> Bool {
+        var capturedWork: UInt64
+        var capturedRevision: UInt64
+        repeat {
+            capturedWork = acceptedWork
+            capturedRevision = revision
+            await strokeTail?.value
+            await persistTail?.value
+            await renderTail?.value
+        } while capturedWork != acceptedWork || capturedRevision != revision
+        return pendingSections.isEmpty
     }
 
     // MARK: - Strokes
@@ -265,6 +401,8 @@ public final class InkSession {
     /// The eraser passed over `points` (web view coordinates): everything it touched goes, as one
     /// undo step. Runs in order with strokes.
     public func erase(points: [[Double]]) async {
+        guard !isDetaching else { return }
+        acceptedWork += 1
         let previous = strokeTail
         let task = Task { [weak self] in
             await previous?.value
@@ -275,7 +413,7 @@ public final class InkSession {
     }
 
     private func processErase(_ points: [[Double]]) async {
-        guard isOpen, let engine, !points.isEmpty else { return }
+        guard canEdit, let engine, !points.isEmpty else { return }
         let hit: InkHit
         do {
             hit = try await engine.inkHitTest(points: points, radius: Self.eraserRadius)
@@ -291,6 +429,8 @@ public final class InkSession {
     /// A Pencil stroke finished. The page decides what it is; the result is applied. Strokes are
     /// processed strictly in order, and this returns once the page has drawn the result.
     public func finishStroke(_ stroke: InkStrokeInput) async {
+        guard !isDetaching else { return }
+        acceptedWork += 1
         let previous = strokeTail
         let task = Task { [weak self] in
             await previous?.value
@@ -301,7 +441,7 @@ public final class InkSession {
     }
 
     private func process(_ stroke: InkStrokeInput) async {
-        guard isOpen, let engine else { return }
+        guard canEdit, let engine else { return }
         let proposal: InkProposal
         do {
             proposal = try await engine.inkPropose(stroke)
@@ -320,14 +460,20 @@ public final class InkSession {
                 apply(
                     .addNote(
                         href: href,
-                        note: InkNote(id: makeID(), anchor: anchor, strokes: [local], createdAt: stamp),
+                        note: InkNote(
+                            id: makeID(),
+                            anchor: anchor,
+                            strokes: [local],
+                            createdAt: stamp
+                        ),
                     )
                 )
             case .append:
                 guard let noteID = proposal.noteId, let local = proposal.stroke else { return }
                 apply(.appendToNote(href: href, noteID: noteID, stroke: local, at: stamp))
             case .mark:
-                guard let kind = proposal.markKind, let start = proposal.start, let end = proposal.end,
+                guard let kind = proposal.markKind, let start = proposal.start,
+                    let end = proposal.end,
                     let local = proposal.stroke
                 else { return }
                 apply(
@@ -358,6 +504,22 @@ public final class InkSession {
         releaseTask?.cancel()
         releaseTask = nil
         isWriting = true
+        lastWritingAssertion = now()
+        onWritingUpdate?(true)
+        if !isPencilMode {
+            isPencilMode = true
+            onPencilModeChanged?()
+        }
+    }
+
+    /// The Pencil moved while down. Re-asserts the lock to JS every `writingHeartbeat`.
+    public func penMoved() {
+        guard isWriting, releaseTask == nil else { return }
+        let time = now()
+        if let last = lastWritingAssertion, time.timeIntervalSince(last) < Self.writingHeartbeat {
+            return
+        }
+        lastWritingAssertion = time
         onWritingUpdate?(true)
     }
 
@@ -400,4 +562,11 @@ public final class InkSession {
         deferred.removeAll()
         for item in pending { item.work() }
     }
+}
+
+public enum InkSessionPersistenceState: Equatable, Sendable {
+    case saved
+    case saving
+    case failed(String)
+    case recovery(String)
 }

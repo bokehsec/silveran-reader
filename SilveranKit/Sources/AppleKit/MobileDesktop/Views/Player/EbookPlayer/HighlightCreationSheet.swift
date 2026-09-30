@@ -10,6 +10,10 @@ struct HighlightCreationSheet: View {
     var title: String = "Add Highlight"
     var initialColor: HighlightColor? = .yellow
     var initialNote: String = ""
+    var persistenceError: String?
+    var hasPendingChanges = false
+    var onRetry: () async -> Void = {}
+    var exportRecovery: () async throws -> Data = { Data() }
 
     @State private var selectedColor: HighlightColor? = .yellow
     @State private var note: String = ""
@@ -18,6 +22,11 @@ struct HighlightCreationSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
+                HighlightPersistenceBanner(
+                    message: persistenceError,
+                    retry: onRetry,
+                    export: exportRecovery
+                )
                 selectedTextPreview
 
                 if !isBookmarkOnly {
@@ -25,7 +34,7 @@ struct HighlightCreationSheet: View {
                         Text("Color")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        colorPicker
+                        colorPicker.disabled(hasPendingChanges)
                     }
                 }
 
@@ -36,10 +45,12 @@ struct HighlightCreationSheet: View {
                     TextField("Optional", text: $note, axis: .vertical)
                         .lineLimit(3...6)
                         .textFieldStyle(.roundedBorder)
+                        .disabled(hasPendingChanges)
                 }
 
                 Toggle("Bookmark only (no highlight color)", isOn: $isBookmarkOnly)
                     .font(.subheadline)
+                    .disabled(hasPendingChanges)
 
                 Spacer()
             }
@@ -62,6 +73,7 @@ struct HighlightCreationSheet: View {
                         let noteText = note.isEmpty ? nil : note
                         onSave(color, noteText)
                     }
+                    .disabled(hasPendingChanges)
                 }
             }
             #else
@@ -75,15 +87,16 @@ struct HighlightCreationSheet: View {
                         let noteText = note.isEmpty ? nil : note
                         onSave(color, noteText)
                     }
+                    .disabled(hasPendingChanges)
                     .keyboardShortcut(.return, modifiers: .command)
                 }
             }
             #endif
         }
         #if os(iOS)
-        .presentationDetents([.medium])
+        .presentationDetents(persistenceError == nil ? [.medium] : [.large])
         #else
-        .frame(width: 400, height: 450)
+        .frame(width: 400, height: persistenceError == nil ? 450 : 650)
         #endif
     }
 

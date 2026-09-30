@@ -135,6 +135,11 @@ class EbookPlayerViewModel {
     #endif
     var showCustomizePopover = false
     var commsBridge: ReaderCommsBridge? = nil
+    /// Per-book lifecycle ownership keeps pending edits alive beyond a view or WebView.
+    let inkSession: InkSession
+    var inkPersistenceState: InkSessionPersistenceState = .saved
+    var highlightPersistenceError: String?
+    var hasPendingHighlightChanges = false
     var playbackProgressMessage: Any? = nil
 
     var chapterProgressBinding: Binding<Double> {
@@ -233,6 +238,7 @@ class EbookPlayerViewModel {
 
     init(bookData: PlayerBookData?, settingsVM: SettingsViewModel = SettingsViewModel()) {
         self.bookData = bookData
+        self.inkSession = bookData.map { ReadingSessionStore.shared.inkSession(for: $0.metadata.id) } ?? InkSession()
         self.settingsVM = settingsVM
         #if os(macOS)
         let savedAudioSidebarState =
@@ -249,6 +255,11 @@ class EbookPlayerViewModel {
             UserDefaults.standard.object(forKey: "EbookPlayerShowAudioSidebarIOS") as? Bool ?? false
         #endif
         self._sidebarInitialized = true
+        inkPersistenceState = inkSession.persistenceState
+        inkSession.onPersistenceStateChanged = { [weak self] in
+            guard let self else { return }
+            self.inkPersistenceState = self.inkSession.persistenceState
+        }
     }
 
     func handleChapterSelection(_ chapter: ChapterItem) {
@@ -484,6 +495,7 @@ class EbookPlayerViewModel {
             "[EbookPlayerViewModel] App backgrounding - syncing progress (audio continues in background)"
         )
 
+        await inkSession.flush()
         await progressManager?.syncProgressToServer(reason: .appBackgrounding)
 
         debugLog("[EbookPlayerViewModel] Background sync complete")
@@ -640,18 +652,17 @@ class EbookPlayerViewModel {
     func handleOnDisappear(close policy: ReadingSessionClosePolicy? = .endSession) {
         debugLog("[EbookPlayerViewModel] View disappearing (policy: \(String(describing: policy)))")
 
-        session?.removeIncomingPositionObserver()
-
         guard let policy else {
             debugLog("[EbookPlayerViewModel] Background disappear - preserving SMIL playback")
             return
         }
 
+        let closingBridge = commsBridge
         Task { @MainActor in
             if policy == .endSession {
                 await comicProgressManager?.cleanup()
             }
-            await session?.close(policy)
+            await session?.closeView(policy, bridge: closingBridge)
         }
     }
 
@@ -804,11 +815,63 @@ class EbookPlayerViewModel {
 
     func loadHighlights() async {
         guard let bookID = bookData?.metadata.id else { return }
+        hasPendingHighlightChanges = await BookmarkActor.shared.hasPendingChanges(bookID: bookID)
+        if hasPendingHighlightChanges {
+            highlightPersistenceError = await BookmarkActor.shared.pendingFailure(bookID: bookID)?.message
+                ?? "Bookmarks/highlights have pending changes. Retry or export them before closing."
+        }
 
-        highlights = await BookmarkActor.shared.getHighlights(bookID: bookID)
+        switch await BookmarkActor.shared.loadHighlights(bookID: bookID) {
+            case .success(let loaded):
+                highlights = loaded
+                if !hasPendingHighlightChanges { highlightPersistenceError = nil }
+            case .failure(let error): highlightPersistenceError = error.message
+        }
         debugLog("[EbookPlayerViewModel] Loaded \(highlights.count) highlights for book \(bookID)")
 
         await sendHighlightsToJS()
+    }
+
+    private func applyHighlightMutation(_ mutation: HighlightMutation, bookID: BookID) async -> Bool {
+        guard !hasPendingHighlightChanges else { return false }
+        hasPendingHighlightChanges = true
+        let result: Result<Void, AnnotationPersistenceFailure>
+        switch mutation {
+            case .add(let highlight): result = await BookmarkActor.shared.addHighlight(highlight)
+            case .update(let highlight): result = await BookmarkActor.shared.updateHighlight(highlight)
+            case .delete(let id): result = await BookmarkActor.shared.deleteHighlight(id: id, bookID: bookID)
+            case .deleteAll: result = await BookmarkActor.shared.deleteAllHighlights(bookID: bookID)
+        }
+        switch result {
+            case .success:
+                hasPendingHighlightChanges = await BookmarkActor.shared.hasPendingChanges(bookID: bookID)
+                highlightPersistenceError = nil
+                await loadHighlights()
+                return true
+            case .failure(let error):
+                highlightPersistenceError = error.message
+                return false
+        }
+    }
+
+    func retryHighlightChanges() async {
+        guard let bookID = bookData?.metadata.id else { return }
+        switch await BookmarkActor.shared.retryPendingChanges(bookID: bookID) {
+            case .success:
+                hasPendingHighlightChanges = false
+                highlightPersistenceError = nil
+                pendingSelection = nil
+                pendingEditHighlight = nil
+                await loadHighlights()
+            case .failure(let error): highlightPersistenceError = error.message
+        }
+    }
+
+    func exportHighlightRecovery() async throws -> Data {
+        guard let bookID = bookData?.metadata.id else {
+            throw AnnotationPersistenceFailure(message: "No book is available for export.")
+        }
+        return try await BookmarkActor.shared.exportRecovery(bookID: bookID)
     }
 
     func addHighlight(
@@ -857,8 +920,7 @@ class EbookPlayerViewModel {
             note: note,
         )
 
-        await BookmarkActor.shared.addHighlight(highlight)
-        highlights = await BookmarkActor.shared.getHighlights(bookID: bookID)
+        guard await applyHighlightMutation(.add(highlight), bookID: bookID) else { return }
 
         pendingSelection = nil
 
@@ -870,8 +932,7 @@ class EbookPlayerViewModel {
     func deleteHighlight(_ highlight: Highlight) async {
         guard let bookID = bookData?.metadata.id else { return }
 
-        await BookmarkActor.shared.deleteHighlight(id: highlight.id, bookID: bookID)
-        highlights = await BookmarkActor.shared.getHighlights(bookID: bookID)
+        guard await applyHighlightMutation(.delete(highlight.id), bookID: bookID) else { return }
 
         if let bridge = commsBridge {
             do {
@@ -1012,8 +1073,7 @@ class EbookPlayerViewModel {
             createdAt: existing.createdAt,
         )
 
-        await BookmarkActor.shared.updateHighlight(updated)
-        highlights = await BookmarkActor.shared.getHighlights(bookID: bookID)
+        guard await applyHighlightMutation(.update(updated), bookID: bookID) else { return }
         await sendHighlightsToJS()
     }
 
@@ -1042,8 +1102,7 @@ class EbookPlayerViewModel {
             note: note,
             createdAt: original.createdAt,
         )
-        await BookmarkActor.shared.updateHighlight(updated)
-        highlights = await BookmarkActor.shared.getHighlights(bookID: bookID)
+        guard await applyHighlightMutation(.update(updated), bookID: bookID) else { return }
         await sendHighlightsToJS()
         pendingEditHighlight = nil
     }
@@ -1093,8 +1152,7 @@ class EbookPlayerViewModel {
             note: nil,
         )
 
-        await BookmarkActor.shared.addHighlight(highlight)
-        highlights = await BookmarkActor.shared.getHighlights(bookID: bookID)
+        guard await applyHighlightMutation(.add(highlight), bookID: bookID) else { return }
 
         debugLog("[EbookPlayerViewModel] Added bookmark: \(position.text.prefix(50))...")
     }

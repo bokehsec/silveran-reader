@@ -149,6 +149,78 @@ struct InkSessionTests {
         #expect(received == ["tap", "drag", "tap"])
     }
 
+    @Test("A long stroke re-asserts the lock to JS every couple of seconds, not on every move")
+    func heartbeatDuringLongStroke() {
+        var clock = Date(timeIntervalSince1970: 0)
+        let session = InkSession(releaseDelay: shortDelay, now: { clock })
+        var updates: [Bool] = []
+        session.onWritingUpdate = { updates.append($0) }
+
+        session.penDown()
+        clock += 0.5
+        session.penMoved()
+        clock += 1
+        session.penMoved()
+        #expect(updates == [true], "moves within the heartbeat interval send nothing")
+        clock += InkSession.writingHeartbeat
+        session.penMoved()
+        #expect(updates == [true, true])
+        session.penUp()
+        clock += InkSession.writingHeartbeat * 2
+        session.penMoved()
+        #expect(updates == [true, true], "no heartbeat once the Pencil has lifted")
+    }
+
+    @Test("The first Pencil stroke turns on Pencil mode once, and JS hears it")
+    func pencilModeStartsOnFirstStroke() async {
+        let js = RecordingJS()
+        let session = InkSession(releaseDelay: shortDelay)
+        let bridge = ReaderCommsBridge(js: js, inkSession: session)
+        #expect(!session.isPencilMode)
+        session.penDown()
+        session.penUp()
+        session.penDown()
+        #expect(session.isPencilMode)
+        let modeCalls = { js.evaluated.filter { $0.contains("pencilMode") }.count }
+        #expect(await waitUntil { modeCalls() == 1 })
+        try? await Task.sleep(for: .milliseconds(30))
+        #expect(modeCalls() == 1)
+        #expect(bridge.inkSession === session)
+    }
+
+    @Test("Lock changes reach JS in the order they happened")
+    func lockChangesStayInOrder() async {
+        let js = RecordingJS()
+        let session = InkSession(releaseDelay: .milliseconds(1))
+        let bridge = ReaderCommsBridge(js: js, inkSession: session)
+        for _ in 0..<20 {
+            session.penDown()
+            session.penUp()
+            try? await Task.sleep(for: .milliseconds(3))
+        }
+        #expect(await waitUntil { !session.isWriting })
+        try? await Task.sleep(for: .milliseconds(50))
+        let lock = js.evaluated.filter { $0.contains("setInkWriting") }
+        #expect(lock.last == "window.foliateManager?.setInkWriting(false)", "the final state JS holds is released")
+        #expect(bridge.inkSession === session)
+    }
+
+    @Test("In Pencil mode margin taps are refused; keys, swipes and drags still turn the page")
+    func pencilModeRefusesTaps() async {
+        let session = InkSession(releaseDelay: shortDelay)
+        let bridge = ReaderCommsBridge(js: RecordingJS(), inkSession: session)
+        var turns: [String?] = []
+        bridge.onMarginClickNav = { turns.append($0.source) }
+        session.penDown()
+        session.penUp()
+        #expect(await waitUntil { !session.isWriting })
+
+        for source in ["tap", "key", "swipe", "drag"] {
+            bridge.sendSwiftMarginClickNav(MarginClickNavMessage(direction: "right", source: source))
+        }
+        #expect(turns == ["key", "swipe", "drag"])
+    }
+
     @Test("JS is told when the lock is taken and released")
     func bridgePushesLockToJS() async {
         let js = RecordingJS()
@@ -158,22 +230,33 @@ struct InkSessionTests {
 
         session.penDown()
         session.penUp()
-        #expect(await waitUntil { js.evaluated.count >= 2 })
+        let lock = { js.evaluated.filter { $0.contains("setInkWriting") } }
+        #expect(await waitUntil { lock().count >= 2 })
         #expect(
-            js.evaluated == [
+            lock() == [
                 "window.foliateManager?.setInkWriting(true)",
                 "window.foliateManager?.setInkWriting(false)",
             ]
         )
     }
 
-    @Test("Read-aloud holds its page flip while writing and turns the page once, afterwards")
-    func readAloudFlipWaitsForRelease() async {
+    @Test("Read-aloud holds page turns and sentence jumps while writing, then shows the spoken sentence once")
+    func readAloudWaitsForRelease() async {
         let js = RecordingJS()
         let session = InkSession(releaseDelay: shortDelay)
         let bridge = ReaderCommsBridge(js: js, inkSession: session)
+        let entries = (0..<3).map {
+            SMILEntry(
+                textId: "s\($0)",
+                textHref: "ch1.xhtml",
+                audioFile: "ch1.m4a",
+                begin: Double($0),
+                end: Double($0 + 1),
+                cumSumAtEnd: Double($0 + 1),
+            )
+        }
         let mom = MediaOverlayManager(
-            bookStructure: [],
+            bookStructure: [SectionInfo(index: 0, id: "ch1.xhtml", label: nil, level: nil, mediaOverlay: entries)],
             bookID: BookID(sourceID: "source-1", uuid: "book-1"),
             bridge: bridge,
             settingsVM: StubSettings(),
@@ -181,6 +264,7 @@ struct InkSessionTests {
         )
         mom.isPlaying = true
         let flips = { js.evaluated.filter { $0 == "window.foliateManager.goRight()" }.count }
+        let catchUps = { js.evaluated.filter { $0.contains("highlightFragment(0, 's0', true)") }.count }
         let offScreen = ElementVisibilityMessage(textId: "s1", visibleRatio: 0, offScreenRatio: 1)
 
         session.penDown()
@@ -188,10 +272,12 @@ struct InkSessionTests {
         mom.handleElementVisibility(offScreen)
         try? await Task.sleep(for: .milliseconds(20))
         #expect(flips() == 0, "no page turn while the Pencil is on the page")
+        #expect(!js.evaluated.contains { $0.contains("highlightFragment") }, "no sentence jump either")
 
         session.penUp()
-        #expect(await waitUntil { flips() == 1 })
+        #expect(await waitUntil { catchUps() == 1 })
         try? await Task.sleep(for: .milliseconds(50))
-        #expect(flips() == 1, "the burst of requests becomes one turn")
+        #expect(catchUps() == 1, "the burst of requests becomes one catch-up")
+        #expect(flips() == 0, "the view goes to the spoken sentence instead of turning one page blind")
     }
 }

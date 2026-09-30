@@ -4,6 +4,12 @@
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md) first. It maps the SwiftPM products, dependency injection model, Apple package, and app shells that make up this repository.
 
+For annotation, persistence, sync, configuration, or recovery work, also read [AGENTS.md](AGENTS.md) and [the annotation/sync/backup review](docs/ANNOTATION_SYNC_BACKUP_REVIEW.md). Prefer established libraries and platform services where they fit; document the need for custom behavior and preserve the core/platform/renderer boundaries.
+
+Cross-cutting changes need a concise architecture decision record under `docs/decisions/` (create the directory with the first record). Describe the problem, alternatives, ownership, identity/schema, migration and rollback, failure and conflict behavior, platform scope, and acceptance tests. Introduce new stores through adapters and verified migrations; do not leave two authoritative writers for the same data.
+
+Review persistence changes using corrupt/unsupported data, failed writes, restart, and downgrade scenarios. Review sync changes using offline edits, retries, concurrent edits, deletion and account changes. Review backup changes by restoring retained snapshots into an empty store and validating every referenced asset. Keep save, sync, and backup status truthful in the UI. Real iPad/Pencil checks and signed iCloud device tests remain separate from automated tests. Record implemented bugfixes in `BUGFIX_LOG.md` as required; a design review alone does not claim to fix the risks it identifies.
+
 ## Building on macOS
 
 ### Preparation

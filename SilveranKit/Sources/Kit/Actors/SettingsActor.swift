@@ -651,31 +651,110 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
     }
 }
 
+public enum ConfigurationMutationOrigin: Sendable { case localUser, migration, remote }
+
 @globalActor
 public actor SettingsActor {
     public static let shared = SettingsActor()
 
     private(set) public var config: SilveranGlobalConfig
+    private(set) public var loadResult: ConfigurationLoadResult
+    private(set) public var saveFailure: String?
+    /// Accepted local edits survive failed writes and editor closure, but are not committed values.
+    private(set) public var pendingChanges: ConfigurationPatch?
     private var observers: [UUID: @Sendable @SilveranUIActor () -> Void] = [:]
+
+    private var changeObservers:
+        [UUID:
+            @Sendable @SilveranUIActor (
+                SilveranGlobalConfig, SilveranGlobalConfig, ConfigurationMutationOrigin
+            ) -> Void] = [:]
 
     private let fileManager: FileManager
     private let storageURL: URL
+    private let readFile: @Sendable (URL) throws -> Data
+    private let writeFile: @Sendable (Data, URL) throws -> Void
 
-    public init(fileManager: FileManager = .default) {
+    public init(fileManager: FileManager = .default, storageURL: URL? = nil) {
         self.fileManager = fileManager
-        let resolvedURL = Self.defaultStorageURL(fileManager: fileManager)
-        storageURL = resolvedURL
+        let resolvedURL = storageURL ?? Self.defaultStorageURL(fileManager: fileManager)
+        self.storageURL = resolvedURL
+        readFile = { try Data(contentsOf: $0) }
+        writeFile = { try $0.write(to: $1, options: .atomic) }
+        let loaded = Self.readConfig(from: resolvedURL, readFile: { try Data(contentsOf: $0) })
+        loadResult = loaded
+        config = loaded.config
+    }
 
-        do {
-            try Self.ensureStorageDirectory(for: resolvedURL, using: fileManager)
-            config = try Self.loadConfig(from: resolvedURL, fileManager: fileManager)
-            #if os(iOS)
-            config.readingBar.showPlayerControls = true
-            #endif
-        } catch {
-            config = SilveranGlobalConfig()
-            try? Self.save(config: config, to: resolvedURL, fileManager: fileManager)
+    init(
+        storageURL: URL,
+        readFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) },
+        writeFile: @escaping @Sendable (Data, URL) throws -> Void
+    ) {
+        fileManager = .default
+        self.storageURL = storageURL
+        self.readFile = readFile
+        self.writeFile = writeFile
+        let loaded = Self.readConfig(from: storageURL, readFile: readFile)
+        loadResult = loaded
+        config = loaded.config
+    }
+
+    public func pendingConfiguration() throws -> SilveranGlobalConfig? {
+        try pendingChanges?.applying(to: config)
+    }
+
+    public func persistenceSnapshot() -> ConfigurationPersistenceSnapshot {
+        ConfigurationPersistenceSnapshot(
+            config: config,
+            loadResult: loadResult,
+            pendingChanges: pendingChanges,
+            saveFailure: saveFailure
+        )
+    }
+
+    @discardableResult
+    public func retryLoad() -> ConfigurationLoadResult {
+        let loaded = Self.readConfig(from: storageURL, readFile: readFile)
+        loadResult = loaded
+        if loaded.canPersist {
+            config = loaded.config
+            if pendingChanges == nil { saveFailure = nil }
         }
+        notifyReaders()
+        return loaded
+    }
+
+    public func retryPendingChanges() throws {
+        guard let pendingChanges else { return }
+        try commit(pendingChanges.applying(to: config), origin: .localUser)
+    }
+
+    public func exportRecovery(including editorDraft: ConfigurationPatch? = nil) throws -> Data {
+        struct Recovery: Encodable {
+            let schema = 1
+            let loadState: String
+            let original: Data?
+            let committed: SilveranGlobalConfig
+            let pending: ConfigurationPatch?
+            let editorDraft: ConfigurationPatch?
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(
+            Recovery(
+                loadState: loadResult.state.rawValue,
+                original: loadResult.original,
+                committed: config,
+                pending: pendingChanges,
+                editorDraft: editorDraft
+            )
+        )
+    }
+
+    private func notifyReaders() {
+        let callbacks = Array(observers.values)
+        Task { @SilveranUIActor in for callback in callbacks { callback() } }
     }
 
     @discardableResult
@@ -687,6 +766,7 @@ public actor SettingsActor {
 
     public func removeObserver(id: UUID) {
         observers.removeValue(forKey: id)
+        changeObservers.removeValue(forKey: id)
     }
 
     public func updateConfig(
@@ -755,8 +835,10 @@ public actor SettingsActor {
         selectedDarkThemeId: String? = nil,
         customThemes: [ReaderTheme]? = nil,
         builtInThemeOverrides: [ReaderTheme]? = nil,
+        origin: ConfigurationMutationOrigin = .localUser,
     ) throws {
         var updated = config
+        if case .localUser = origin { updated = try pendingChanges?.applying(to: config) ?? config }
 
         if let fontSize { updated.reading.fontSize = fontSize }
         if let fontFamily { updated.reading.fontFamily = fontFamily }
@@ -922,19 +1004,120 @@ public actor SettingsActor {
         updated.readingBar.showPlayerControls = true
         #endif
 
-        config = updated
-        try persistCurrentConfig()
-        debugLog(
-            "[SettingsActor] Config updated and persisted - Progress: \(config.sync.progressSyncIntervalSeconds)s, Metadata: \(config.sync.metadataRefreshIntervalSeconds)s"
-        )
+        try commit(updated, origin: origin)
+    }
 
-        let observersList = Array(observers.values)
-        Task { @SilveranUIActor in
-            for observer in observersList {
-                observer()
+    @discardableResult
+    public func observeChanges(
+        _ callback:
+            @Sendable @SilveranUIActor @escaping (
+                SilveranGlobalConfig, SilveranGlobalConfig, ConfigurationMutationOrigin
+            ) -> Void
+    ) -> UUID {
+        let id = UUID()
+        changeObservers[id] = callback
+        return id
+    }
+
+    public func applyPatch(_ patch: ConfigurationPatch, origin: ConfigurationMutationOrigin) throws
+    {
+        var base = config
+        if case .localUser = origin { base = try pendingChanges?.applying(to: config) ?? config }
+        try commit(patch.applying(to: base), origin: origin)
+    }
+
+    public func applyUserChanges(
+        from baseline: SilveranGlobalConfig,
+        to edited: SilveranGlobalConfig
+    ) throws {
+        try applyPatch(.difference(from: baseline, to: edited), origin: .localUser)
+    }
+
+    /// A migration prepared across actor boundaries may only commit its observed generation.
+    /// Even a no-op goes through live-file validation before completion can be recorded.
+    func applyMigration(
+        from expected: ConfigurationPersistenceSnapshot,
+        to updated: SilveranGlobalConfig
+    ) throws {
+        guard loadResult.canPersist, expected.loadResult.canPersist,
+            pendingChanges == nil, expected.pendingChanges == nil,
+            config == expected.config, loadResult.original == expected.loadResult.original
+        else {
+            throw ConfigurationPersistenceFailure(
+                state: loadResult.state,
+                message:
+                    "Settings changed or require recovery. Migration will retry from the saved original."
+            )
+        }
+        try commit(updated, origin: .migration)
+    }
+
+    private func commit(_ candidate: SilveranGlobalConfig, origin: ConfigurationMutationOrigin)
+        throws
+    {
+        do {
+            var updated = candidate
+            if case .localUser = origin {
+                let editing = try pendingChanges?.applying(to: config) ?? config
+                let changes = try ConfigurationPatch.difference(from: editing, to: candidate)
+                let combined = ConfigurationPatch(
+                    fields: (pendingChanges?.fields ?? [:]).merging(changes.fields) { _, newest in
+                        newest
+                    }
+                )
+                updated = try combined.applying(to: config)
+                let uncommitted = try ConfigurationPatch.difference(from: config, to: updated)
+                pendingChanges = uncommitted.fields.isEmpty ? nil : uncommitted
             }
+            #if os(iOS)
+            updated.readingBar.showPlayerControls = true
+            #endif
+            // Verify the live original before every write, including no-op remote imports. No
+            // cached viewing fallback may grant permission to replace unreadable/unknown data.
+            let live = Self.readConfig(from: storageURL, readFile: readFile)
+            guard live.canPersist, loadResult.canPersist, live.original == loadResult.original
+            else {
+                if !live.canPersist { loadResult = live }
+                throw ConfigurationPersistenceFailure(
+                    state: loadResult.state,
+                    message:
+                        "Saved settings require recovery or changed on disk. Pending edits are retained; retry reading before saving."
+                )
+            }
+            let bytes = try ConfigurationPersistenceCodec.encode(updated)
+            updated = try ConfigurationPersistenceCodec.decode(bytes)
+            guard updated != config else {
+                if case .localUser = origin { pendingChanges = nil }
+                saveFailure = nil
+                notifyReaders()
+                return
+            }
+            let previous = config
+            try Self.ensureStorageDirectory(for: storageURL, using: fileManager)
+            try writeFile(bytes, storageURL)
+            config = updated
+            loadResult = ConfigurationLoadResult(
+                state: .valid,
+                config: updated,
+                original: bytes,
+                message: nil
+            )
+            saveFailure = nil
+            if case .localUser = origin { pendingChanges = nil }
+            let observersList = Array(observers.values)
+            let changes = Array(changeObservers.values)
+            let committed = updated
+            Task { @SilveranUIActor in
+                for observer in observersList { observer() }
+                for observer in changes { observer(previous, committed, origin) }
+            }
+        } catch {
+            saveFailure = error.localizedDescription
+            notifyReaders()
+            throw error
         }
     }
+
 }
 
 extension SettingsActor {
@@ -959,32 +1142,49 @@ extension SettingsActor {
         }
     }
 
-    fileprivate static func loadConfig(from url: URL, fileManager: FileManager) throws
-        -> SilveranGlobalConfig
-    {
-        guard fileManager.fileExists(atPath: url.path) else {
-            return SilveranGlobalConfig()
+    fileprivate static func readConfig(
+        from url: URL,
+        readFile: @Sendable (URL) throws -> Data
+    ) -> ConfigurationLoadResult {
+        let data: Data
+        do { data = try readFile(url) } catch {
+            let error = error as NSError
+            let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError
+            let missing =
+                (error.domain == NSPOSIXErrorDomain && error.code == 2)
+                || (error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError
+                    && (underlying == nil
+                        || (underlying?.domain == NSPOSIXErrorDomain && underlying?.code == 2)))
+            return ConfigurationLoadResult(
+                state: missing ? .missing : .unreadable,
+                config: SilveranGlobalConfig(),
+                original: nil,
+                message: missing
+                    ? nil
+                    : "Saved settings could not be read. The original is protected; retry reading before editing."
+            )
         }
-
-        let data = try Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(SilveranGlobalConfig.self, from: data)
+        do {
+            var config = try ConfigurationPersistenceCodec.decode(data)
+            #if os(iOS)
+            config.readingBar.showPlayerControls = true
+            #endif
+            return ConfigurationLoadResult(
+                state: .valid,
+                config: config,
+                original: data,
+                message: nil
+            )
+        } catch {
+            let failure = error as? ConfigurationPersistenceFailure
+            return ConfigurationLoadResult(
+                state: failure?.state ?? .corrupt,
+                config: SilveranGlobalConfig(),
+                original: data,
+                message: failure?.message
+                    ?? "Saved settings contain damaged data. The original is preserved; export it for recovery."
+            )
+        }
     }
 
-    fileprivate static func save(
-        config: SilveranGlobalConfig,
-        to url: URL,
-        fileManager _: FileManager,
-    ) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(config)
-        try data.write(to: url, options: [.atomic])
-    }
-
-    fileprivate func persistCurrentConfig() throws {
-        try Self.ensureStorageDirectory(for: storageURL, using: fileManager)
-        try Self.save(config: config, to: storageURL, fileManager: fileManager)
-    }
 }

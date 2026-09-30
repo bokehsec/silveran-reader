@@ -38,7 +38,8 @@ public struct OverlayToggledMessage: Codable {
 /// Sent when user clicks in margin zone to navigate - routed through EPM like arrow keys
 public struct MarginClickNavMessage: Codable {
     public let direction: String
-    /// "swipe" for JS-detected swipes, "drag" for native drag-to-curl turns; nil for taps and keys.
+    /// "tap" for margin taps, "key" for arrow keys, "swipe" for JS-detected swipes, "drag" for
+    /// native drag-to-curl turns; nil from older page code.
     public let source: String?
 
     public init(direction: String, source: String? = nil) {

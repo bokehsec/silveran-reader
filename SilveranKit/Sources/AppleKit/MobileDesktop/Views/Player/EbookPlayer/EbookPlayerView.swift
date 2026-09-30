@@ -51,6 +51,9 @@ public struct EbookPlayerView: View {
     #endif
     @State private var viewModel: EbookPlayerViewModel
     @State private var isComicScrubberVisible = false
+    #if os(iOS)
+    @State private var inkToolPreferenceMessage: String?
+    #endif
     private let onClose: (() -> Void)?
 
     public init(bookData: PlayerBookData?, onClose: (() -> Void)? = nil) {
@@ -67,11 +70,37 @@ public struct EbookPlayerView: View {
             #endif
         }
         .background(readerBackgroundColor)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                InkPersistenceBanner(
+                    state: viewModel.inkPersistenceState,
+                    session: viewModel.inkSession
+                )
+                HighlightPersistenceBanner(
+                    message: viewModel.highlightPersistenceError,
+                    retry: viewModel.retryHighlightChanges,
+                    export: viewModel.exportHighlightRecovery
+                )
+                SettingsPersistenceBanner(
+                    message: viewModel.settingsVM.persistenceMessage,
+                    retry: viewModel.settingsVM.retrySettingsSave,
+                    export: viewModel.settingsVM.exportSettingsRecovery
+                )
+                #if os(iOS)
+                InkToolPreferenceBanner(message: inkToolPreferenceMessage)
+                #endif
+            }
+        }
         .systemTranslationPresentation(
             isPresented: $viewModel.showTranslation,
             text: viewModel.translationText,
         )
         #if os(iOS)
+        .onAppear { inkToolPreferenceMessage = InkToolPreferenceStore.shared.statusMessage }
+        .onReceive(NotificationCenter.default.publisher(for: InkToolPreferenceStore.didChange)) {
+            _ in
+            inkToolPreferenceMessage = InkToolPreferenceStore.shared.statusMessage
+        }
         .statusBarHidden(!viewModel.isTopBarVisible)
         .persistentSystemOverlays(viewModel.isTopBarVisible ? .automatic : .hidden)
         .onAppear { viewModel.scheduleChromeAutoHide() }
@@ -224,6 +253,10 @@ public struct EbookPlayerView: View {
                     }
                 },
                 onCancel: { viewModel.cancelPendingSelection() },
+                persistenceError: viewModel.highlightPersistenceError,
+                hasPendingChanges: viewModel.hasPendingHighlightChanges,
+                onRetry: viewModel.retryHighlightChanges,
+                exportRecovery: viewModel.exportHighlightRecovery,
             )
         }
         .sheet(
@@ -248,6 +281,10 @@ public struct EbookPlayerView: View {
                 title: "Edit Highlight",
                 initialColor: highlight.color,
                 initialNote: highlight.note ?? "",
+                persistenceError: viewModel.highlightPersistenceError,
+                hasPendingChanges: viewModel.hasPendingHighlightChanges,
+                onRetry: viewModel.retryHighlightChanges,
+                exportRecovery: viewModel.exportHighlightRecovery,
             )
         }
         .alert(
@@ -473,6 +510,7 @@ public struct EbookPlayerView: View {
                         EbookPlayerWebView(
                             ebookPath: ebookPath,
                             commsBridge: $viewModel.commsBridge,
+                            inkSession: viewModel.inkSession,
                             onBridgeReady: { bridge in
                                 viewModel.installBridgeHandlers(
                                     bridge,
@@ -490,6 +528,7 @@ public struct EbookPlayerView: View {
                         EbookPlayerWebView(
                             ebookPath: ebookPath,
                             commsBridge: $viewModel.commsBridge,
+                            inkSession: viewModel.inkSession,
                             onBridgeReady: { bridge in
                                 viewModel.installBridgeHandlers(
                                     bridge,

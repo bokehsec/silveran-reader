@@ -924,6 +924,9 @@ public final class MediaOverlayManager {
         textId: String,
         seekToLocation: Bool = false,
     ) async {
+        // A highlight can move the page (to the next sentence's page or chapter), so none are
+        // sent while the Pencil is writing; the view catches up to the spoken sentence after.
+        if holdForInk() { return }
         do {
             try await commsBridge?.sendJsHighlightFragment(
                 sectionIndex: sectionIndex,
@@ -980,13 +983,7 @@ public final class MediaOverlayManager {
         guard isPlaying else { return }
 
         // Audio keeps playing while the reader writes; the page catches up afterwards.
-        if let ink = commsBridge?.inkSession, ink.isWriting {
-            debugLog("[MOM] Holding page flip while writing with the Pencil")
-            ink.deferUntilIdle(key: "readaloud-flip") { [weak self] in
-                Task { await self?.flipPageIfNotDebounced() }
-            }
-            return
-        }
+        if holdForInk() { return }
 
         if let last = lastFlipTime, Date().timeIntervalSince(last) < 0.3 {
             debugLog("[MOM] Debouncing page flip")
@@ -996,5 +993,31 @@ public final class MediaOverlayManager {
         lastFlipTime = Date()
         debugLog("[MOM] Page flip")
         try? await commsBridge?.sendJsGoRightCommand(trigger: .readaloud)
+    }
+
+    // MARK: - Apple Pencil writing
+
+    /// While the Pencil is writing, read-aloud neither turns the page nor jumps to the next
+    /// sentence (both would move the page under the Pencil). Returns true when it is holding;
+    /// once writing stops, `catchUpAfterWriting` shows the sentence being read, wherever the
+    /// page is by then (the writing may have changed the layout).
+    private func holdForInk() -> Bool {
+        guard let ink = commsBridge?.inkSession, ink.isWriting else { return false }
+        debugLog("[MOM] Holding read-aloud page movement while writing with the Pencil")
+        ink.deferUntilIdle(key: "readaloud-catch-up") { [weak self] in
+            Task { await self?.catchUpAfterWriting() }
+        }
+        return true
+    }
+
+    /// Shows and highlights the sentence being read, turning to its page if needed.
+    func catchUpAfterWriting() async {
+        guard isPlaying else { return }
+        guard let section = getSection(at: cachedSectionIndex),
+            section.mediaOverlay.indices.contains(cachedEntryIndex)
+        else { return }
+        let entry = section.mediaOverlay[cachedEntryIndex]
+        debugLog("[MOM] Writing finished; catching up to \(entry.textId)")
+        await sendHighlightCommand(sectionIndex: cachedSectionIndex, textId: entry.textId, seekToLocation: true)
     }
 }
