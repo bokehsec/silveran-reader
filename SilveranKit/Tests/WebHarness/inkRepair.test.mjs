@@ -127,3 +127,23 @@ test("a section that is not loaded gives no suggestions", () => {
   const { engine } = engineWith(() => ({ notes: [], marks: [] }));
   assert.deepEqual(engine.suggestRepairs("OEBPS/other.xhtml", ["a"]), []);
 });
+
+test("a suggested place can be shown: its words are brought into view, ending on a whole word", () => {
+  const { doc, window } = loadSection(ebookChapter());
+  globalThis.window = window;
+  const scrolled = [];
+  const engine = new InkEngine({ post: () => {} });
+  engine.setView({
+    book: { sections: [{ id: "OEBPS/ch1.xhtml", cfi: "epubcfi(/6/2)" }] },
+    resolveCFI: () => null,
+    getCFI: () => "epubcfi(/6/2!/4)",
+    renderer: { getContents: () => [{ index: 0, doc }], render() {}, scrollToAnchor: range => scrolled.push(range.toString()) },
+  });
+  const index = buildTextIndex(doc.body);
+  engine.render("OEBPS/ch1.xhtml", { notes: [], marks: [] }, null);
+  const at = index.text.indexOf("Mara Eklund");
+  assert.equal(engine.flashPassage("OEBPS/ch1.xhtml", makeAnchor(index.text, at, 6)), true);
+  assert.equal(scrolled.at(-1), "Mara Eklund", "the covered words, to the end of the last one");
+  assert.equal(engine.flashPassage("OEBPS/ch1.xhtml", { offset: 0, prefix: "", exact: "words not in this chapter", suffix: "" }), false);
+  assert.equal(engine.flashPassage("OEBPS/other.xhtml", makeAnchor(index.text, at)), false);
+});

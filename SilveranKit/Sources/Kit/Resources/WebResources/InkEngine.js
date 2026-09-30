@@ -274,6 +274,32 @@ export default class InkEngine {
     });
   }
 
+  /**
+   * Briefly marks words of a loaded section and brings them into view, so a person can see a
+   * suggested place before deciding (P5.1). `start` and optional `end` are anchors in the current
+   * text; without `end` the words `start` covers are marked, to the end of the last word.
+   * Returns false when the section is not loaded or the words are not found.
+   */
+  flashPassage(href, start, end = null, duration = FLASH_DURATION) {
+    const contents = this.#contentsFor(href);
+    if (!contents || !start) return false;
+    const index = buildTextIndex(contents.doc.body);
+    const text = index.text;
+    const from = resolveAnchor(text, start);
+    if (from == null) return false;
+    const endAt = end ? resolveAnchor(text, end) : null;
+    let to = endAt != null && endAt + end.exact.length > from
+      ? endAt + end.exact.length
+      : Math.min(text.length, from + Math.max(1, start.exact?.length ?? 0));
+    while (to < text.length && text[to] !== " ") to++;
+    const range = index.rangeFor(contents.doc, from, to);
+    if (!range) return false;
+    this.#view?.renderer?.scrollToAnchor?.(range);
+    const marked = flashRange(contents.doc, range, duration);
+    debugLog("InkEngine", "flash", href, from, to, marked ? "marked" : "not marked (no highlight support)");
+    return true;
+  }
+
   /** The anchor of the first word on the page now showing: `{ section, anchor }` (anchor null if none). */
   pageStartAnchor() {
     const contents = this.#currentContents();
@@ -294,6 +320,48 @@ export default class InkEngine {
     return migrateNotes({ doc: contents.doc, notes, resolveRange: (cfi, doc) => rangeFromCFI(cfi, doc) });
   }
 }
+
+const FLASH_DURATION = 4000;
+const FLASH_NAME = "silveran-repair-flash";
+const FLASH_COLOR = "rgba(255, 190, 0, 0.5)";
+const flashes = new WeakMap();
+
+const flashStyle = (doc, color) => {
+  let style = doc.getElementById(FLASH_NAME);
+  if (!style) {
+    style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+    style.id = FLASH_NAME;
+    (doc.head || doc.documentElement).appendChild(style);
+  }
+  style.textContent = `::highlight(${FLASH_NAME}) { background-color: ${color}; }`;
+};
+
+/**
+ * Removes a flash. WebKit does not repaint when a highlight is only removed from the registry,
+ * so the style is changed too, which does.
+ */
+const clearFlash = doc => {
+  const current = flashes.get(doc);
+  if (!current) return;
+  clearTimeout(current.timer);
+  flashes.delete(doc);
+  flashStyle(doc, "transparent");
+  current.highlight.clear();
+  doc.defaultView?.CSS?.highlights?.delete(FLASH_NAME);
+};
+
+/** Marks `range` with a temporary highlight (CSS Custom Highlight API; the text is not changed). */
+const flashRange = (doc, range, duration) => {
+  const win = doc.defaultView;
+  const registry = win?.CSS?.highlights;
+  if (!registry || typeof win.Highlight !== "function") return false;
+  clearFlash(doc);
+  const highlight = new win.Highlight(range);
+  flashStyle(doc, FLASH_COLOR);
+  registry.set(FLASH_NAME, highlight);
+  flashes.set(doc, { highlight, timer: setTimeout(() => clearFlash(doc), duration) });
+  return true;
+};
 
 /**
  * The word anchors for version 1 `notes` in `doc`. A version 1 note has its CFI (`legacyCFI`)

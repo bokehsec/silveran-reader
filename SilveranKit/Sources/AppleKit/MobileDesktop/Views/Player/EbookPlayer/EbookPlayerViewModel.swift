@@ -281,10 +281,13 @@ class EbookPlayerViewModel {
         return label?.isEmpty == false ? label : "Chapter \(index + 1)"
     }
 
-    /// Goes to a suggested place so the person can see it before deciding.
-    func showInkRepairPlace(cfi: String) async {
+    /// Goes to a suggested place and briefly marks its words, so the person can see it before
+    /// deciding. Falls back to going to its CFI if the page cannot find the words.
+    func showInkRepairPlace(href: String, suggestion: InkRepairSuggestion) async {
+        guard let bridge = commsBridge, let start = suggestion.anchor ?? suggestion.start else { return }
         do {
-            try await commsBridge?.sendJsGoToCFICommand(cfi: cfi)
+            if try await bridge.inkFlashPassage(href: href, start: start, end: suggestion.end) { return }
+            if let cfi = suggestion.cfi { try await bridge.sendJsGoToCFICommand(cfi: cfi) }
         } catch {
             debugLog("[EbookPlayerViewModel] Showing repair place failed: \(error)")
         }

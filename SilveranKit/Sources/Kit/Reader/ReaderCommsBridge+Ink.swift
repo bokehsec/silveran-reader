@@ -40,6 +40,17 @@ extension ReaderCommsBridge: InkEngineCalling {
         return try decodeInkResult(InkPageAnchor.self, from: result)
     }
 
+    /// Briefly marks a suggested place for orphaned ink and shows it. False when the page could
+    /// not find it (its section is not loaded).
+    public func inkFlashPassage(href: String, start: TextAnchor, end: TextAnchor?) async throws -> Bool {
+        struct Shown: Decodable { let shown: Bool }
+        let endLiteral = try end.map { try jsLiteral($0) } ?? "null"
+        let result = try await callInk(
+            "return await window.foliateManager.inkFlashPassage(\(try jsString(href)), \(try jsLiteral(start)), \(endLiteral));"
+        )
+        return try decodeInkResult(Shown.self, from: result).shown
+    }
+
     private func callInk(_ body: String) async throws -> String? {
         guard let js else { throw ReaderCommsBridgeError.jsNotAvailable }
         return try await js.callAsync(body)

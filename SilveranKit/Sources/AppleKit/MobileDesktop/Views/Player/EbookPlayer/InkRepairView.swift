@@ -219,10 +219,12 @@ struct InkRepairSheet: View {
                 if session.acceptRepair(href: item.href, answer: item.answer) { remove(item) }
             }
             .buttonStyle(.borderedProminent)
-            if let cfi = suggestion.cfi {
-                Button("Show in book") {
-                    dismiss()
-                    Task { await viewModel.showInkRepairPlace(cfi: cfi) }
+            Button("Show in book") {
+                dismiss()
+                Task {
+                    // Let the sheet close first so the marked words are visible.
+                    try? await Task.sleep(for: .milliseconds(350))
+                    await viewModel.showInkRepairPlace(href: item.href, suggestion: suggestion)
                 }
             }
         }

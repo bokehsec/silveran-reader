@@ -1676,6 +1676,11 @@ class FoliateManager {
     return JSON.stringify(this.#inkEngine.suggestRepairs(href, JSON.parse(idsJSON)));
   }
 
+  /** Briefly marks a suggested place and shows it; see InkEngine.flashPassage. */
+  inkFlashPassage(href, startJSON, endJSON) {
+    return JSON.stringify({ shown: this.#inkEngine.flashPassage(href, JSON.parse(startJSON), endJSON ? JSON.parse(endJSON) : null) });
+  }
+
   /** The anchor of the first word on the current page; see InkEngine.pageStartAnchor. */
   inkPageStartAnchor() {
     return JSON.stringify(this.#inkEngine.pageStartAnchor());
