@@ -3,6 +3,7 @@ import { SpanHighlighter } from "./SpanHighlighter.js";
 import { debugLog } from "./DebugConfig.js";
 import { SelectionToolbar } from "./SelectionToolbar.js";
 import { logicalTextPosition } from "./InkFilters.js";
+import { buildTextIndex, comparableText, suggestQuoteOffsets, makeMarkAnchors, excerptAround } from "./InkAnchoring.js";
 
 console.log("[BookmarkManager] Module loaded");
 
@@ -414,17 +415,19 @@ class BookmarkManager {
 
     const writingMode = doc.defaultView?.getComputedStyle(doc.body)?.writingMode;
     const sectionHighlightIds = [];
+    const orphaned = [];
     for (const [id, highlight] of this.#userHighlights) {
       if (highlight.sectionIndex !== sectionIndex) continue;
 
-      sectionHighlightIds.push(id);
-
       try {
         const range = this.#createRangeFromCFI(highlight.cfi, sectionIndex, doc);
-        if (!range) {
-          debugLog("BookmarkManager", `Could not create range for highlight ${id}`);
+        if (!range || !this.#rangeMatches(range, highlight)) {
+          // Not drawn: in another edition the position may now fall on different words.
+          debugLog("BookmarkManager", `Highlight ${id} no longer finds its words`);
+          orphaned.push(id);
           continue;
         }
+        sectionHighlightIds.push(id);
 
         overlayer.add(id, range, (rects, options) => this.#drawHighlight(rects, options), {
           color: highlight.color,
@@ -445,7 +448,7 @@ class BookmarkManager {
 
       if (this.#highlightMode === "text" && spanHighlighter) {
         for (const [id, highlight] of this.#userHighlights) {
-          if (highlight.sectionIndex !== sectionIndex) continue;
+          if (highlight.sectionIndex !== sectionIndex || orphaned.includes(id)) continue;
           try {
             const range = this.#createRangeFromCFI(highlight.cfi, sectionIndex, doc);
             if (range) {
@@ -459,6 +462,54 @@ class BookmarkManager {
 
       this.#renderedSpanState.set(sectionIndex, currentSpanState);
     }
+    window.webkit?.messageHandlers?.HighlightOrphaned?.postMessage({ sectionIndex, ids: orphaned });
+  }
+
+  /** True when the words at `range` are the highlight's words (letters and digits compared). */
+  #rangeMatches(range, highlight) {
+    const expected = comparableText(highlight.text);
+    if (!expected) return true;
+    return comparableText(range.toString()) === expected;
+  }
+
+  /**
+   * Suggested places for highlights of a loaded section that no longer find their words (P5.1),
+   * for a person to confirm; nothing is changed here. `items`: `[{ id, text, cfi }]`. Each answer:
+   * `{ id, suggestion? }` with the new CFI, the words, their anchors (to show them), score, how it
+   * was found and an excerpt.
+   */
+  suggestRepairs(sectionIndex, items) {
+    const content = (this.#view?.renderer?.getContents?.() || []).find(c => c.index === sectionIndex && c.doc);
+    if (!content) return [];
+    const doc = content.doc;
+    const index = buildTextIndex(doc.body);
+    const text = index.text;
+    const href = this.#view?.book?.sections?.[sectionIndex]?.id ?? null;
+    return items.map(({ id, text: quote, cfi }) => {
+      let near = -1;
+      try {
+        const old = this.#createRangeFromCFI(cfi, sectionIndex, doc);
+        if (old) near = index.offsetOf(old.startContainer, old.startOffset) ?? -1;
+      } catch {
+        near = -1;
+      }
+      const found = suggestQuoteOffsets(text, quote, near);
+      if (!found) return { id };
+      const range = index.rangeFor(doc, found.start, found.end);
+      let newCFI = null;
+      try {
+        newCFI = range ? this.#view.getCFI(sectionIndex, range) : null;
+      } catch {
+        newCFI = null;
+      }
+      if (!newCFI) return { id };
+      const { start, end } = makeMarkAnchors(text, found.start, found.end);
+      return { id, suggestion: {
+        href, cfi: newCFI, text: text.slice(found.start, found.end), start, end,
+        score: found.score, matchedBy: found.matchedBy, candidates: found.candidates,
+        excerpt: excerptAround(text, found.start, found.end),
+      } };
+    });
   }
 
   #createRangeFromCFI(cfi, sectionIndex, doc) {
@@ -531,6 +582,7 @@ class BookmarkManager {
         sectionIndex: hl.sectionIndex,
         cfi: hl.cfi,
         color: hl.color,
+        text: hl.text ?? null,
       });
     }
 

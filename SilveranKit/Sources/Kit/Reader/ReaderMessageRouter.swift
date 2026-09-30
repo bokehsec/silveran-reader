@@ -158,6 +158,11 @@ public final class ReaderMessageRouter {
                     let msg = try decoder.decode(InkOrphanedMessage.self, from: data)
                     bridge.sendSwiftInkOrphaned(msg)
 
+                case "HighlightOrphaned":
+                    let data = try JSONSerialization.data(withJSONObject: body)
+                    let msg = try decoder.decode(HighlightOrphanedMessage.self, from: data)
+                    bridge.sendSwiftHighlightOrphaned(msg)
+
                 case "HighlightDelete":
                     let data = try JSONSerialization.data(withJSONObject: body)
                     let msg = try decoder.decode(HighlightDeleteMessage.self, from: data)

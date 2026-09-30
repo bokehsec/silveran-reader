@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildTextIndex, makeAnchor, makeMarkAnchors, suggestAnchorOffset, suggestMarkOffsets, excerptAround,
-  resolveAnchor, SUGGESTION_MIN_SCORE,
+  resolveAnchor, SUGGESTION_MIN_SCORE, suggestQuoteOffsets, comparableText,
 } from "../../Sources/Kit/Resources/WebResources/InkAnchoring.js";
 import InkEngine from "../../Sources/Kit/Resources/WebResources/InkEngine.js";
 import { ebookChapter } from "./fixtures/chapters.mjs";
@@ -146,4 +146,30 @@ test("a suggested place can be shown: its words are brought into view, ending on
   assert.equal(scrolled.at(-1), "Mara Eklund", "the covered words, to the end of the last one");
   assert.equal(engine.flashPassage("OEBPS/ch1.xhtml", { offset: 0, prefix: "", exact: "words not in this chapter", suffix: "" }), false);
   assert.equal(engine.flashPassage("OEBPS/other.xhtml", makeAnchor(index.text, at)), false);
+});
+
+// MARK: Typed highlights
+
+test("highlight words compare by letters and digits only", () => {
+  assert.equal(comparableText("“Hello,”  she said — twice."), comparableText("\"Hello,\" she said - twice"));
+  assert.notEqual(comparableText("the clocks were striking"), comparableText("the clocks were ticking"));
+});
+
+test("a highlight's quote found once, several times, or only approximately", () => {
+  const once = suggestQuoteOffsets(ORIGINAL, "the clocks were striking thirteen");
+  assert.deepEqual([once.start, once.score, once.matchedBy], [ORIGINAL.indexOf("the clocks"), 1, "quotation"]);
+  assert.equal(ORIGINAL.slice(once.start, once.end), "the clocks were striking thirteen");
+
+  const text = "echo chamber one. echo chamber two. echo chamber three.";
+  const repeated = suggestQuoteOffsets(text, "echo chamber", 20);
+  assert.deepEqual([repeated.start, repeated.candidates, repeated.matchedBy], [18, 3, "repeated-passage"]);
+
+  const edited = ORIGINAL.replace("the vile wind", "the bitter wind");
+  const similar = suggestQuoteOffsets(edited, "in an effort to escape the vile wind, slipped quickly through the glass doors");
+  assert.equal(similar.matchedBy, "similar-words");
+  assert.equal(similar.start, edited.indexOf("in an effort"));
+  assert.ok(edited.slice(similar.start, similar.end).endsWith("doors"), "ends on a whole word");
+
+  assert.equal(suggestQuoteOffsets(ORIGINAL, "bees and gardening in the spring"), null);
+  assert.equal(suggestQuoteOffsets(ORIGINAL, "   "), null);
 });

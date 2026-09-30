@@ -448,3 +448,32 @@ export function excerptAround(text, start, end, context = 60) {
     after: cut(text.slice(end, to), false),
   };
 }
+
+/** Letters and digits only, lower-cased: text compared this way ignores spacing, quotes and dashes. */
+export const comparableText = value => (value ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+
+/**
+ * Where a typed highlight's words most likely are in `text` now, for someone to confirm:
+ * `{ start, end, score, matchedBy, candidates }` or null. `quote` is the highlighted text;
+ * `near` is where it was (a chapter-text offset, or -1).
+ * - The quote found once: that place. Found several times: the copy nearest `near`.
+ * - Otherwise the stretch sharing the most words with it (see suggestAnchorOffset), as long as
+ *   the quote was.
+ */
+export function suggestQuoteOffsets(text, quote, near = -1) {
+  const exact = (quote ?? "").replace(/\s+/g, " ").trim();
+  if (!exact || typeof text !== "string") return null;
+  const found = occurrences(text, exact);
+  if (found.length) {
+    const start = found.length === 1 ? found[0] : nearestTo(near, found);
+    return {
+      start, end: start + exact.length, score: 1,
+      matchedBy: found.length === 1 ? "quotation" : "repeated-passage", candidates: found.length,
+    };
+  }
+  const similar = suggestAnchorOffset(text, { offset: near, prefix: "", exact: exact.slice(0, MARK_EXACT_LENGTH), suffix: "" });
+  if (!similar) return null;
+  let end = Math.min(text.length, similar.offset + exact.length);
+  while (end < text.length && text[end] !== " ") end++;
+  return { start: similar.offset, end, score: similar.score, matchedBy: similar.matchedBy, candidates: similar.candidates };
+}

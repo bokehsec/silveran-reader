@@ -76,7 +76,7 @@ public struct EbookPlayerView: View {
                     state: viewModel.inkPersistenceState,
                     session: viewModel.inkSession
                 )
-                InkRepairBanner(count: viewModel.inkOrphanCount) {
+                InkRepairBanner(count: viewModel.annotationRepairCount) {
                     viewModel.showInkRepair = true
                 }
                 HighlightPersistenceBanner(

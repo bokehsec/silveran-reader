@@ -1610,6 +1610,11 @@ class FoliateManager {
     this.#bookmarkManager.clearAllHighlights();
   }
 
+  /** Suggested places for typed highlights that lost their words; see BookmarkManager.suggestRepairs. */
+  suggestHighlightRepairs(sectionIndex, itemsJSON) {
+    return JSON.stringify(this.#bookmarkManager.suggestRepairs(sectionIndex, JSON.parse(itemsJSON)));
+  }
+
   removeHighlight(id) {
     this.#bookmarkManager.removeHighlight(id);
   }

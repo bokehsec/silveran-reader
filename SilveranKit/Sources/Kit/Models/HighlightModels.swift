@@ -62,13 +62,40 @@ public struct HighlightRenderData: Codable, Sendable {
     public let sectionIndex: Int
     public let cfi: String
     public let color: String
+    /// The highlighted words, so the page can tell when the CFI no longer lands on them.
+    public let text: String?
 
-    public init(id: String, sectionIndex: Int, cfi: String, color: String) {
+    public init(id: String, sectionIndex: Int, cfi: String, color: String, text: String? = nil) {
         self.id = id
         self.sectionIndex = sectionIndex
         self.cfi = cfi
         self.color = color
+        self.text = text
     }
+}
+
+/// Where the page thinks a typed highlight that lost its words belongs now
+/// (`BookmarkManager.suggestRepairs`). Only shown; applied only if the person accepts it.
+public struct HighlightRepairSuggestion: Codable, Sendable, Hashable {
+    /// The section's href, to show the place.
+    public var href: String?
+    /// The new position, and the words it covers.
+    public var cfi: String
+    public var text: String
+    /// The words as anchors, to mark them briefly when shown.
+    public var start: TextAnchor
+    public var end: TextAnchor
+    public var score: Double
+    public var matchedBy: String?
+    public var candidates: Int
+    public var excerpt: InkRepairExcerpt
+
+    public var isRepeatedPassage: Bool { candidates > 1 }
+}
+
+public struct HighlightRepairAnswer: Codable, Sendable, Hashable {
+    public var id: String
+    public var suggestion: HighlightRepairSuggestion?
 }
 
 public struct HighlightPaletteEntry: Codable, Sendable {

@@ -456,6 +456,7 @@ private func makeWebViewConfiguration2(
     contentController.add(coordinator, name: "HighlightEdit")
     contentController.add(coordinator, name: "InkSectionReady")
     contentController.add(coordinator, name: "InkOrphaned")
+    contentController.add(coordinator, name: "HighlightOrphaned")
     contentController.add(coordinator, name: "FileAccessDiagnostic")
     contentController.add(coordinator, name: "SelectionState")
     contentController.add(coordinator, name: "ReaderReady")

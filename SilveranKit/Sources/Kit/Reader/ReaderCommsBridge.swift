@@ -85,6 +85,7 @@ public final class ReaderCommsBridge {
 
     /// Notifies when an existing highlight is deleted from the toolbar
     public var onHighlightDelete: ((HighlightDeleteMessage) -> Void)?
+    public var onHighlightOrphaned: ((HighlightOrphanedMessage) -> Void)?
 
     /// Notifies when an existing highlight should be edited (color/note) from the toolbar
     public var onHighlightEdit: ((HighlightEditMessage) -> Void)?
@@ -581,6 +582,35 @@ public final class ReaderCommsBridge {
         debugLog("[ReaderCommsBridge] sendSwiftInkOrphaned - \(message.href): \(message.ids.count)")
         guard inkSession.engine === self else { return }
         inkSession.setOrphans(href: message.href, ids: message.ids)
+    }
+
+    /// JS found highlights whose position no longer lands on their words
+    public func sendSwiftHighlightOrphaned(_ message: HighlightOrphanedMessage) {
+        debugLog(
+            "[ReaderCommsBridge] sendSwiftHighlightOrphaned - section \(message.sectionIndex): \(message.ids.count)"
+        )
+        onHighlightOrphaned?(message)
+    }
+
+    /// Suggested places for typed highlights that lost their words, for the person to confirm.
+    public func sendJsSuggestHighlightRepairs(
+        sectionIndex: Int,
+        items: [(id: String, text: String, cfi: String)]
+    ) async throws -> [HighlightRepairAnswer] {
+        guard let js else { throw ReaderCommsBridgeError.jsNotAvailable }
+        struct Item: Encodable { let id: String; let text: String; let cfi: String }
+        let json = String(
+            decoding: try JSONEncoder().encode(items.map { Item(id: $0.id, text: $0.text, cfi: $0.cfi) }),
+            as: UTF8.self
+        )
+        let literal = String(decoding: try JSONEncoder().encode(json), as: UTF8.self)
+        let result = try await js.callAsync(
+            "return await window.foliateManager.suggestHighlightRepairs(\(sectionIndex), \(literal));"
+        )
+        guard let result, let data = result.data(using: .utf8) else {
+            throw ReaderCommsBridgeError.jsNotAvailable
+        }
+        return try JSONDecoder().decode([HighlightRepairAnswer].self, from: data)
     }
 
     public func sendSwiftHighlightDelete(_ message: HighlightDeleteMessage) {

@@ -190,6 +190,12 @@ public struct InkOrphanedMessage: Codable {
 }
 
 /// Sent from JS to delete an existing highlight from the toolbar
+/// Highlights of a section whose position no longer lands on their words (not drawn).
+public struct HighlightOrphanedMessage: Codable {
+    public let sectionIndex: Int
+    public let ids: [String]
+}
+
 public struct HighlightDeleteMessage: Codable {
     public let id: String
 }

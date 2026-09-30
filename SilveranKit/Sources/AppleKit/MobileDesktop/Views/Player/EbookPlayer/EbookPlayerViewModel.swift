@@ -140,7 +140,14 @@ class EbookPlayerViewModel {
     var inkPersistenceState: InkSessionPersistenceState = .saved
     /// Ink in the loaded chapters that no longer finds its words (P5.1 repair).
     var inkOrphanCount = 0
+    /// Typed highlights in the loaded chapters whose position no longer lands on their words,
+    /// by section index. They are not drawn until repaired.
+    var highlightOrphans: [Int: [UUID]] = [:]
     var showInkRepair = false
+    /// Everything the repair banner and sheet cover: handwriting and typed highlights.
+    var annotationRepairCount: Int {
+        inkOrphanCount + highlightOrphans.values.reduce(0) { $0 + $1.count }
+    }
     var highlightPersistenceError: String?
     var hasPendingHighlightChanges = false
     var playbackProgressMessage: Any? = nil
@@ -269,7 +276,7 @@ class EbookPlayerViewModel {
         inkSession.onOrphansChanged = { [weak self] in
             guard let self else { return }
             self.inkOrphanCount = self.inkSession.orphans.values.reduce(0) { $0 + $1.count }
-            if self.inkOrphanCount == 0 { self.showInkRepair = false }
+            if self.annotationRepairCount == 0 { self.showInkRepair = false }
         }
     }
 
@@ -283,14 +290,76 @@ class EbookPlayerViewModel {
 
     /// Goes to a suggested place and briefly marks its words, so the person can see it before
     /// deciding. Falls back to going to its CFI if the page cannot find the words.
-    func showInkRepairPlace(href: String, suggestion: InkRepairSuggestion) async {
-        guard let bridge = commsBridge, let start = suggestion.anchor ?? suggestion.start else { return }
+    func showRepairPlace(href: String, start: TextAnchor, end: TextAnchor?, cfi: String?) async {
+        guard let bridge = commsBridge else { return }
         do {
-            if try await bridge.inkFlashPassage(href: href, start: start, end: suggestion.end) { return }
-            if let cfi = suggestion.cfi { try await bridge.sendJsGoToCFICommand(cfi: cfi) }
+            if try await bridge.inkFlashPassage(href: href, start: start, end: end) { return }
+            if let cfi { try await bridge.sendJsGoToCFICommand(cfi: cfi) }
         } catch {
             debugLog("[EbookPlayerViewModel] Showing repair place failed: \(error)")
         }
+    }
+
+    /// Suggested places for the typed highlights that lost their words, by section. Nothing is
+    /// changed.
+    func highlightRepairSuggestions() async -> [Int: [HighlightRepairAnswer]] {
+        guard let bridge = commsBridge else { return [:] }
+        var answers: [Int: [HighlightRepairAnswer]] = [:]
+        for (sectionIndex, ids) in highlightOrphans {
+            let items = ids.compactMap { id -> (id: String, text: String, cfi: String)? in
+                guard let highlight = highlights.first(where: { $0.id == id }),
+                    let cfi = highlight.locator.locations?.partialCfi
+                else { return nil }
+                return (id.uuidString, highlight.text, cfi)
+            }
+            guard !items.isEmpty else { continue }
+            do {
+                answers[sectionIndex] = try await bridge.sendJsSuggestHighlightRepairs(
+                    sectionIndex: sectionIndex,
+                    items: items
+                )
+            } catch {
+                debugLog("[EbookPlayerViewModel] Highlight repair suggestions failed: \(error)")
+            }
+        }
+        return answers
+    }
+
+    /// Moves a typed highlight onto the words the person accepted. Its colour, note and date are
+    /// kept; its saved words become the words it now covers.
+    @discardableResult
+    func relocateHighlight(id: UUID, to suggestion: HighlightRepairSuggestion) async -> Bool {
+        guard let bookID = bookData?.metadata.id,
+            let existing = highlights.first(where: { $0.id == id })
+        else { return false }
+        let old = existing.locator
+        let locator = BookLocator(
+            href: old.href,
+            type: old.type,
+            title: old.title,
+            locations: BookLocator.Locations(
+                fragments: [suggestion.cfi],
+                progression: old.locations?.progression,
+                position: old.locations?.position,
+                totalProgression: old.locations?.totalProgression,
+                cssSelector: nil,
+                partialCfi: suggestion.cfi,
+                domRange: nil,
+            ),
+            text: BookLocator.Text(after: nil, before: nil, highlight: suggestion.text),
+        )
+        let updated = Highlight(
+            id: existing.id,
+            bookID: existing.bookID,
+            locator: locator,
+            text: suggestion.text,
+            color: existing.color,
+            note: existing.note,
+            createdAt: existing.createdAt,
+        )
+        guard await applyHighlightMutation(.update(updated), bookID: bookID) else { return false }
+        await sendHighlightsToJS()
+        return true
     }
 
     func handleChapterSelection(_ chapter: ChapterItem) {
@@ -771,6 +840,15 @@ class EbookPlayerViewModel {
             }
         }
 
+        bridge.onHighlightOrphaned = { [weak self] message in
+            guard let self else { return }
+            Task { @MainActor in
+                let ids = message.ids.compactMap(UUID.init(uuidString:))
+                self.highlightOrphans[message.sectionIndex] = ids.isEmpty ? nil : ids
+                if self.annotationRepairCount == 0 { self.showInkRepair = false }
+            }
+        }
+
         bridge.onHighlightDelete = { [weak self] message in
             guard let self else { return }
             Task { @MainActor in
@@ -1067,6 +1145,7 @@ class EbookPlayerViewModel {
                 sectionIndex: sectionIndex,
                 cfi: cfi,
                 color: settingsVM.hexColor(for: color),
+                text: highlight.text,
             )
         }
 
