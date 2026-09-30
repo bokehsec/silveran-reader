@@ -8,6 +8,8 @@ public actor AuthenticationActor {
     private let usernameKey = "username"
     private let passwordKey = "password"
     private let hardcoverTokenKey = "hardcoverToken"
+    /// Earlier builds kept this in UserDefaults (plain text, included in device backups).
+    public static let contentServerPasswordKey = "contentServer.password"
 
     private let suppliedKeychain: (any KeychainStoring)?
 
@@ -117,6 +119,34 @@ public actor AuthenticationActor {
 
     public func deleteHardcoverToken() async throws {
         try await keychain.removeItem(account: hardcoverTokenKey)
+    }
+
+    /// The password other devices use to reach this Mac's local content server.
+    public func saveContentServerPassword(_ password: String) async throws {
+        if password.isEmpty {
+            try await keychain.removeItem(account: Self.contentServerPasswordKey)
+        } else {
+            try await saveString(password, for: Self.contentServerPasswordKey)
+        }
+    }
+
+    public func loadContentServerPassword() async throws -> String? {
+        try await loadString(for: Self.contentServerPasswordKey)
+    }
+
+    /// Moves a password found in the old preferences location into the keychain. Returns true
+    /// when the old copy may be removed: it was empty, the keychain already holds a password
+    /// (which wins), or the move succeeded. A failed move keeps the old copy.
+    public func adoptLegacyContentServerPassword(_ legacy: String) async -> Bool {
+        if legacy.isEmpty { return true }
+        do {
+            if try await loadContentServerPassword() != nil { return true }
+            try await saveContentServerPassword(legacy)
+            return true
+        } catch {
+            debugLog("[AuthenticationActor] Content server password move deferred: \(error)")
+            return false
+        }
     }
 
     private func saveString(_ value: String, for account: String) async throws {

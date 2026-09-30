@@ -17,7 +17,9 @@ struct ContentServerView: View {
 private struct ContentServerForm: View {
     @AppStorage("contentServer.port") private var port: Int = 8088
     @AppStorage("contentServer.username") private var username: String = "silveran"
-    @AppStorage("contentServer.password") private var password: String = ""
+    /// Kept in the keychain. Earlier builds stored it in UserDefaults; it is moved on open.
+    @State private var password: String = ""
+    @State private var savedPassword: String = ""
     @AppStorage("contentServer.sourceID") private var selectedSourceID: String = ""
     @AppStorage("contentServer.hostOverride") private var hostOverride: String = ""
 
@@ -70,6 +72,7 @@ private struct ContentServerForm: View {
                 } else {
                     Button("Start Server") {
                         Task {
+                            await persistPassword()
                             await manager.start(
                                 port: port,
                                 username: username,
@@ -93,7 +96,34 @@ private struct ContentServerForm: View {
         .formStyle(.grouped)
         .frame(width: 460, height: 520)
         .task {
+            await loadPassword()
             folderSources = await manager.folderSources()
+        }
+        .onDisappear {
+            Task { await persistPassword() }
+        }
+    }
+
+    private func loadPassword() async {
+        let defaults = UserDefaults.standard
+        let key = AuthenticationActor.contentServerPasswordKey
+        let legacy = defaults.string(forKey: key)
+        if let legacy, await AuthenticationActor.shared.adoptLegacyContentServerPassword(legacy) {
+            defaults.removeObject(forKey: key)
+        }
+        let stored = (try? await AuthenticationActor.shared.loadContentServerPassword()) ?? nil
+        password = stored ?? legacy ?? ""
+        savedPassword = stored ?? ""
+    }
+
+    private func persistPassword() async {
+        guard password != savedPassword else { return }
+        do {
+            try await AuthenticationActor.shared.saveContentServerPassword(password)
+            savedPassword = password
+            UserDefaults.standard.removeObject(forKey: AuthenticationActor.contentServerPasswordKey)
+        } catch {
+            debugLog("[ContentServerView] Could not save the server password: \(error)")
         }
     }
 

@@ -113,4 +113,29 @@ struct SourceCredentialPersistenceTests {
         #expect(loaded?.password == "new-password")
         #expect(await keychain.deletions.isEmpty)
     }
+
+    @Test("The content server password moves out of preferences only when the keychain accepts it")
+    func contentServerPasswordAdoption() async throws {
+        let key = AuthenticationActor.contentServerPasswordKey
+        let failing = SyntheticCredentialKeychain(failWrites: true)
+        #expect(
+            await AuthenticationActor(keychain: failing).adoptLegacyContentServerPassword("p1")
+                == false
+        )
+        #expect(await failing.values.isEmpty)
+
+        let empty = SyntheticCredentialKeychain()
+        let owner = AuthenticationActor(keychain: empty)
+        #expect(await owner.adoptLegacyContentServerPassword("p1"))
+        #expect(try await owner.loadContentServerPassword() == "p1")
+
+        let existing = SyntheticCredentialKeychain(values: [key: Data("newer".utf8)])
+        let kept = AuthenticationActor(keychain: existing)
+        #expect(await kept.adoptLegacyContentServerPassword("older"))
+        #expect(try await kept.loadContentServerPassword() == "newer")
+
+        try await owner.saveContentServerPassword("")
+        #expect(try await owner.loadContentServerPassword() == nil)
+        #expect(await owner.adoptLegacyContentServerPassword(""))
+    }
 }

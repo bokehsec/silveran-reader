@@ -42,6 +42,36 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-028 — The Mac content server password was stored in plain preferences
+
+- Date: 2026-09-30
+- Status: Fixed (manual Mac check pending)
+- Platforms: macOS (content server); Shared (credential owner)
+- Components: `AppleKit/MobileDesktop/macApp/ContentServer/ContentServerView.swift`, `Kit/Actors/AuthenticationActor.swift`, `SourceCredentialPersistenceTests`
+- Related links: [field inventory](docs/ANNOTATION_CONFIGURATION_FIELD_INVENTORY.md)
+
+#### Symptom
+
+The password other devices use to connect to the Mac's local content server was saved with `@AppStorage("contentServer.password")`: plain text in the app's preferences plist, readable by anything that can read the container and included in Time Machine/device backups.
+
+#### Root cause
+
+The form bound the field directly to UserDefaults. Other credentials already used the keychain through `AuthenticationActor`.
+
+#### Change
+
+- `AuthenticationActor` owns the password as a keychain item (`contentServer.password`), using BF-025's in-place save. Saving an empty password removes the item.
+- On opening the form, a password found in UserDefaults is moved into the keychain and the old key removed only after the keychain accepts it. If the keychain already has a password, it wins and the old copy is discarded. If the move fails, the old value keeps working and the move is retried next time.
+- The form saves the password when the server is started and when the form closes. Username, port, source and address override stay in preferences.
+
+#### Validation
+
+`swift test --filter SourceCredentialPersistenceTests` passes 5 tests, including `contentServerPasswordAdoption`: a failed move keeps the old copy, a successful move is readable from the keychain, an existing keychain value wins, and an empty password removes the item. Unsigned Mac build: see the plan progress entry. Not run: opening the form on a Mac that has an old stored password.
+
+#### Compatibility and follow-up
+
+The old preference key is removed after a successful move, so earlier builds would show an empty password field. The archive excludes this secret; restore asks for it again.
+
 ### BF-027 — Annotation store could refuse valid records after an encoder change, and restore checkpoints grew without limit
 
 - Date: 2026-09-30
