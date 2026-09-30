@@ -21,11 +21,22 @@ public struct InkPersistenceFailure: Error, LocalizedError, Sendable, Equatable 
 
 /// Owns the existing per-book JSON writer: Ink/V1/<source>/<book>.json.
 /// Reads, mutation and atomic replacement run without suspension once the root is resolved.
-/// Every query reads committed disk state. This is local persistence,
-/// not a historical backup or a cross-process transaction.
+/// Every query reads committed disk state. A save reuses the book this actor last committed
+/// only while the file on disk is still exactly that write (same file identity, size and
+/// modification time); any other change is read and validated again. This is local
+/// persistence, not a historical backup or a cross-process transaction.
 public actor InkActor {
     public static let shared = InkActor()
     private let fixedDirectory: URL?
+    /// The last committed book per file, with the stamp of the file this actor wrote.
+    private var committed: [URL: CommittedInk] = [:]
+
+    private struct CommittedInk {
+        var ink: BookInk
+        /// Encoded JSON per section href, reused so a save encodes only the changed section.
+        var fragments: [String: Data]
+        var stamp: InkFileStamp
+    }
     private let writeFile: @Sendable (Data, URL) throws -> Void
     private let removeFile: @Sendable (URL) throws -> Void
 
@@ -63,7 +74,15 @@ public actor InkActor {
     > {
         // Resolve the root before reading: no actor reentrancy between read and commit.
         let url = await fileURL(bookID: bookID)
-        let loaded = read(url)
+        let loaded: InkLoadResult
+        var fragments: [String: Data] = [:]
+        if let cached = committed[url], InkFileStamp(url) == cached.stamp {
+            loaded = InkLoadResult(state: .valid, ink: cached.ink, original: nil, message: nil)
+            fragments = cached.fragments
+        } else {
+            committed[url] = nil
+            loaded = read(url)
+        }
         guard loaded.canEdit else {
             return .failure(
                 InkPersistenceFailure(
@@ -76,20 +95,38 @@ public actor InkActor {
         candidate.sections[href] = section.isEmpty ? nil : section
         candidate.version = BookInk.currentVersion
         do {
+            committed[url] = nil
             if candidate.isEmpty {
                 // Deletion is a commit too: errors must reach the session.
                 if loaded.state != .missing { try removeFile(url) }
             } else {
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.sortedKeys]
-                let data = try encoder.encode(candidate)
-                // Reject invalid programmatic payloads just as strictly as disk payloads.
-                _ = try decoder().decode(BookInk.self, from: data)
+                // Reject invalid programmatic payloads just as strictly as disk payloads. The
+                // rest of the book was already validated when it was read or committed, so only
+                // the changed section and book-wide identities need checking.
+                let encodedSection = try encoder.encode(section)
+                _ = try decoder().decode(SectionInk.self, from: encodedSection)
+                guard candidate.hasUniqueIdentities else {
+                    throw InkPersistenceFailure(message: "Duplicate ink identity")
+                }
+                fragments[href] = section.isEmpty ? nil : encodedSection
+                for (key, value) in candidate.sections where fragments[key] == nil {
+                    fragments[key] = try encoder.encode(value)
+                }
+                let data = try Self.assemble(fragments, encoder: encoder)
                 try FileManager.default.createDirectory(
                     at: url.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
                 try writeFile(data, url)
+                if let stamp = InkFileStamp(url) {
+                    committed[url] = CommittedInk(
+                        ink: candidate,
+                        fragments: fragments,
+                        stamp: stamp
+                    )
+                }
             }
             return .success(())
         } catch {
@@ -101,6 +138,20 @@ public actor InkActor {
                 )
             )
         }
+    }
+
+    /// JSON equivalent to encoding a current-version `BookInk`, built from already-encoded
+    /// sections: `{"sections":{"<href>":<section>,...},"version":N}`.
+    static func assemble(_ fragments: [String: Data], encoder: JSONEncoder) throws -> Data {
+        var data = Data(#"{"sections":{"#.utf8)
+        for (index, href) in fragments.keys.sorted().enumerated() {
+            if index > 0 { data.append(UInt8(ascii: ",")) }
+            data.append(try encoder.encode(href))
+            data.append(UInt8(ascii: ":"))
+            data.append(fragments[href]!)
+        }
+        data.append(Data(#"},"version":\#(BookInk.currentVersion)}"#.utf8))
+        return data
     }
 
     private func decoder() -> JSONDecoder {
@@ -216,3 +267,21 @@ public actor InkActor {
 }
 
 private struct InkVersionEnvelope: Decodable { let version: Int? }
+
+/// Identifies one version of a file. An atomic replacement always gets a new file number.
+private struct InkFileStamp: Equatable {
+    let fileNumber: Int
+    let size: Int
+    let modified: Date
+
+    init?(_ url: URL) {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+            let fileNumber = (attributes[.systemFileNumber] as? NSNumber)?.intValue,
+            let size = (attributes[.size] as? NSNumber)?.intValue,
+            let modified = attributes[.modificationDate] as? Date
+        else { return nil }
+        self.fileNumber = fileNumber
+        self.size = size
+        self.modified = modified
+    }
+}

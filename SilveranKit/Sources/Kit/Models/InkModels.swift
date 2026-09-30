@@ -22,6 +22,12 @@ public struct BookInk: Codable, Sendable, Hashable {
 
     public var isEmpty: Bool { sections.values.allSatisfy(\.isEmpty) }
 
+    /// Every note and mark identity is unique across the whole book.
+    public var hasUniqueIdentities: Bool {
+        let ids = sections.values.flatMap { $0.notes.map(\.id) + $0.marks.map(\.id) }
+        return Set(ids).count == ids.count
+    }
+
     /// True when some note still carries a version 1 CFI that has not been turned into a word anchor.
     public var needsMigration: Bool { sections.values.contains(where: \.needsMigration) }
 
@@ -42,8 +48,7 @@ public struct BookInk: Codable, Sendable, Hashable {
             )
         }
         sections = try container.decode([String: SectionInk].self, forKey: .sections)
-        let ids = sections.values.flatMap { $0.notes.map(\.id) + $0.marks.map(\.id) }
-        guard Set(ids).count == ids.count else {
+        guard hasUniqueIdentities else {
             throw DecodingError.dataCorruptedError(
                 forKey: .sections,
                 in: container,

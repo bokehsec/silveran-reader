@@ -12,6 +12,47 @@ enum AnnotationSQLValue: Equatable {
     case bytes(Data)
     case integer(Int64)
     case null
+
+    /// JSON blobs compare by content; every other value compares exactly.
+    static func sameContent(_ lhs: Self, _ rhs: Self) -> Bool {
+        if case .bytes(let left) = lhs, case .bytes(let right) = rhs {
+            return AnnotationJSON.sameContent(left, right)
+        }
+        return lhs == rhs
+    }
+}
+
+/// Stored annotation JSON is accepted only when decoding it loses nothing: the re-encoded value
+/// must contain exactly the same keys and values. Comparison is by JSON meaning (key order,
+/// whitespace, escaping and number spelling are ignored), so a future Foundation encoder that
+/// formats numbers differently cannot turn every stored record into "requires recovery".
+enum AnnotationJSON {
+    static func sameContent(_ lhs: Data, _ rhs: Data) -> Bool {
+        if lhs == rhs { return true }
+        guard
+            let left = try? JSONSerialization.jsonObject(with: lhs, options: .fragmentsAllowed),
+            let right = try? JSONSerialization.jsonObject(with: rhs, options: .fragmentsAllowed)
+        else { return false }
+        return same(left, right)
+    }
+
+    private static func same(_ lhs: Any, _ rhs: Any) -> Bool {
+        switch (lhs, rhs) {
+            case (let l as [String: Any], let r as [String: Any]):
+                guard l.count == r.count else { return false }
+                return l.allSatisfy { key, value in r[key].map { same(value, $0) } ?? false }
+            case (let l as [Any], let r as [Any]):
+                return l.count == r.count && zip(l, r).allSatisfy { same($0, $1) }
+            case (let l as String, let r as String):
+                return l == r
+            case (is NSNull, is NSNull):
+                return true
+            case (let l as NSNumber, let r as NSNumber):
+                return l == r
+            default:
+                return false
+        }
+    }
 }
 
 /// Confined to one repository actor. Sendability permits actor teardown; callers never receive it.

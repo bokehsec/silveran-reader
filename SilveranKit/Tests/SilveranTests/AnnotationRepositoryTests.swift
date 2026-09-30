@@ -277,4 +277,60 @@ struct AnnotationRepositoryTests {
         }
         #expect(try await repository.heads(scope: scope).count == 2)
     }
+
+    @Test("Stored revisions are read by JSON content, but unknown fields still require recovery")
+    func storedJSONFormatting() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("annotations.sqlite")
+        let mutation = command()
+        do {
+            let repository = try AnnotationRepository(url: url)
+            try await repository.commit(mutation)
+        }
+        func rewrite(_ transform: (String) -> String) throws {
+            let database = try AnnotationDatabase(url: url)
+            guard case .bytes(let bytes) = try database.rows("SELECT command FROM revisions")[0][0]
+            else { throw AnnotationRepositoryFailure("fixture") }
+            let object = try JSONSerialization.jsonObject(with: bytes)
+            // Different key order and whitespace, as another encoder might write. Number
+            // spelling is covered by the comparison test below.
+            let pretty = try JSONSerialization.data(withJSONObject: object, options: .prettyPrinted)
+            let text = transform(String(decoding: pretty, as: UTF8.self))
+            try database.execute(
+                "UPDATE revisions SET command = ?",
+                [.bytes(Data(text.utf8))]
+            )
+        }
+        try rewrite { $0 }
+        let reformatted = try AnnotationRepository(url: url)
+        #expect(
+            try await reformatted.heads(scope: scope).first?.command.document == mutation.document
+        )
+        #expect(try await reformatted.captureSnapshot().revisions.count == 1)
+
+        try rewrite { text in
+            var copy = text
+            copy.insert(contentsOf: "\"futureField\" : 1,", at: copy.index(after: copy.startIndex))
+            return copy
+        }
+        let unknown = try AnnotationRepository(url: url)
+        await #expect(throws: AnnotationRepositoryFailure.self) {
+            try await unknown.heads(scope: scope)
+        }
+    }
+
+    @Test("JSON content comparison ignores formatting and number spelling only")
+    func jsonContentComparison() {
+        func same(_ a: String, _ b: String) -> Bool {
+            AnnotationJSON.sameContent(Data(a.utf8), Data(b.utf8))
+        }
+        #expect(same(#"{"a":[1,2],"b":"x"}"#, #"{ "b" : "x", "a" : [1.0, 2e0] }"#))
+        #expect(same(#"{"v":0.1}"#, #"{"v":0.10000000000000001}"#))
+        #expect(same(#"{"s":"a/b"}"#, #"{"s":"a\/b"}"#))
+        #expect(!same(#"{"a":1}"#, #"{"a":1,"b":null}"#))
+        #expect(!same(#"{"a":[1,2]}"#, #"{"a":[2,1]}"#))
+        #expect(!same(#"{"a":"1"}"#, #"{"a":1}"#))
+        #expect(!same(#"{"a":1}"#, #"{"a":1.5}"#))
+    }
 }

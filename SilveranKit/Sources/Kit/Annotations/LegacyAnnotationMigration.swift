@@ -88,8 +88,8 @@ enum LegacyAnnotationCodec {
             throw AnnotationRepositoryFailure("Legacy migration capture exceeds its size limit.")
         }
         let capture = try JSONDecoder().decode(LegacyAnnotationCapture.self, from: bytes)
-        // Only our canonical journal encoding is accepted. Reject unknown data at every level.
-        guard try encode(capture) == bytes else {
+        // Reject unknown or silently defaulted data at every level.
+        guard AnnotationJSON.sameContent(try encode(capture), bytes) else {
             throw AnnotationRepositoryFailure("Unknown migration capture data requires recovery.")
         }
         try validate(capture)

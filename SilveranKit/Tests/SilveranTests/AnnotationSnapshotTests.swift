@@ -339,4 +339,37 @@ struct AnnotationSnapshotTests {
             try AnnotationSnapshotCodec.decode(JSONSerialization.data(withJSONObject: raw))
         }
     }
+
+    @Test("Checkpoint retention bounds growth, keeps the latest replacement and stays idempotent")
+    func checkpointRetention() async throws {
+        let directory = try root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = try AnnotationRepository(url: directory.appendingPathComponent("r.sqlite"))
+        try await repository.commit(command(text: "original"))
+        let replacement = try await repository.restoreSnapshot(
+            try snapshot(command(text: "replacement")),
+            mode: .replace
+        )
+        var merges: [(AnnotationRestoreReceipt, AnnotationRepositorySnapshot)] = []
+        for index in 0..<5 {
+            let incoming = try snapshot(command(text: "merge \(index)"))
+            merges.append((try await repository.restoreSnapshot(incoming), incoming))
+        }
+        let retained = try await repository.retainedRestoreCheckpointIDs()
+        let limit = AnnotationRepository.retainedRestoreCheckpoints
+        #expect(retained == [replacement.checkpointID] + merges.suffix(limit).map(\.0.checkpointID))
+        #expect(try await repository.restoreCheckpointIDs().count == 6)
+        _ = try await repository.checkpointSnapshot(id: replacement.checkpointID)
+        await #expect(throws: AnnotationRepositoryFailure.self) {
+            try await repository.checkpointSnapshot(id: merges[0].0.checkpointID)
+        }
+        // A retried request whose checkpoint was released returns its receipt and imports nothing.
+        let history = try await repository.history(scope: scope).count
+        let retry = try await repository.restoreSnapshot(
+            merges[0].1,
+            restoreID: merges[0].0.checkpointID
+        )
+        #expect(retry == merges[0].0)
+        #expect(try await repository.history(scope: scope).count == history)
+    }
 }

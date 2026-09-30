@@ -176,6 +176,53 @@ struct InkPersistenceSafetyTests {
         #expect(try Data(contentsOf: file(root)) == future)
     }
 
+    @Test("Saves after an in-place external change of the same size merge with disk, not memory")
+    func sameSizeExternalChange() async throws {
+        let root = directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = InkActor(directory: root)
+        try await store.setSection(section("aaaa"), href: "a", bookID: book).get()
+        // Another writer changes one identity in place: same file, same length.
+        let original = try Data(contentsOf: file(root))
+        let changed = Data(
+            String(decoding: original, as: UTF8.self)
+                .replacingOccurrences(of: #""aaaa""#, with: #""zzzz""#).utf8
+        )
+        #expect(changed.count == original.count && changed != original)
+        try await Task.sleep(for: .milliseconds(5))
+        let handle = try FileHandle(forWritingTo: file(root))
+        try handle.write(contentsOf: changed)
+        try handle.close()
+        try await store.setSection(section("b"), href: "b", bookID: book).get()
+        let saved = await InkActor(directory: root).ink(bookID: book)
+        #expect(saved.sections["a"]?.notes.map(\.id) == ["zzzz"])
+        #expect(saved.sections["b"] == section("b"))
+    }
+
+    @Test("Section-by-section encoding writes the same ink the full encoder would")
+    func assembledEncoding() async throws {
+        let root = directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = InkActor(directory: root)
+        let hrefs = ["text/ch1.xhtml", #"odd "quoted"/href\\é"#, "z", "a"]
+        for (index, href) in hrefs.enumerated() {
+            try await store.setSection(section("n\(index)"), href: href, bookID: book).get()
+        }
+        try await store.setSection(SectionInk(), href: "z", bookID: book).get()
+        try await store.setSection(section("replaced"), href: "a", bookID: book).get()
+        var expected = BookInk()
+        expected.sections = [
+            hrefs[0]: section("n0"), hrefs[1]: section("n1"), "a": section("replaced"),
+        ]
+        let bytes = try Data(contentsOf: file(root))
+        let loaded = await InkActor(directory: root).load(bookID: book)
+        #expect(loaded.state == .valid)
+        #expect(loaded.ink == expected)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        #expect(AnnotationJSON.sameContent(bytes, try encoder.encode(expected)))
+    }
+
     @Test("A successful section does not conceal another section's failed save")
     @MainActor
     func independentPendingSections() async throws {

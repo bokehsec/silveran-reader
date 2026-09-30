@@ -188,9 +188,9 @@ public actor AnnotationRepository {
         decoder.userInfo[.protectedAnnotationRead] = true
         let command = try decoder.decode(AnnotationCommand.self, from: bytes)
         try validate(command)
-        guard try Self.encode(command) == bytes else {
+        guard AnnotationJSON.sameContent(try Self.encode(command), bytes) else {
             throw AnnotationRepositoryFailure(
-                "Unknown or noncanonical revision data requires recovery."
+                "Unknown or incompletely decoded revision data requires recovery."
             )
         }
         return command
@@ -206,7 +206,8 @@ public actor AnnotationRepository {
         guard row[0] == .text(command.operationID.uuidString),
             row[1] == .text(try Self.scopeKey(command.scope)),
             row[2] == .text(command.annotationID),
-            row[4] == payload, row[5] == .integer(command.document == nil ? 1 : 0)
+            AnnotationSQLValue.sameContent(row[4], payload),
+            row[5] == .integer(command.document == nil ? 1 : 0)
         else {
             throw AnnotationRepositoryFailure("Inconsistent annotation revision requires recovery.")
         }
@@ -508,7 +509,7 @@ extension AnnotationRepository {
                 }
                 let receipt = try JSONDecoder().decode(AnnotationRestoreReceipt.self, from: bytes)
                 guard receipt.checkpointID == restoreID, receipt.mode == mode,
-                    try Self.encode(receipt) == bytes
+                    AnnotationJSON.sameContent(try Self.encode(receipt), bytes)
                 else {
                     throw AnnotationRepositoryFailure("Restore receipt requires recovery.")
                 }
@@ -518,7 +519,7 @@ extension AnnotationRepository {
             let current = try prepareSnapshot(before)
             // An immutable operation identity cannot acquire a new meaning, including during replacement.
             for (id, bytes) in incoming.bytes where current.bytes[id] != nil {
-                guard current.bytes[id] == bytes else {
+                guard AnnotationJSON.sameContent(current.bytes[id]!, bytes) else {
                     throw AnnotationRepositoryFailure(
                         "Restored operation conflicts with existing identity."
                     )
@@ -590,13 +591,43 @@ extension AnnotationRepository {
                     .bytes(beforeBytes), .bytes(try Self.encode(receipt)),
                 ]
             )
+            // Each checkpoint holds a whole prior generation, so unbounded retention grows the
+            // database with every restore. Keep the newest few and the newest pre-replacement
+            // generation. Released rows keep their receipt so a retried request stays idempotent.
+            try database.execute(
+                """
+                UPDATE restore_checkpoints SET before_snapshot = zeroblob(0)
+                WHERE length(before_snapshot) > 0
+                  AND rowid NOT IN (SELECT rowid FROM restore_checkpoints ORDER BY rowid DESC \
+                LIMIT ?)
+                  AND rowid IS NOT (SELECT max(rowid) FROM restore_checkpoints WHERE mode = \
+                'replace')
+                """,
+                [.integer(Int64(Self.retainedRestoreCheckpoints))]
+            )
             try beforeCommit()
             return receipt
         }
     }
 
+    /// Pre-restore generations kept in full, in addition to the newest pre-replacement one.
+    public static let retainedRestoreCheckpoints = 3
+
+    /// Every restore receipt, including checkpoints whose prior generation has been released.
     public func restoreCheckpointIDs() throws -> [UUID] {
         try database.rows("SELECT restore_id FROM restore_checkpoints ORDER BY restore_id").map {
+            guard case .text(let text) = $0[0], let id = UUID(uuidString: text) else {
+                throw AnnotationRepositoryFailure("Invalid recovery checkpoint identity.")
+            }
+            return id
+        }
+    }
+
+    /// Checkpoints whose full prior generation is still available, oldest first.
+    public func retainedRestoreCheckpointIDs() throws -> [UUID] {
+        try database.rows(
+            "SELECT restore_id FROM restore_checkpoints WHERE length(before_snapshot) > 0 ORDER BY rowid"
+        ).map {
             guard case .text(let text) = $0[0], let id = UUID(uuidString: text) else {
                 throw AnnotationRepositoryFailure("Invalid recovery checkpoint identity.")
             }
@@ -612,6 +643,11 @@ extension AnnotationRepository {
             ).first,
             case .bytes(let bytes) = row[0]
         else { throw AnnotationRepositoryFailure("Recovery checkpoint is unavailable.") }
+        guard !bytes.isEmpty else {
+            throw AnnotationRepositoryFailure(
+                "Recovery checkpoint was released by the retention policy."
+            )
+        }
         let snapshot = try AnnotationSnapshotCodec.decode(bytes)
         _ = try prepareSnapshot(snapshot)
         return snapshot

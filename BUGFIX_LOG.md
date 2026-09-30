@@ -42,6 +42,71 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-027 — Annotation store could refuse valid records after an encoder change, and restore checkpoints grew without limit
+
+- Date: 2026-09-30
+- Status: Fixed (store is not yet used by the reader)
+- Platforms: Shared
+- Components: `Kit/Annotations/AnnotationDatabase.swift` (`AnnotationJSON`), `AnnotationRepository.swift`, `LegacyAnnotationMigration.swift`, `AnnotationRepositoryTests`, `AnnotationSnapshotTests`
+- Related links: ADR 003, ADR 005, ADR 006
+
+#### Symptom
+
+Two latent defects found in review before the repository is switched on. (1) A stored revision, restore receipt or legacy capture was rejected as "unknown or noncanonical" unless re-encoding the decoded value reproduced the stored bytes exactly. Any difference in encoder output (key order, whitespace, escaping or number spelling from a future Foundation, another platform or an archive written elsewhere) would make every stored annotation "require recovery". (2) Every restore stored a complete copy of the previous annotation generation, with no retention, so the database grew by a whole library per restore.
+
+#### Root cause
+
+(1) Byte equality was used to detect unknown or silently defaulted fields; it also rejected harmless formatting differences. (2) Checkpoints doubled as idempotency receipts, so they were never pruned.
+
+#### Change
+
+(1) `AnnotationJSON.sameContent` compares by JSON meaning: identical key sets and values recursively; key order, whitespace, escaping and number spelling are ignored. Unknown, missing or defaulted fields are still refused. Used for revisions, the stored payload column, restore receipts, operation-identity conflicts and legacy captures. Migration operation IDs are still derived from this build's canonical encoding (ADR 006); an interrupted migration resumed on a build with different number formatting could create a second copy and is covered by the migration's count verification. (2) After each restore, only the newest `retainedRestoreCheckpoints` (3) prior generations plus the newest pre-replacement generation are kept. Released rows keep their receipt and request hash, so retrying a request remains idempotent. `retainedRestoreCheckpointIDs()` lists checkpoints still restorable; `checkpointSnapshot` reports a released one explicitly.
+
+#### Validation
+
+- New `storedJSONFormatting` rewrites a stored command with different key order and whitespace: fails on the previous source ("Unknown or noncanonical revision data requires recovery"), passes after; a stored command with an added unknown field is still refused.
+- `jsonContentComparison` covers number spelling (`1` vs `1.0` vs `2e0`, `0.1` vs `0.10000000000000001`), escaped slashes, and rejects extra keys, reordered arrays, string/number and value changes.
+- `checkpointRetention`: one replacement and five merges keep the replacement plus the newest three; a released checkpoint reports release; retrying its request returns the same receipt and imports nothing.
+- `swift test --filter "AnnotationRepositoryTests|AnnotationSnapshotTests|LegacyAnnotationMigrationTests|AnnotationCrashRecoveryTests"` passes. Full-suite/build results are in the plan progress entry.
+
+#### Compatibility and follow-up
+
+No schema change. Retention of older checkpoints for the full archive and cloud recovery points remains Phase 3/4 policy work.
+
+### BF-026 — Each ink stroke re-read, decoded and re-encoded the whole book
+
+- Date: 2026-09-30
+- Status: Fixed (iPad timing pending)
+- Platforms: Shared (all ink authoring surfaces; iPad primarily)
+- Components: `Kit/Actors/InkActor.swift`, `Kit/Models/InkModels.swift` (`BookInk.hasUniqueIdentities`), `InkPersistenceSafetyTests`
+- Related links: BF-017
+
+#### Symptom
+
+After BF-017 removed the in-memory copy so every save checked disk, each stroke save cost scaled with the whole book's ink. A temporary release-build probe on an Apple silicon Mac (sections of 10 notes x 15 strokes x 120 points): about 200 ms per save for a 0.77 MB ink file, 800 ms at 3.8 MB and 2.1 s at 11.5 MB. Saves are serialized, so heavy books would build a backlog, delay the "saved" state and cost battery; iPad is slower.
+
+#### Root cause
+
+Each `setSection` read the file, strictly decoded the whole book, encoded the whole book and strictly decoded it again to validate.
+
+#### Change
+
+- The actor keeps the last book it committed together with a stamp of the file it wrote (file number, size, modification time). A save reuses it only when the file is still exactly that write; any other change (atomic replacement, in-place edit, deletion) falls back to the full protected read, so external changes are still checked before writing (BF-017 invariant).
+- Validation checks only what changed: the new section is strictly decoded and book-wide identities are checked (`BookInk.hasUniqueIdentities`, shared with the decoder).
+- Encoded JSON is kept per section; a save encodes only the changed section and joins cached fragments (`InkActor.assemble`) into the same JSON document.
+- Loads for display and recovery export still read disk and keep original bytes.
+
+#### Validation
+
+- Same probe after the change: about 50-60 ms per save at every book size (dominated by encoding the one changed, deliberately large section). Probe removed after measurement.
+- New tests: `sameSizeExternalChange` (an in-place, same-length external edit is merged from disk rather than overwritten from memory) and `assembledEncoding` (escaped/odd hrefs, deleted and replaced sections; written bytes decode strictly and match `JSONEncoder` content). Making the cache ignore the stamp fails both the new test and the existing `rechecksBeforeWrite`.
+- `swift test --filter "InkPersistenceSafetyTests|InkSessionTests|InkSessionModelTests|InkLifecycleSafetyTests|InkModelsTests"` passes 61 tests.
+- Not verified: iPad timing with real handwriting.
+
+#### Compatibility and follow-up
+
+On-disk format unchanged. Phase 2's per-annotation repository removes whole-book writes entirely.
+
 ### BF-025 — A failed credential save could erase the working server login
 
 - Date: 2026-09-30
