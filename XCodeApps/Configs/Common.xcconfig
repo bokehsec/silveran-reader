@@ -20,3 +20,10 @@ ICLOUD_KVS_IDENTIFIER = $(TeamIdentifierPrefix)$(APP_BUNDLE_ID)
 SILVERAN_CLOUD_BACKUP_CONTAINER =
 SILVERAN_IOS_ENTITLEMENTS = XCodeApps/SilveranReaderIos.entitlements
 SILVERAN_MAC_ENTITLEMENTS = XCodeApps/SilveranReaderMac.entitlements
+
+// The container the app is told about. An unsigned build (CODE_SIGNING_ALLOWED=NO, as the
+// scripts use for simulator builds) has no entitlements at all, and CloudKit traps on launch if
+// the app names a container it isn't entitled to, so an unsigned build names none.
+SILVERAN_CLOUD_BACKUP_CONTAINER_WHEN_SIGNED_YES = $(SILVERAN_CLOUD_BACKUP_CONTAINER)
+SILVERAN_CLOUD_BACKUP_CONTAINER_WHEN_SIGNED_NO =
+SILVERAN_APP_CLOUD_BACKUP_CONTAINER = $(SILVERAN_CLOUD_BACKUP_CONTAINER_WHEN_SIGNED_$(CODE_SIGNING_ALLOWED))

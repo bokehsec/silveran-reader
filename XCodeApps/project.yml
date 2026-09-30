@@ -58,7 +58,7 @@ targets:
         KEYCHAIN_SERVICE: "$(KEYCHAIN_SERVICE)"
         SILVERAN_WIDGET_APP_GROUP: "$(MAC_APP_GROUP_ID)"
         LSApplicationCategoryType: "public.app-category.books"
-        SilveranCloudBackupContainer: "$(SILVERAN_CLOUD_BACKUP_CONTAINER)"
+        SilveranCloudBackupContainer: "$(SILVERAN_APP_CLOUD_BACKUP_CONTAINER)"
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: "$(APP_BUNDLE_ID).backup"
             UTTypeDescription: "Silveran Backup"
@@ -123,7 +123,7 @@ targets:
         KEYCHAIN_SERVICE: "$(KEYCHAIN_SERVICE)"
         SILVERAN_WIDGET_APP_GROUP: "$(APP_GROUP_ID)"
         LSApplicationCategoryType: "public.app-category.books"
-        SilveranCloudBackupContainer: "$(SILVERAN_CLOUD_BACKUP_CONTAINER)"
+        SilveranCloudBackupContainer: "$(SILVERAN_APP_CLOUD_BACKUP_CONTAINER)"
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: "$(APP_BUNDLE_ID).backup"
             UTTypeDescription: "Silveran Backup"
