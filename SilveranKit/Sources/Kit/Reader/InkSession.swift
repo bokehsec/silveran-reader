@@ -198,6 +198,29 @@ public final class InkSession {
         for href in readySections.sorted() { await prepare(href: href) }
     }
 
+    /// Another owner (a backup restore) changed this book's saved ink. Saves pending edits,
+    /// reloads the committed ink, drops undo history that refers to the old sections and
+    /// redraws. Returns false, keeping everything as it was, if pending edits can't be saved.
+    @discardableResult
+    public func reloadFromStore() async -> Bool {
+        guard isOpen, let bookID else { return true }
+        guard await flush() else { return false }
+        openGeneration += 1
+        let generation = openGeneration
+        let loaded = await store.load(bookID: bookID)
+        guard generation == openGeneration else { return false }
+        loadResult = loaded
+        ink = loaded.ink
+        committedInk = loaded.ink
+        persistenceState =
+            loaded.canEdit ? .saved : .recovery(loaded.message ?? "Saved ink requires recovery.")
+        undoStack.removeAll()
+        redoStack.removeAll()
+        onUndoStateChanged?()
+        for href in readySections.sorted() { await prepare(href: href) }
+        return true
+    }
+
     /// The page loaded a section and is waiting for its ink.
     public func sectionReady(href: String) async {
         readySections.insert(href)

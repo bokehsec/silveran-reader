@@ -300,6 +300,35 @@ struct InkSessionModelTests {
         #expect(!reopened.canUndo)
     }
 
+    @Test("Ink restored into an open book is reloaded, so the next edit keeps it")
+    func restoreIntoOpenBook() async throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        session.apply(.addNote(href: "c1", note: note("local")))
+        #expect(await session.flush())
+
+        // A restore adds a note to the same section on disk.
+        var archived = BookInk()
+        archived.sections["c1"] = SectionInk(notes: [note("restored", at: 40)])
+        let store = InkActor(directory: directory)
+        let merge = await store.restoreInk(
+            archived: try JSONEncoder().encode(archived),
+            bookID: bookID,
+            dryRun: false
+        )
+        #expect(merge.added == 1)
+
+        #expect(await session.reloadFromStore())
+        #expect(Set(session.section("c1").notes.map(\.id)) == ["local", "restored"])
+        #expect(!session.canUndo)
+        session.apply(.addNote(href: "c1", note: note("after", at: 70)))
+        #expect(await session.flush())
+        let saved = await InkActor(directory: directory).ink(bookID: bookID)
+        #expect(Set(saved.sections["c1"]!.notes.map(\.id)) == ["local", "restored", "after"])
+    }
+
     @Test("A rebuilt web view reattaching to the open book keeps the undo history and redraws")
     func reattachKeepsUndo() async {
         let directory = makeDirectory()

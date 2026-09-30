@@ -308,4 +308,31 @@ struct BackupRestoreTests {
         )
         #expect(FileManager.default.fileExists(atPath: kept.path))
     }
+
+    @Test("A restore is refused before any change when open editors can't save")
+    func refusedWhenEditorsCannotSave() async throws {
+        let source = device()
+        let target = device()
+        defer {
+            try? FileManager.default.removeItem(at: source.root)
+            try? FileManager.default.removeItem(at: target.root)
+        }
+        try await source.ink.setSection(SectionInk(notes: [note("n1")]), href: "c1", bookID: book)
+            .get()
+        let archive = try await source.service().createArchive()
+        let service = BackupService(
+            participants: [
+                LegacyAnnotationsBackupParticipant(ink: target.ink, filesystem: target.filesystem)
+            ],
+            appVersion: "t",
+            deviceID: "t",
+            deviceClass: "tablet",
+            stateDirectory: target.root.appendingPathComponent("Backup"),
+            prepareForRestore: { throw BackupFailure("unsaved") }
+        )
+        await #expect(throws: BackupFailure.self) { try await service.restore(archive) }
+        #expect(await target.ink.ink(bookID: book).sections.isEmpty)
+        #expect(try await service.pendingRestore() == nil)
+        #expect(await service.safetyArchives().isEmpty)
+    }
 }

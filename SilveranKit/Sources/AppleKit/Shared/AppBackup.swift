@@ -59,6 +59,15 @@ enum AppBackup {
             },
             resumePublishers: {
                 await MainActor.run { AppleConfigurationSyncCoordinator.shared.resumePublishing() }
+                // Open books redraw from the restored ink instead of keeping stale pages.
+                await ReadingSessionStore.shared.reloadAllInk()
+            },
+            prepareForRestore: {
+                guard await ReadingSessionStore.shared.flushAllInk() else {
+                    throw BackupFailure(
+                        "Some handwriting in an open book hasn't been saved. Retry or export it from the reader, then restore."
+                    )
+                }
             }
         )
     }()

@@ -75,6 +75,22 @@ public final class ReadingSessionStore {
 
     private init() {}
 
+    private var allInkSessions: [InkSession] {
+        Array(inkSessions.values) + releasedInkSessions.values.compactMap(\.value)
+    }
+
+    /// Saves every open book's ink. False if some edits could not be saved.
+    public func flushAllInk() async -> Bool {
+        var saved = true
+        for session in allInkSessions where !(await session.flush()) { saved = false }
+        return saved
+    }
+
+    /// Reloads every open book's ink after saved ink changed underneath it (a restore).
+    public func reloadAllInk() async {
+        for session in allInkSessions { await session.reloadFromStore() }
+    }
+
     public func obtain(
         metadata: BookMetadata,
         category: LocalMediaCategory,

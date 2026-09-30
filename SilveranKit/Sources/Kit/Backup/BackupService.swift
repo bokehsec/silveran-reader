@@ -45,6 +45,7 @@ public actor BackupService {
     private let stateDirectory: URL
     private let suspendPublishers: @Sendable () async -> Void
     private let resumePublishers: @Sendable () async -> Void
+    private let prepareForRestore: @Sendable () async throws -> Void
 
     public init(
         participants: [any BackupParticipant],
@@ -53,7 +54,8 @@ public actor BackupService {
         deviceClass: String,
         stateDirectory: URL,
         suspendPublishers: @escaping @Sendable () async -> Void = {},
-        resumePublishers: @escaping @Sendable () async -> Void = {}
+        resumePublishers: @escaping @Sendable () async -> Void = {},
+        prepareForRestore: @escaping @Sendable () async throws -> Void = {}
     ) {
         self.participants = Dictionary(uniqueKeysWithValues: participants.map { ($0.kind, $0) })
         self.appVersion = appVersion
@@ -62,6 +64,7 @@ public actor BackupService {
         self.stateDirectory = stateDirectory
         self.suspendPublishers = suspendPublishers
         self.resumePublishers = resumePublishers
+        self.prepareForRestore = prepareForRestore
     }
 
     // MARK: Backup
@@ -111,6 +114,9 @@ public actor BackupService {
                 "A previous restore didn't finish. Resume or discard it before starting another."
             )
         }
+        // Open editors save first, so the safety copy includes their work and nothing they
+        // hold in memory can later overwrite restored data.
+        try await prepareForRestore()
         let restoreID = UUID()
         try FileManager.default.createDirectory(
             at: stateDirectory,
@@ -152,6 +158,7 @@ public actor BackupService {
         let archive = try BackupArchiveCodec.read(
             stateDirectory.appendingPathComponent(journal.archiveFile)
         )
+        try await prepareForRestore()
         return try await run(journal, archive: archive)
     }
 
