@@ -35,6 +35,9 @@ class SilveranAppDelegate: NSObject, UIApplicationDelegate {
             _ = await ProgressSyncActor.shared.syncPendingQueue()
             await ProgressUploadManager.shared.enqueuePendingUploads()
             await BookEditSyncActor.shared.flush()
+            // Incremental backups upload only changed files, so they usually fit the refresh
+            // window; an unfinished one stays pending for the next opportunity.
+            await AppBackup.opportunity()
             await Self.scheduleProgressSyncRefreshIfNeeded()
             task.setTaskCompleted(success: true)
         }
@@ -48,7 +51,8 @@ class SilveranAppDelegate: NSObject, UIApplicationDelegate {
         guard await SilveranRuntime.start() else { return }
         let hasPending = await !ProgressSyncActor.shared.getUploadablePendingProgressSyncs()
             .isEmpty
-        guard hasPending else { return }
+        let backupPending = await AppBackup.hasPendingWork()
+        guard hasPending || backupPending else { return }
 
         let request = BGAppRefreshTaskRequest(identifier: progressSyncTaskIdentifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)

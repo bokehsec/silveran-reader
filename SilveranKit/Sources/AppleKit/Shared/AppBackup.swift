@@ -121,6 +121,14 @@ enum AppBackup {
         return await cloud.runIfDue(force: force)
     }
 
+    /// True when automatic backup is on and local changes haven't been backed up yet.
+    static func hasPendingWork() async -> Bool {
+        guard let cloud else { return false }
+        let state = await cloud.currentState
+        return state.enabled && !state.accountMismatch
+            && (state.pendingSince != nil || state.lastCompleteAt == nil)
+    }
+
     /// A dated file name such as `Silveran Backup 2026-09-30 1405.silveranbackup`.
     static func suggestedFileName(for date: Date = Date()) -> String {
         let formatter = DateFormatter()

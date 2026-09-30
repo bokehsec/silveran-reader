@@ -191,13 +191,13 @@ This change creates the plan and links it from the project guidance/review. No i
 | 0 Contracts | ADRs 001–009; inventories; SQLite and drawing decisions | Refreshed Scribe feature baseline; real EPUB/Pencil fixture corpus; numerical device budgets |
 | 1 Protect data | Done (BF-017–BF-019, BF-022–BF-028) | iPad/iPhone/Mac checks 1–13 in [DEVICE_ACCEPTANCE_CHECKLIST.md](DEVICE_ACCEPTANCE_CHECKLIST.md) |
 | 2 Repository | Repository, anchors/editions, snapshots, legacy staging; not used by the reader | Owner freeze + journaled cutover of ink/highlights; edition persistence; conflict-aware undo; typed-highlight anchors |
-| 3 Local archive | Done: `.silveranbackup` export/import, preview, journaled resumable restore, safety copies, source reconnection | Checks 14–21; reading-progress participant (see below) |
+| 3 Local archive | Done: `.silveranbackup` export/import, preview, journaled resumable restore, safety copies, source reconnection | Checks 14–21 |
 | 4 iCloud backup | Done behind a build switch: CloudKit transport, scheduling, retention, account isolation, UI | Provision container; checks 22–30 on signed builds; small opt-in rollout |
 | 5 EPUB UX | Not started (BF-020 anchor fix only) | All of P5 |
 | 6 Storyteller | Not started | Server version matrix and contract tests |
 | 7 Broader parity | Not started | Separate scoping |
 
-Known gaps in the implemented phases: reading positions for local-folder books are not in the archive yet (server positions return from the server); the "last opened book" route is not restored; background backup uses the existing background-task window only (no BGTaskScheduler job).
+Scope notes for the implemented phases: reading positions, status and ratings for local-folder books are stored in `library_metadata.json` inside the book folder itself, so they travel with the books (outside the notes + settings scope); server positions return from the server. The "last opened book" route is not restored. Background backup runs in the existing background-task window and the iOS background refresh task, which is also scheduled while a backup is pending.
 
 ## Implementation progress
 
