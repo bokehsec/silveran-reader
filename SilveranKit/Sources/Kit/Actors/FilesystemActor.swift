@@ -1371,6 +1371,17 @@ public actor FilesystemActor {
         try data.write(to: url, options: .atomic)
     }
 
+    /// The saved shelf file exactly as stored (current or legacy name), for backup.
+    public func smartShelvesOriginal() -> Data? {
+        let configDir = getConfigDirectory()
+        for name in ["smart_shelves.json", "dynamic_shelves.json"] {
+            if let data = try? Data(contentsOf: configDir.appendingPathComponent(name)) {
+                return data
+            }
+        }
+        return nil
+    }
+
     public func loadSmartShelves() throws -> [SmartShelf] {
         let configDir = getConfigDirectory()
         let newUrl = configDir.appendingPathComponent("smart_shelves.json", isDirectory: false)

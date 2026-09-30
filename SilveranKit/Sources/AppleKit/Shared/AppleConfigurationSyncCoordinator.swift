@@ -38,6 +38,9 @@ public final class AppleConfigurationSyncCoordinator {
     private var pending: [String: Data]
     private var flushTask: Task<Void, Never>?
     private var operationTail: Task<Void, Never>?
+    /// While a backup restore runs, restored preferences become the local baseline instead of
+    /// being published as new edits.
+    private var publishingSuspended = false
 
     private static let enabledKey = "configurationSync.enabled"
     private static let pendingKey = "configurationSync.pending"
@@ -45,12 +48,17 @@ public final class AppleConfigurationSyncCoordinator {
     private static let confirmationKey = "configurationSync.confirmAccount"
     private static let backupKey = "configurationSync.backup"
 
-    private convenience init() {
+    /// `tablet`, `phone` or `mac`: the scope for device-specific settings and backups.
+    public static var currentDeviceClass: String {
         #if os(iOS)
-        let deviceClass = UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "phone"
+        UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "phone"
         #else
-        let deviceClass = "mac"
+        "mac"
         #endif
+    }
+
+    private convenience init() {
+        let deviceClass = Self.currentDeviceClass
         self.init(
             cloud: AppleConfigurationCloudStore(),
             defaults: .standard,
@@ -328,9 +336,18 @@ public final class AppleConfigurationSyncCoordinator {
         } catch { status = "Some settings cannot be shared: \(error.localizedDescription)" }
     }
 
+    public func suspendPublishing() { publishingSuspended = true }
+
+    public func resumePublishing() {
+        refreshDefaultsCache()
+        publishingSuspended = false
+    }
+
     func recordDefaultsChanges() {
         defer { refreshDefaultsCache() }
-        guard enabled, checkAccount(), !requiresAccountConfirmation else { return }
+        guard !publishingSuspended, enabled, checkAccount(), !requiresAccountConfirmation else {
+            return
+        }
         let before = pending
         for unit in ConfigurationDefaultsRegistry.units {
             let key = unit.key(deviceClass: deviceClass)

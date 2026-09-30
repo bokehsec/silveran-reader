@@ -83,6 +83,8 @@ public struct InkToolPreferenceLoad {
 public final class InkToolPreferenceStore {
     public static let shared = InkToolPreferenceStore()
     public static let didChange = Notification.Name("SilveranInkToolPreferenceDidChange")
+    /// The UserDefaults key used by the shared store.
+    public static let key = "SilveranInkTools.v1"
     private let defaults: UserDefaults
     private let key: String
     private let write: @MainActor (Data, UserDefaults, String) throws -> Void
@@ -92,7 +94,7 @@ public final class InkToolPreferenceStore {
 
     public init(
         defaults: UserDefaults = .standard,
-        key: String = "SilveranInkTools.v1",
+        key: String = InkToolPreferenceStore.key,
         write: @escaping @MainActor (Data, UserDefaults, String) throws -> Void = {
             data,
             defaults,

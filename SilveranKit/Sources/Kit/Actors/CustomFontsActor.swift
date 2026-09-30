@@ -72,6 +72,59 @@ public actor CustomFontsActor {
         }
     }
 
+    /// Tests and backup restore into an explicit directory.
+    init(fontsDirectory: URL, fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+        self.fontsDirectory = fontsDirectory
+        try? Self.ensureFontsDirectory(fontsDirectory, using: fileManager)
+    }
+
+    static let fontExtensions: Set<String> = ["ttf", "otf", "woff", "woff2"]
+
+    /// Every font file the reader can use, sorted by name.
+    public func fontFiles() -> [URL] {
+        let contents =
+            (try? fileManager.contentsOfDirectory(
+                at: fontsDirectory,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )) ?? []
+        return contents.filter {
+            Self.fontExtensions.contains($0.pathExtension.lowercased())
+                && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Adds a backed-up font file when no file of that name exists. An existing file is never
+    /// replaced; a different one with the same name is reported as a conflict.
+    public func restoreFont(named name: String, data: Data, dryRun: Bool) async -> BackupRecordMerge
+    {
+        guard !name.isEmpty, !name.contains("/"), !name.hasPrefix("."),
+            Self.fontExtensions.contains((name as NSString).pathExtension.lowercased())
+        else { return BackupRecordMerge(.archivedUnreadable) }
+        let destination = fontsDirectory.appendingPathComponent(name, isDirectory: false)
+        if let existing = try? Data(contentsOf: destination) {
+            return BackupRecordMerge(.unchanged, conflicts: existing == data ? 0 : 1)
+        }
+        if !dryRun {
+            do {
+                try Self.ensureFontsDirectory(fontsDirectory, using: fileManager)
+                // Write fully under a hidden name, then move into place; the move fails
+                // rather than replacing a file that appeared meanwhile.
+                let partial = fontsDirectory.appendingPathComponent(".\(UUID().uuidString).partial")
+                try data.write(to: partial)
+                do { try fileManager.moveItem(at: partial, to: destination) } catch {
+                    try? fileManager.removeItem(at: partial)
+                    throw error
+                }
+            } catch {
+                return BackupRecordMerge(.localNeedsRecovery)
+            }
+            await refreshFonts()
+        }
+        return BackupRecordMerge(.restored, added: 1)
+    }
+
     public var availableFamilies: [CustomFontFamily] {
         cachedFamilies
     }
