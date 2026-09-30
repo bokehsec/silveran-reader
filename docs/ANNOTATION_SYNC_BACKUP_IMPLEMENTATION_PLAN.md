@@ -359,3 +359,16 @@ The product owner decided Silveran will eventually support book servers besides 
 - **Model (`InkStrokeTransform`, `InkOperation.transformStrokes`):** scale about an origin, then move, in note coordinates; line width and pressure unchanged. The transform is limited to `0.25...4` and so the strokes' padded box cannot be pushed further past the note's left or top edge (a note's height is measured from 0). Ink already on the edge is not pulled inward by a move that never touched it. A move that changes no point is a no-op. Undo needs nothing extra: the session already keeps before/after section snapshots.
 - **Deliberately not done:** moving ink between notes or onto other words (that changes what the ink is attached to), copy/paste, the selection UI and gestures, the `InkEngineCalling.inkSelect` Swift bridge call and `InkSession` command, and any Pencil/iPad interaction. No new protocol requirement was added so the existing test doubles are unaffected.
 - **Validation:** `npm test` from `SilveranKit/Tests/WebHarness` passes **128 tests** (120 before plus 8 in `inkSelection.test.mjs`; the `foliate-js` submodule had to be initialised first with `git submodule update --init`). **The Swift half is not compiled or run:** this environment has no Swift toolchain. `InkOperations.swift` and `InkStrokeTransformTests.swift` were written to follow the existing `erase` pattern and their expected numbers were cross-checked against the JavaScript implementation, but `scripts/test --filter InkStrokeTransform` and `scripts/format` still need to be run on a Mac. No device, Pencil or simulator check was done.
+
+### Pending verification (needs a Mac; recorded 2026-09-30)
+
+Work from the Linux-only sessions has not been compiled. Before it is relied on, run from the repo root on `claude/focused-goodall-vf9zp6` (or a branch containing it):
+
+1. `git submodule update --init --recursive`
+2. `scripts/test --filter InkStrokeTransform`: the nine new P5.3 Swift tests.
+3. `scripts/test`: full suite (last recorded run: 348 tests in 33 suites).
+4. `scripts/format`, then review any diff it makes to `InkOperations.swift` or `InkStrokeTransformTests.swift`.
+5. `scripts/macbuild` and `scripts/iosbuild`: compile check of the new `InkOperation` case.
+
+Record the results (commands, counts, failures) in the progress log above; fix failures before building the P5.3 session/bridge/UI wiring on top.
+
