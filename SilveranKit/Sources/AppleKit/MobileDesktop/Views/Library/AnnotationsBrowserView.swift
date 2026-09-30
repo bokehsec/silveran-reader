@@ -1,0 +1,339 @@
+#if os(iOS) || os(macOS)
+import SilveranKit
+import SwiftUI
+import UniformTypeIdentifiers
+
+/// Every highlight, bookmark, typed note and handwritten note across the library (plan P5.1),
+/// including books that are no longer in the library. Search, filter, jump to the passage and
+/// export a readable summary.
+struct AnnotationsBrowserView: View {
+    @Environment(MediaViewModel.self) private var mediaViewModel
+    #if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
+
+    @State private var books: [AnnotationBookSummary] = []
+    @State private var loading = true
+    @State private var query = ""
+    @State private var kinds = Set(AnnotationEntry.Kind.allCases)
+    @State private var colors: Set<HighlightColor>? = nil
+    @State private var export: MarkdownDocument?
+    @State private var exportName = ""
+    @State private var message: String?
+    @State private var settings = SettingsViewModel()
+
+    var body: some View {
+        content
+            .navigationTitle("Annotations")
+            #if os(iOS)
+        .searchable(text: $query, prompt: "Search quotes and notes")
+            #endif
+            .toolbar { ToolbarItem { filterMenu } }
+            .task { await reload() }
+            .refreshable { await reload() }
+            .fileExporter(
+                isPresented: Binding(get: { export != nil }, set: { if !$0 { export = nil } }),
+                document: export,
+                contentType: .markdown,
+                defaultFilename: exportName
+            ) { result in
+                if case .failure(let error) = result { message = error.localizedDescription }
+                export = nil
+            }
+            .alert(
+                "Annotations",
+                isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })
+            ) {
+                Button("OK") { message = nil }
+            } message: {
+                Text(message ?? "")
+            }
+    }
+
+    @ViewBuilder private var content: some View {
+        if loading {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if books.isEmpty {
+            ContentUnavailableView(
+                "No Annotations Yet",
+                systemImage: "highlighter",
+                description: Text(
+                    "Highlights, bookmarks and handwriting from every book appear here."
+                )
+            )
+        } else {
+            let visible = filteredBooks
+            VStack(spacing: 0) {
+                #if os(macOS)
+                TextField("Search quotes and notes", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .padding()
+                #endif
+                if visible.isEmpty {
+                    ContentUnavailableView.search(text: query)
+                } else {
+                    List {
+                        ForEach(visible, id: \.book.id) { item in
+                            Section {
+                                ForEach(item.entries) { entry in
+                                    AnnotationRow(entry: entry, colorHex: hex(for:))
+                                        .contentShape(Rectangle())
+                                        .onTapGesture { show(entry) }
+                                        .contextMenu {
+                                            Button("Show in Book") { show(entry) }
+                                                .disabled(metadata(for: entry.bookID) == nil)
+                                        }
+                                }
+                            } header: {
+                                header(item.book)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var filteredBooks: [(book: AnnotationBookSummary, entries: [AnnotationEntry])] {
+        books.compactMap { book in
+            let entries = AnnotationLibrary.filter(
+                book.entries,
+                query: query,
+                kinds: kinds,
+                colors: colors
+            )
+            let titleMatches =
+                !query.isEmpty
+                && title(for: book.bookID).range(of: query, options: [.caseInsensitive]) != nil
+            let shown = titleMatches ? book.entries.filter { kinds.contains($0.kind) } : entries
+            return shown.isEmpty && !(book.needsRecovery && query.isEmpty) ? nil : (book, shown)
+        }
+    }
+
+    private func header(_ book: AnnotationBookSummary) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title(for: book.bookID)).font(.headline).textCase(nil)
+                if metadata(for: book.bookID) == nil {
+                    Text("Not in your library — notes are kept")
+                        .font(.caption).foregroundStyle(.secondary).textCase(nil)
+                }
+                if book.needsRecovery {
+                    Label(
+                        "Some annotations need recovery; open the book to fix them",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption).foregroundStyle(.orange).textCase(nil)
+                }
+            }
+            Spacer()
+            Button {
+                exportMarkdown(book)
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.up")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Export notes for \(title(for: book.bookID))")
+        }
+    }
+
+    private var filterMenu: some View {
+        Menu {
+            Section("Show") {
+                ForEach(AnnotationEntry.Kind.allCases, id: \.self) { kind in
+                    Toggle(
+                        label(kind),
+                        isOn: Binding(
+                            get: { kinds.contains(kind) },
+                            set: { on in
+                                if on { kinds.insert(kind) } else { kinds.remove(kind) }
+                            }
+                        )
+                    )
+                }
+            }
+            Section("Highlight Color") {
+                Button("Any Color") { colors = nil }
+                ForEach(HighlightColor.allCases, id: \.self) { color in
+                    Button {
+                        colors = [color]
+                    } label: {
+                        if colors == [color] {
+                            Label(color.rawValue.capitalized, systemImage: "checkmark")
+                        } else {
+                            Text(color.rawValue.capitalized)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
+        }
+    }
+
+    // MARK: Actions
+
+    private func reload() async {
+        books = await AnnotationLibrary.load()
+        loading = false
+    }
+
+    private func show(_ entry: AnnotationEntry) {
+        guard let book = metadata(for: entry.bookID) else {
+            message =
+                "This book isn't in your library. Its annotations are kept and will reconnect if the book is added again."
+            return
+        }
+        guard mediaViewModel.localMediaPath(for: book.id, category: .ebook) != nil else {
+            message = "Download the ebook to see this annotation in place."
+            return
+        }
+        ReaderOpenRequest.shared.request(book.id, at: entry.locator)
+        let data = mediaViewModel.makePlayerBookData(for: book, category: .ebook)
+        #if os(iOS)
+        PlayerPresenter.shared.present(data)
+        #else
+        openWindow(id: "EbookPlayer", value: data)
+        #endif
+    }
+
+    private func exportMarkdown(_ book: AnnotationBookSummary) {
+        let metadata = metadata(for: book.bookID)
+        let text = AnnotationLibrary.markdown(
+            title: title(for: book.bookID),
+            author: metadata?.authors?.first?.name,
+            entries: book.entries
+        )
+        exportName = "\(title(for: book.bookID)) — Notes.md"
+        export = MarkdownDocument(text: text)
+    }
+
+    // MARK: Helpers
+
+    private func metadata(for bookID: BookID) -> BookMetadata? {
+        mediaViewModel.library.bookMetaData.first { $0.id == bookID }
+    }
+
+    private func title(for bookID: BookID) -> String {
+        metadata(for: bookID)?.title ?? "Unknown book"
+    }
+
+    private func hex(for color: HighlightColor) -> Color {
+        Color(hex: settings.hexColor(for: color)) ?? color.color
+    }
+
+    private func label(_ kind: AnnotationEntry.Kind) -> String {
+        switch kind {
+            case .highlight: "Highlights"
+            case .bookmark: "Bookmarks"
+            case .handwriting: "Handwritten Notes"
+            case .inkMark: "Handwritten Marks"
+        }
+    }
+}
+
+private struct AnnotationRow: View {
+    let entry: AnnotationEntry
+    let colorHex: (HighlightColor) -> Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            leading
+            VStack(alignment: .leading, spacing: 4) {
+                if let quote = entry.quote {
+                    Text(quote).lineLimit(3)
+                } else {
+                    Text(placeholder).foregroundStyle(.secondary)
+                }
+                if let note = entry.note, !note.isEmpty {
+                    Text(note).font(.callout).foregroundStyle(.secondary).lineLimit(4)
+                }
+                Text(caption).font(.caption).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var leading: some View {
+        switch entry.kind {
+            case .highlight:
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(entry.color.map(colorHex) ?? .yellow)
+                    .frame(width: 6)
+                    .frame(minHeight: 36)
+                    .accessibilityHidden(true)
+            case .bookmark:
+                Image(systemName: "bookmark.fill").foregroundStyle(.red).frame(width: 20)
+            case .handwriting, .inkMark:
+                StrokeThumbnail(strokes: entry.strokes)
+                    .frame(width: 56, height: 40)
+                    .accessibilityHidden(true)
+        }
+    }
+
+    private var placeholder: String {
+        switch entry.kind {
+            case .bookmark: "Bookmark"
+            case .handwriting: "Handwritten note"
+            case .inkMark: "Handwritten mark"
+            case .highlight: "Highlight"
+        }
+    }
+
+    private var caption: String {
+        let date = entry.createdAt.formatted(date: .abbreviated, time: .omitted)
+        if let chapter = entry.chapterTitle, !chapter.isEmpty { return "\(chapter) · \(date)" }
+        return date
+    }
+}
+
+/// Draws handwritten strokes scaled to fit, for recognition at a glance.
+private struct StrokeThumbnail: View {
+    let strokes: [InkStroke]
+
+    var body: some View {
+        Canvas { context, size in
+            let points = strokes.flatMap(\.points).filter { $0.count >= 2 }
+            guard let minX = points.map({ $0[0] }).min(), let maxX = points.map({ $0[0] }).max(),
+                let minY = points.map({ $0[1] }).min(), let maxY = points.map({ $0[1] }).max()
+            else { return }
+            let width = max(maxX - minX, 1)
+            let height = max(maxY - minY, 1)
+            let scale = min((size.width - 4) / width, (size.height - 4) / height)
+            for stroke in strokes {
+                var path = Path()
+                for (index, point) in stroke.points.enumerated() where point.count >= 2 {
+                    let location = CGPoint(
+                        x: 2 + (point[0] - minX) * scale,
+                        y: 2 + (point[1] - minY) * scale
+                    )
+                    if index == 0 { path.move(to: location) } else { path.addLine(to: location) }
+                }
+                context.stroke(path, with: .color(.primary), lineWidth: 1)
+            }
+        }
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+struct MarkdownDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.markdown, .plainText] }
+    let text: String
+    init(text: String) { self.text = text }
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        text = String(decoding: data, as: UTF8.self)
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
+    }
+}
+
+extension UTType {
+    static var markdown: UTType { UTType("net.daringfireball.markdown") ?? .plainText }
+}
+#endif

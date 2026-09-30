@@ -64,3 +64,15 @@ Setup (once): in the Apple Developer portal, add iCloud with CloudKit to the App
 | 28 | Sign in to a different Apple ID on the device | Backup pauses and asks before backing up to the new account |
 | 29 | With iCloud storage full (or a nearly full test account) | Status says storage is full; earlier backups still restore |
 | 30 | CloudKit Console (Development) | Zone `Backups` has BackupGeneration and BackupAsset records; no annotation text appears in record fields other than the file assets |
+
+## Annotations browser (Phase 5)
+
+| # | Check | Pass when |
+| --- | --- | --- |
+| 31 | iPhone/iPad: More > Annotations; Mac: Utilities > Annotations | Every annotated book is listed with its highlights, bookmarks and handwriting thumbnails |
+| 32 | Search for a word from a highlight and from a typed note; try without accents | Matching entries show; others hide |
+| 33 | Filter to one highlight color; to handwriting only | Only those entries show |
+| 34 | Tap a highlight | The book opens at that highlight's page |
+| 35 | Tap a handwritten note | The book opens at that chapter |
+| 36 | Remove a book from the library that has notes | It stays listed as "Not in your library — notes are kept" |
+| 37 | Export a book's notes | A readable Markdown file with chapters, quotes and notes is saved |

@@ -59,6 +59,8 @@ public final class EphemeralProgressManager {
 
     /// Initial reading position (typ. from server sync)
     private var initialLocator: BookLocator?
+    /// True when the book opened at a location requested from outside the reader.
+    private var openedAtRequest = false
 
     /// Track whether we've performed initial seek to server location.
     /// This happens when the book is first opened and has been
@@ -353,6 +355,12 @@ public final class EphemeralProgressManager {
 
     /// The position to open at: the latest synced progress, else the locator the book opened with.
     private func resolveInitialLocator() async -> BookLocator? {
+        // "Show in book" from the annotation browser wins over the saved reading position.
+        if let bookID, let requested = ReaderOpenRequest.shared.take(bookID) {
+            debugLog("[EPM] Opening at a requested annotation location")
+            openedAtRequest = true
+            return requested
+        }
         if let bookID,
             let psaProgress = await ProgressSyncActor.shared.getBookProgress(for: bookID),
             let psaLocator = psaProgress.locator
@@ -372,6 +380,10 @@ public final class EphemeralProgressManager {
         bridge: ReaderCommsBridge,
         hasSMIL: Bool,
     ) async throws {
+        if openedAtRequest, let cfi = locator?.locations?.partialCfi, !cfi.isEmpty {
+            try await bridge.sendJsGoToCFICommand(cfi: cfi)
+            return
+        }
         guard let locator else {
             debugLog("[EPM] No saved position, navigating to first page")
             try await bridge.sendJsGoRightCommand()

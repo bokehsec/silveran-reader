@@ -591,6 +591,7 @@ struct MoreMenuView: View {
         case publicationYears
         case ratings
         case currentlyDownloading
+        case annotations
         case addBook
         case createReadaloud
         case appleWatch
@@ -665,6 +666,9 @@ struct MoreMenuView: View {
                     NavigationLink(value: MoreDestination.downloaded) {
                         Label("Downloaded", systemImage: "arrow.down.circle.fill")
                     }
+                }
+                NavigationLink(value: MoreDestination.annotations) {
+                    Label("Annotations", systemImage: "highlighter")
                 }
                 if hasIncompleteDownloads {
                     NavigationLink(value: MoreDestination.currentlyDownloading) {
@@ -804,6 +808,8 @@ struct MoreMenuView: View {
                             placement: .navigationBarDrawer(displayMode: .always),
                             prompt: "Search",
                         )
+                case .annotations:
+                    AnnotationsBrowserView()
                 case .currentlyDownloading:
                     CurrentlyDownloadingView()
                         .iOSLibraryToolbar(

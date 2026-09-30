@@ -57,6 +57,7 @@ struct SilveranReaderApp: App {
         debugLogScene
         readaloudGeneratorScene
         contentServerScene
+        annotationsScene
         mp3ToM4BConverterScene
         serverMediaManagementScene
         uploadNewBookScene
@@ -227,6 +228,11 @@ struct SilveranReaderApp: App {
                 }
                 .keyboardShortcut("l", modifiers: [.command])
 
+                Button("Annotations") {
+                    openWindow(id: "Annotations")
+                }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
+
                 Button("Content Server") {
                     openWindow(id: "ContentServer")
                 }
@@ -252,6 +258,16 @@ struct SilveranReaderApp: App {
                 .keyboardShortcut("d", modifiers: [.command, .option])
             }
         }
+    }
+
+    private var annotationsScene: some Scene {
+        Window("Annotations", id: "Annotations") {
+            NavigationStack { AnnotationsBrowserView() }
+                .environment(mediaViewModel)
+                .environment(AppLaunchContext.environment)
+                .frame(minWidth: 520, minHeight: 480)
+        }
+        .disableWindowRestoration()
     }
 
     private var contentServerScene: some Scene {

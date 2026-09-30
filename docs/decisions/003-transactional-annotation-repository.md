@@ -38,3 +38,15 @@ Before cutover, rollback leaves the existing files authoritative. After new edit
 `AnnotationRepositoryTests` exercises reopen/retry, injected failure immediately before commit, mutation-plus-intent rollback, independent connections, account/parent isolation, creative conflicts, tombstones and explicit resolution. Future/corrupt database bytes survive attempted open. The test uses disposable synthetic data, not the user's library.
 
 This establishes the bounded transaction-plus-intent prototype. It does not establish process-kill/power-loss boundaries, large-library performance, schema migration, archive completeness, native drawing conversion, signed cloud delivery or platform/device acceptance. These remain the plan's separate gates. Exact runs are recorded in the implementation progress log.
+
+## Cutover blocker found 2026-09-30: revision growth and compaction
+
+A review before cutover found that the revision model, applied to the current editor, grows storage quadratically. The reader saves ink per section after every stroke; each changed note would become a new revision holding the whole note payload (all its strokes). A note written with 200 strokes leaves 200 revisions of increasing size. Every commit also adds a `backup_intent` row that nothing consumes. Revisions cannot simply be pruned: snapshot validation (ADR 005) requires every parent to be present, and command bytes are immutable identities.
+
+Before cutover, one of these must be decided and tested:
+
+1. **Checkpointed history.** Allow a compaction that replaces a fully superseded ancestry with a single recorded "base" revision, carried in snapshots, when no delivery is queued for it. Needs a snapshot schema change and a rule for what remote replicas may still reference.
+2. **Coarser revisions.** Commit an annotation revision when an editing burst ends (pen lifted for N seconds, section left, app backgrounded) instead of per stroke, keeping per-stroke durability in the existing file or a short-lived journal.
+3. **Defer the repository** until a replicating provider exists (Storyteller annotation support or live iCloud sync, Phase 6/7). Until then the protected per-book files plus retained backups (Phases 1, 3, 4) meet the durability and recovery goals.
+
+Current recommendation: option 3 now, then option 2 combined with a bounded form of option 1 when a provider is scheduled. Backup does not depend on cutover (ADR 009). Intent rows must also gain an owner that clears them after a completed backup generation.

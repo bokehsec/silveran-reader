@@ -190,10 +190,10 @@ This change creates the plan and links it from the project guidance/review. No i
 | --- | --- | --- |
 | 0 Contracts | ADRs 001–009; inventories; SQLite and drawing decisions | Refreshed Scribe feature baseline; real EPUB/Pencil fixture corpus; numerical device budgets |
 | 1 Protect data | Done (BF-017–BF-019, BF-022–BF-028) | iPad/iPhone/Mac checks 1–13 in [DEVICE_ACCEPTANCE_CHECKLIST.md](DEVICE_ACCEPTANCE_CHECKLIST.md) |
-| 2 Repository | Repository, anchors/editions, snapshots, legacy staging; not used by the reader | Owner freeze + journaled cutover of ink/highlights; edition persistence; conflict-aware undo; typed-highlight anchors |
+| 2 Repository | Repository, anchors/editions, snapshots, legacy staging; not used by the reader | **Blocked by design issue**: per-stroke revisions grow storage quadratically and can't be compacted ([ADR 003](decisions/003-transactional-annotation-repository.md#cutover-blocker-found-2026-09-30-revision-growth-and-compaction)); deferred until a sync provider needs it. Then: compaction/coarser revisions, owner freeze + journaled cutover, edition persistence, conflict-aware undo |
 | 3 Local archive | Done: `.silveranbackup` export/import, preview, journaled resumable restore, safety copies, source reconnection | Checks 14–21 |
 | 4 iCloud backup | Done behind a build switch: CloudKit transport, scheduling, retention, account isolation, UI | Provision container; checks 22–30 on signed builds; small opt-in rollout |
-| 5 EPUB UX | Not started (BF-020 anchor fix only) | All of P5 |
+| 5 EPUB UX | P5.1 started: library-wide Annotations browser (search, filters, books not in the library, damaged-file notice, "Show in Book"), P5.5 Markdown export | Manual reattachment/orphan repair, margin notes (P5.2), lasso/move/resize tools (P5.3), device input/accessibility (P5.4), SVG/PDF export |
 | 6 Storyteller | Not started | Server version matrix and contract tests |
 | 7 Broader parity | Not started | Separate scoping |
 
@@ -307,3 +307,10 @@ Phase 3 implemented: `Kit/Backup` archive codec (path/size/hash validation befor
 Phase 4 implemented: `CloudBackupCoordinator` (debounced/launch/foreground/background opportunities, unchanged-content skip, content-addressed uploads, commit after assets and post-commit re-check, backoff, quota/sign-in reporting, account-change pause, tiered retention, orphan cleanup with a 24-hour grace period) and `CloudKitBackupTransport` (zone `Backups`, zone-change enumeration). Off unless `SILVERAN_CLOUD_BACKUP_CONTAINER` and the CloudBackup entitlements are set in `Local.xcconfig`.
 
 Validation: `scripts/test` passes **330 tests in 30 suites** (new: archive format 5, restore 6, participants 6, cloud backup 8, plus regression tests for BF-025–028). WebHarness 120 tests pass. Unsigned `scripts/macbuild`, `scripts/iosbuild` (iPad A16 simulator) and `scripts/watchbuild` pass; `scripts/verify-sqlite-vendor` and `git diff --check` pass. Not run: any device, signed-build, real CloudKit or visual UI check (simulator access was not granted during this session). Device and account checks are listed in [DEVICE_ACCEPTANCE_CHECKLIST.md](DEVICE_ACCEPTANCE_CHECKLIST.md).
+
+### 2026-09-30 — Phase 2 blocker recorded; annotation browser and export
+
+- Phase 2: before implementing the reader cutover, analysis found that per-stroke section saves would create one whole-note revision per stroke (quadratic growth) with no valid compaction under ADR 005 snapshot rules, and that `backup_intent` rows are never cleared. Recorded as a blocker with options in [ADR 003](decisions/003-transactional-annotation-repository.md#cutover-blocker-found-2026-09-30-revision-growth-and-compaction). Cutover is deferred until a replicating provider needs it; Phase 5 proceeds on the protected per-book owners, whose read APIs a later cutover keeps.
+- P5.1/P5.5: `AnnotationLibrary` indexes every book's highlights, bookmarks, handwritten notes and marks through the owners (including books no longer in the library and a recovery flag for damaged files), with accent/case-insensitive search, type/color filters and a Markdown summary export. `ReaderOpenRequest` lets the reader open at an annotation (CFI for highlights, chapter for handwriting). UI: More > Annotations on iPhone/iPad; Utilities > Annotations (⇧⌘A) on Mac.
+
+Validation: `scripts/test` passes **335 tests in 31 suites** (new `AnnotationLibraryTests`: 3; `restoreIntoOpenBook` and `refusedWhenEditorsCannotSave` from the preceding restore fix). Unsigned Mac and iPad-simulator builds pass. Not run: visual/device checks of the browser and "Show in Book".
