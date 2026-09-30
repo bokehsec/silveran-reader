@@ -42,6 +42,39 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-025 — A failed credential save could erase the working server login
+
+- Date: 2026-09-30
+- Status: Fixed (device keychain acceptance pending)
+- Platforms: Apple (keychain store); Shared (credential owner)
+- Components: `SilveranKit/Sources/AppleKit/Shared/Platform/SecurityKeychainStore.swift`, `SilveranKit/Sources/Kit/Actors/AuthenticationActor.swift`, `SecurityKeychainStoreTests`, `SourceCredentialPersistenceTests`
+- Related links: [ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md](docs/ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md) P0.2/P3.3 credential policy
+
+#### Symptom
+
+Editing a server connection, the one-time keychain accessibility migration or a legacy credential migration could leave a source signed out if the keychain refused a write (locked device during a background launch, denied access group, quota or other `OSStatus` failure). The previous login was gone even though the user never confirmed its removal.
+
+#### Root cause
+
+Two delete-before-write steps. `SecurityKeychainStore.setItem` called `SecItemDelete` and then `SecItemAdd`, so a failed add lost the previous item. `AuthenticationActor.saveCredentials` additionally deleted all three source items (server URL, username, password) before writing each one; any failure part way left none, or a mixture of old and new values.
+
+#### Change
+
+- `SecurityKeychainStore.setItem` updates the existing item in place (`SecItemUpdate` with the value and `kSecAttrAccessibleAfterFirstUnlock`), adds only after `errSecItemNotFound`, and retries a single update if a concurrent creator wins (`errSecDuplicateItem`). It never deletes. Security calls are behind a narrow internal `SecurityKeychainOperations` boundary for deterministic failure injection.
+- `AuthenticationActor.saveCredentials` reads the three previous items first, replaces them in place and, if any write fails, restores already-written items to their previous values (or removes items that did not exist before) and rethrows. The three items still cannot be committed atomically; a failure of the restore itself is best-effort and is not reported separately.
+- An injectable keychain initializer supports tests. The shared instance is unchanged.
+
+#### Validation
+
+- Before the owner fix, `swift test --filter SourceCredentialPersistenceTests` failed with 5 issues (values deleted, credentials no longer loadable).
+- After: `swift test --filter 'SourceCredentialPersistenceTests|SecurityKeychainStoreTests'` passes 7 tests in 2 suites: denied replacement keeps the old item without deleting; existing items update and missing ones add only after not-found; a concurrent add gets one update retry; a first-write failure, a third-write failure and a first-time partial save each leave the previous complete set (or nothing); a successful save replaces all three without deletion.
+- Full-suite and build results are recorded in the plan progress entry for this batch.
+- Not verified: real-device keychain behavior, including that `SecItemUpdate` re-applies `kSecAttrAccessibleAfterFirstUnlock` to items created with the older accessibility during the keychain accessibility migration. This must be checked on a signed iOS build by locking the device and triggering a background launch.
+
+#### Compatibility and follow-up
+
+No data migration. Existing items keep their identities. If device testing shows the accessibility attribute is not updated in place, the accessibility migration needs an explicit add-new-then-remove-old path rather than a return to delete-first.
+
 ### BF-024 — Protect saved Pencil tool choices from tolerant decoding and replacement
 
 - Date: 2026-09-30

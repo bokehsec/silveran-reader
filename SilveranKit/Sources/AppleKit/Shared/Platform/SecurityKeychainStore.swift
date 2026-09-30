@@ -2,6 +2,27 @@ import Foundation
 
 #if canImport(Security)
 import Security
+
+/// The real Security calls and deterministic failure injection share this narrow boundary.
+protocol SecurityKeychainOperations: Sendable {
+    func add(_ query: [String: Any]) -> OSStatus
+    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus
+    func copy(_ query: [String: Any]) -> (OSStatus, AnyObject?)
+    func delete(_ query: [String: Any]) -> OSStatus
+}
+
+private struct SystemSecurityKeychainOperations: SecurityKeychainOperations {
+    func add(_ query: [String: Any]) -> OSStatus { SecItemAdd(query as CFDictionary, nil) }
+    func update(_ query: [String: Any], attributes: [String: Any]) -> OSStatus {
+        SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+    }
+    func copy(_ query: [String: Any]) -> (OSStatus, AnyObject?) {
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        return (status, result)
+    }
+    func delete(_ query: [String: Any]) -> OSStatus { SecItemDelete(query as CFDictionary) }
+}
 #endif
 
 public struct SecurityKeychainStore: KeychainStoring {
@@ -10,31 +31,55 @@ public struct SecurityKeychainStore: KeychainStoring {
 
     private let configuredService: String?
     private let configuredAccessGroup: String?
+    #if canImport(Security)
+    private let operations: any SecurityKeychainOperations
+    #endif
 
     public init() {
         configuredService = nil
         configuredAccessGroup = nil
+        #if canImport(Security)
+        operations = SystemSecurityKeychainOperations()
+        #endif
     }
 
     public init(service: String, accessGroup: String? = nil) {
         configuredService = service
         configuredAccessGroup = accessGroup
+        #if canImport(Security)
+        operations = SystemSecurityKeychainOperations()
+        #endif
     }
+
+    #if canImport(Security)
+    init(service: String, accessGroup: String? = nil, operations: any SecurityKeychainOperations) {
+        configuredService = service
+        configuredAccessGroup = accessGroup
+        self.operations = operations
+    }
+    #endif
 
     public func setItem(
         _ data: Data,
         account: String,
     ) throws {
         #if canImport(Security)
-        var query = Self.baseQuery(service: service, account: account, accessGroup: accessGroup)
-        SecItemDelete(query as CFDictionary)
-
-        query[kSecValueData as String] = data
+        let query = Self.baseQuery(service: service, account: account, accessGroup: accessGroup)
         // AfterFirstUnlock so background launches (WCSession delivery, background
         // URLSession events) can authenticate while the phone is locked
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-
-        let status = SecItemAdd(query as CFDictionary, nil)
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+        ]
+        var status = operations.update(query, attributes: attributes)
+        if status == errSecItemNotFound {
+            status = operations.add(query.merging(attributes) { _, new in new })
+            // A concurrent creator may win between update and add. Retry one update,
+            // preserving that item if the replacement is refused.
+            if status == errSecDuplicateItem {
+                status = operations.update(query, attributes: attributes)
+            }
+        }
         guard status == errSecSuccess else {
             throw KeychainError.unableToSave(status: status)
         }
@@ -49,8 +94,7 @@ public struct SecurityKeychainStore: KeychainStoring {
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let (status, result) = operations.copy(query)
 
         if status == errSecItemNotFound {
             return nil
@@ -74,7 +118,7 @@ public struct SecurityKeychainStore: KeychainStoring {
         #if canImport(Security)
         let query = Self.baseQuery(service: service, account: account, accessGroup: accessGroup)
 
-        let status = SecItemDelete(query as CFDictionary)
+        let status = operations.delete(query)
         if status != errSecSuccess && status != errSecItemNotFound {
             throw KeychainError.unableToDelete(status: status)
         }

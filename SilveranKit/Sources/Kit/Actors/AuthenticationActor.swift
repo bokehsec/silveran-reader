@@ -9,11 +9,15 @@ public actor AuthenticationActor {
     private let passwordKey = "password"
     private let hardcoverTokenKey = "hardcoverToken"
 
-    private init() {}
+    private let suppliedKeychain: (any KeychainStoring)?
+
+    private init() { suppliedKeychain = nil }
+
+    init(keychain: any KeychainStoring) { suppliedKeychain = keychain }
 
     private var keychain: any KeychainStoring {
         get throws {
-            guard let keychain = SilveranPlatform.keychain else {
+            guard let keychain = suppliedKeychain ?? SilveranPlatform.keychain else {
                 throw KeychainError.unsupportedPlatform
             }
             return keychain
@@ -26,11 +30,35 @@ public actor AuthenticationActor {
         password: String,
         sourceID: BookSourceID,
     ) async throws {
-        try await deleteCredentials(sourceID: sourceID)
-
-        try await saveString(url, for: accountKey(serverURLKey, sourceID: sourceID))
-        try await saveString(username, for: accountKey(usernameKey, sourceID: sourceID))
-        try await saveString(password, for: accountKey(passwordKey, sourceID: sourceID))
+        // Three keychain items cannot be replaced atomically. Replace in place (never delete
+        // first) and, if any write fails, put back the previous items so a failed save cannot
+        // leave the source without credentials or with a mixed old/new set.
+        let values = [
+            (accountKey(serverURLKey, sourceID: sourceID), url),
+            (accountKey(usernameKey, sourceID: sourceID), username),
+            (accountKey(passwordKey, sourceID: sourceID), password),
+        ]
+        let store = try keychain
+        var previous: [(account: String, data: Data?)] = []
+        for (account, _) in values {
+            previous.append((account, try await store.item(account: account)))
+        }
+        var written: [(account: String, data: Data?)] = []
+        do {
+            for ((account, value), prior) in zip(values, previous) {
+                try await saveString(value, for: account)
+                written.append(prior)
+            }
+        } catch {
+            for prior in written.reversed() {
+                if let data = prior.data {
+                    try? await store.setItem(data, account: prior.account)
+                } else {
+                    try? await store.removeItem(account: prior.account)
+                }
+            }
+            throw error
+        }
     }
 
     public func loadCredentials() async throws -> (url: String, username: String, password: String)?
