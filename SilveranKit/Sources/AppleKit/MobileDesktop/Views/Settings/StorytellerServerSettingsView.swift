@@ -163,6 +163,9 @@ public struct StorytellerServerSettingsView: View {
 
 struct BookSourceEditorView: View {
     let source: BookSourceRecord?
+    /// A source from a restored backup; saving recreates it with its original ID so its
+    /// annotations and preferences reattach.
+    var reconnection: SourceReconnection? = nil
     let onSaved: () async -> Void
 
     @State private var kind: BookSourceKind = .storyteller
@@ -184,13 +187,22 @@ struct BookSourceEditorView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    init(source: BookSourceRecord?, onSaved: @escaping () async -> Void) {
+    init(
+        source: BookSourceRecord?,
+        reconnection: SourceReconnection? = nil,
+        onSaved: @escaping () async -> Void
+    ) {
         self.source = source
+        self.reconnection = reconnection
         self.onSaved = onSaved
 
-        let initialKind = source?.kind ?? .storyteller
+        let initialKind = source?.kind ?? reconnection?.kind ?? .storyteller
         _kind = State(initialValue: initialKind)
-        _name = State(initialValue: source?.name ?? Self.defaultName(for: initialKind))
+        _name = State(
+            initialValue: source?.name ?? reconnection?.name ?? Self.defaultName(for: initialKind)
+        )
+        _serverURL = State(initialValue: reconnection?.serverURL ?? "")
+        _username = State(initialValue: reconnection?.username ?? "")
         _folderPath = State(initialValue: source?.storagePath ?? "")
         _folderBookmarkData = State(initialValue: source?.storageBookmarkData)
         _originalFolderPath = State(initialValue: source?.storagePath ?? "")
@@ -636,6 +648,8 @@ struct BookSourceEditorView: View {
     private func loadExistingSource() async {
         guard !hasLoadedCredentials else { return }
         hasLoadedCredentials = true
+        // A reconnection is prefilled by init; there is no saved source to load yet.
+        guard source != nil || reconnection == nil else { return }
 
         await MainActor.run {
             let sourceKind = source?.kind ?? .storyteller
@@ -684,6 +698,13 @@ struct BookSourceEditorView: View {
                 id: sourceID,
                 configuration: configuration,
             )
+        } else if let reconnection {
+            let record = await BookServiceActor.shared.createBookSource(
+                id: reconnection.id,
+                configuration: configuration
+            )
+            success = record != nil
+            if success { try? await AppBackup.reconnections.remove(id: reconnection.id) }
         } else {
             let record = await BookServiceActor.shared.createBookSource(configuration)
             success = record != nil

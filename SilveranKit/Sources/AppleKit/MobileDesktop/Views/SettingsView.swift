@@ -316,6 +316,14 @@ extension SettingsView {
             Form {
                 Section { ICloudSettingsSection() }
 
+                Section {
+                    NavigationLink {
+                        BackupSettingsView()
+                    } label: {
+                        Label("Backup & Restore", systemImage: "externaldrive.badge.timemachine")
+                    }
+                }
+
                 Section("General") {
                     GeneralSettingsFields(sync: $config.sync)
                 }
@@ -482,6 +490,8 @@ private struct MacGeneralSettingsView: View {
     var body: some View {
         MacSettingsContainer(tab: .general) {
             ICloudSettingsSection()
+            Divider()
+            BackupSettingsView()
             Divider()
             VStack(alignment: .leading, spacing: 18) {
                 Text("Storyteller Server Sync")

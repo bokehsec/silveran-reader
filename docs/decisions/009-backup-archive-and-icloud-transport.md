@@ -20,7 +20,7 @@ A manual export/import of the same archive is always available and does not need
 
 One archive is a ZIP file (ZIPFoundation is already a dependency on every platform) with a `.silveranbackup` extension:
 
-- `manifest.json`: archive schema, archive ID, creation time, app version, originating device ID and device class, and one entry per participant: kind, participant schema, status (`complete`, `unavailable`, `empty`), record counts and every file's path, byte count and SHA-256.
+- `manifest.json`: archive schema, archive ID, creation time, app version, originating device ID and device class (`tablet`, `phone` or `mac`, the same classes as preference sync), and one entry per participant: kind, participant schema, status (`complete`, `unavailable`, `empty`), record counts and every file's path, byte count and SHA-256.
 - `participants/<kind>/...`: each participant's files, written by its owner.
 
 Readers refuse unknown archive schemas, validate paths (no absolute paths, `..`, duplicates or links), sizes and hashes before applying anything, and ignore nothing silently: an unknown participant kind is kept for a later build and reported.
