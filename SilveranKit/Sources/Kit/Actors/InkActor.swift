@@ -128,7 +128,7 @@ public actor InkActor {
                     )
                 }
             }
-            LocalDataChangeSignal.post()
+            LocalDataChangeSignal.post(bookID: bookID)
             return .success(())
         } catch {
             debugLog("[InkActor] Local ink commit failed: \(error)")
@@ -153,6 +153,43 @@ public actor InkActor {
         }
         data.append(Data(#"},"version":\#(BookInk.currentVersion)}"#.utf8))
         return data
+    }
+
+    /// Applies a change that came from another device (ADR 010) through the same protected
+    /// write as local edits. Refuses ink that needs recovery; returns whether it was saved.
+    public func applySynced(
+        bookID: BookID,
+        _ change: @Sendable (inout BookInk) -> Void
+    ) async -> Bool {
+        let url = await fileURL(bookID: bookID)
+        committed[url] = nil
+        let loaded = read(url)
+        guard loaded.canEdit else { return false }
+        var candidate = loaded.ink
+        change(&candidate)
+        candidate.sections = candidate.sections.filter { !$0.value.isEmpty }
+        candidate.version = BookInk.currentVersion
+        guard candidate.hasUniqueIdentities else { return false }
+        do {
+            if candidate.isEmpty {
+                if loaded.state != .missing { try removeFile(url) }
+            } else {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                let data = try encoder.encode(candidate)
+                _ = try decoder().decode(BookInk.self, from: data)
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try writeFile(data, url)
+            }
+        } catch {
+            debugLog("[InkActor] Applying synced ink failed: \(error)")
+            return false
+        }
+        LocalDataChangeSignal.post(bookID: bookID)
+        return true
     }
 
     /// Every book with an ink file, including files that need recovery.
@@ -214,7 +251,7 @@ public actor InkActor {
                     withIntermediateDirectories: true
                 )
                 try writeFile(data, url)
-                LocalDataChangeSignal.post()
+                LocalDataChangeSignal.post(bookID: bookID)
             } catch {
                 debugLog("[InkActor] Restoring ink failed: \(error)")
                 return BackupRecordMerge(.localNeedsRecovery)

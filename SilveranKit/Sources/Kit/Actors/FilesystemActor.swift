@@ -103,8 +103,13 @@ public actor FilesystemActor {
         removeHighlights = { try FileManager.default.removeItem(at: $0) }
     }
 
-    init(applicationSupportDirectory: URL, writeHighlights: @escaping @Sendable (Data, URL) throws -> Void,
-         removeHighlights: @escaping @Sendable (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) {
+    init(
+        applicationSupportDirectory: URL,
+        writeHighlights: @escaping @Sendable (Data, URL) throws -> Void,
+        removeHighlights: @escaping @Sendable (URL) throws -> Void = {
+            try FileManager.default.removeItem(at: $0)
+        }
+    ) {
         fixedApplicationSupportDirectory = applicationSupportDirectory
         self.writeHighlights = writeHighlights
         self.removeHighlights = removeHighlights
@@ -797,11 +802,13 @@ public actor FilesystemActor {
     }
 
     public func highlightOriginal(bookID: BookID) throws -> Data? {
-        do { return try Data(contentsOf: highlightsFileURL(bookID: bookID)) }
-        catch {
+        do { return try Data(contentsOf: highlightsFileURL(bookID: bookID)) } catch {
             let error = error as NSError
             if (error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError)
-                || (error.domain == NSPOSIXErrorDomain && error.code == 2) { return nil }
+                || (error.domain == NSPOSIXErrorDomain && error.code == 2)
+            {
+                return nil
+            }
             throw error
         }
     }
@@ -817,8 +824,11 @@ public actor FilesystemActor {
         var candidate = original
         try mutation.apply(to: &candidate, bookID: bookID)
         guard candidate != original else { return }
-        if candidate.isEmpty { try deleteHighlights(bookID: bookID) }
-        else { try saveHighlights(bookID: bookID, highlights: candidate) }
+        if candidate.isEmpty {
+            try deleteHighlights(bookID: bookID)
+        } else {
+            try saveHighlights(bookID: bookID, highlights: candidate)
+        }
     }
 
     public func saveHighlights(bookID: BookID, highlights: [Highlight]) throws {
@@ -832,14 +842,14 @@ public actor FilesystemActor {
         _ = try HighlightsCodec.decode(data, bookID: bookID)
         try ensureDirectoryExists(at: fileURL.deletingLastPathComponent())
         try writeHighlights(data, fileURL)
-        LocalDataChangeSignal.post()
+        LocalDataChangeSignal.post(bookID: bookID)
     }
 
     public func deleteHighlights(bookID: BookID) throws {
         // Deletion must not bypass a failed read or unsupported payload either.
         guard try loadHighlights(bookID: bookID) != nil else { return }
         try removeHighlights(highlightsFileURL(bookID: bookID))
-        LocalDataChangeSignal.post()
+        LocalDataChangeSignal.post(bookID: bookID)
     }
 
     public func highlightBookIDs() -> [BookID] {

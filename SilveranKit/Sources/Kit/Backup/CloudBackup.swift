@@ -409,7 +409,18 @@ public actor CloudBackupCoordinator {
 /// shelves, sources, fonts). Observers only schedule work; the notification carries no data.
 public enum LocalDataChangeSignal {
     public static let name = Notification.Name("SilveranLocalDataDidChange")
-    public static func post() {
-        NotificationCenter.default.post(name: name, object: nil)
+    /// `userInfo` key holding the changed book's `BookID`, when the change belongs to one book.
+    public static let bookKey = "bookID"
+
+    public static func post(bookID: BookID? = nil) {
+        NotificationCenter.default.post(
+            name: name,
+            object: nil,
+            userInfo: bookID.map { [bookKey: $0] }
+        )
+    }
+
+    public static func bookID(in notification: Notification) -> BookID? {
+        notification.userInfo?[bookKey] as? BookID
     }
 }
