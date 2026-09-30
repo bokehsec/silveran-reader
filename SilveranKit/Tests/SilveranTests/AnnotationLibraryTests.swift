@@ -112,4 +112,64 @@ struct AnnotationLibraryTests {
         #expect(text.contains("opening line"))
         #expect(text.contains("- Bookmark"))
     }
+
+    @Test("The web page export escapes text and draws handwriting safely")
+    func htmlExport() {
+        let note = InkNote(
+            id: "n",
+            anchor: TextAnchor(exact: "<b>bold</b>"),
+            strokes: [
+                InkStroke(color: "#123456", points: [[10, 10], [20, 30]]),
+                InkStroke(color: "red\" onload=\"x", points: [[0, 0], [5, 5]]),
+            ],
+            createdAt: Date(timeIntervalSince1970: 0)
+        )
+        var ink = BookInk()
+        ink.sections["c.xhtml"] = SectionInk(notes: [note])
+        let entries =
+            AnnotationLibrary.inkEntries(ink, bookID: book)
+            + [AnnotationLibrary.entry(highlight("Tom & Jerry <script>", note: "a\nb"))]
+        let html = AnnotationLibrary.html(title: "A <Title>", author: nil, entries: entries)
+        #expect(html.contains("<title>A &lt;Title&gt; — Notes</title>"))
+        #expect(html.contains("Tom &amp; Jerry &lt;script&gt;"))
+        #expect(html.contains("a<br>b"))
+        #expect(html.contains("&lt;b&gt;bold&lt;/b&gt;"))
+        #expect(!html.contains("<script>"))
+        #expect(!html.contains("onload"))
+        #expect(html.contains("stroke=\"#123456\""))
+        #expect(html.contains("<svg"))
+        #expect(AnnotationLibrary.svg([]) == "")
+    }
+
+    @Test("Handwriting joins its chapter's heading in exports")
+    func chapterGrouping() {
+        var ink = BookInk()
+        ink.sections["ch2.xhtml"] = SectionInk(notes: [
+            InkNote(
+                id: "n",
+                anchor: TextAnchor(exact: "x"),
+                strokes: [InkStroke(points: [[0, 0], [1, 1]])],
+                createdAt: Date(timeIntervalSince1970: 0)
+            )
+        ])
+        var other = BookInk()
+        other.sections["text/ch9.xhtml"] = SectionInk(notes: [
+            InkNote(
+                id: "m",
+                anchor: TextAnchor(exact: "y"),
+                strokes: [InkStroke(points: [[0, 0], [1, 1]])],
+                createdAt: Date(timeIntervalSince1970: 0)
+            )
+        ])
+        let entries =
+            AnnotationLibrary.inkEntries(ink, bookID: book)
+            + AnnotationLibrary.inkEntries(other, bookID: book)
+            + [AnnotationLibrary.entry(highlight("quote"))]
+        let groups = AnnotationLibrary.chapters(entries)
+        #expect(groups.map(\.title) == ["Chapter Two", "ch9"])
+        #expect(groups[0].entries.count == 2)
+        let markdown = AnnotationLibrary.markdown(title: "T", author: nil, entries: entries)
+        #expect(markdown.components(separatedBy: "## Chapter Two").count == 2)
+        #expect(!markdown.contains("## ch2.xhtml"))
+    }
 }

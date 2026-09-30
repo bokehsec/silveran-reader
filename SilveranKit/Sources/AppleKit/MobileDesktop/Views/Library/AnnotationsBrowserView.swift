@@ -17,7 +17,7 @@ struct AnnotationsBrowserView: View {
     @State private var query = ""
     @State private var kinds = Set(AnnotationEntry.Kind.allCases)
     @State private var colors: Set<HighlightColor>? = nil
-    @State private var export: MarkdownDocument?
+    @State private var export: NotesExportDocument?
     @State private var exportName = ""
     @State private var message: String?
     @State private var settings = SettingsViewModel()
@@ -34,7 +34,7 @@ struct AnnotationsBrowserView: View {
             .fileExporter(
                 isPresented: Binding(get: { export != nil }, set: { if !$0 { export = nil } }),
                 document: export,
-                contentType: .markdown,
+                contentType: export?.contentType ?? .plainText,
                 defaultFilename: exportName
             ) { result in
                 if case .failure(let error) = result { message = error.localizedDescription }
@@ -127,13 +127,15 @@ struct AnnotationsBrowserView: View {
                 }
             }
             Spacer()
-            Button {
-                exportMarkdown(book)
+            Menu {
+                Button("Web Page (with handwriting)") { exportNotes(book, asHTML: true) }
+                Button("Markdown Text") { exportNotes(book, asHTML: false) }
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
             .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
+            .menuStyle(.borderlessButton)
+            .fixedSize()
             .accessibilityLabel("Export notes for \(title(for: book.bookID))")
         }
     }
@@ -198,15 +200,22 @@ struct AnnotationsBrowserView: View {
         #endif
     }
 
-    private func exportMarkdown(_ book: AnnotationBookSummary) {
-        let metadata = metadata(for: book.bookID)
-        let text = AnnotationLibrary.markdown(
-            title: title(for: book.bookID),
-            author: metadata?.authors?.first?.name,
-            entries: book.entries
-        )
-        exportName = "\(title(for: book.bookID)) — Notes.md"
-        export = MarkdownDocument(text: text)
+    private func exportNotes(_ book: AnnotationBookSummary, asHTML: Bool) {
+        let title = title(for: book.bookID)
+        let author = metadata(for: book.bookID)?.authors?.first?.name
+        if asHTML {
+            let text = AnnotationLibrary.html(title: title, author: author, entries: book.entries)
+            exportName = "\(title) — Notes.html"
+            export = NotesExportDocument(text: text, contentType: .html)
+        } else {
+            let text = AnnotationLibrary.markdown(
+                title: title,
+                author: author,
+                entries: book.entries
+            )
+            exportName = "\(title) — Notes.md"
+            export = NotesExportDocument(text: text, contentType: .markdown)
+        }
     }
 
     // MARK: Helpers
@@ -318,15 +327,20 @@ private struct StrokeThumbnail: View {
     }
 }
 
-struct MarkdownDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.markdown, .plainText] }
+struct NotesExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.markdown, .html, .plainText] }
     let text: String
-    init(text: String) { self.text = text }
+    let contentType: UTType
+    init(text: String, contentType: UTType) {
+        self.text = text
+        self.contentType = contentType
+    }
     init(configuration: ReadConfiguration) throws {
         guard let data = configuration.file.regularFileContents else {
             throw CocoaError(.fileReadCorruptFile)
         }
         text = String(decoding: data, as: UTF8.self)
+        contentType = configuration.contentType
     }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: Data(text.utf8))

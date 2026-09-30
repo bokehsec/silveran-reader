@@ -75,4 +75,4 @@ Setup (once): in the Apple Developer portal, add iCloud with CloudKit to the App
 | 34 | Tap a highlight | The book opens at that highlight's page |
 | 35 | Tap a handwritten note | The book opens at that chapter |
 | 36 | Remove a book from the library that has notes | It stays listed as "Not in your library — notes are kept" |
-| 37 | Export a book's notes | A readable Markdown file with chapters, quotes and notes is saved |
+| 37 | Export a book's notes as Markdown and as a Web Page | Markdown has chapters, quotes and notes; the web page also shows handwriting drawings and opens in Safari |
