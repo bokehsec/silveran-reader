@@ -21,6 +21,7 @@ struct AnnotationsBrowserView: View {
     @State private var exportName = ""
     @State private var message: String?
     @State private var settings = SettingsViewModel()
+    @State private var keptCount = 0
 
     var body: some View {
         content
@@ -73,6 +74,22 @@ struct AnnotationsBrowserView: View {
                     ContentUnavailableView.search(text: query)
                 } else {
                     List {
+                        if keptCount > 0 {
+                            Section {
+                                NavigationLink {
+                                    KeptVersionsView(title: title(for:)) { await reload() }
+                                } label: {
+                                    Label(
+                                        "\(keptCount) version(s) kept by iCloud sync",
+                                        systemImage: "clock.arrow.circlepath"
+                                    )
+                                }
+                            } footer: {
+                                Text(
+                                    "When an annotation was changed on two devices, the latest change was used and the other kept here."
+                                )
+                            }
+                        }
                         ForEach(visible, id: \.book.id) { item in
                             Section {
                                 ForEach(item.entries) { entry in
@@ -177,6 +194,9 @@ struct AnnotationsBrowserView: View {
     // MARK: Actions
 
     private func reload() async {
+        if AppAnnotationSync.isAvailable {
+            keptCount = await AppAnnotationSync.engine.recoveredVersions().count
+        }
         // Library books by title; books no longer in the library last.
         books = await AnnotationLibrary.load().sorted { lhs, rhs in
             let left = metadata(for: lhs.bookID)?.title
@@ -248,6 +268,87 @@ struct AnnotationsBrowserView: View {
             case .bookmark: "Bookmarks"
             case .handwriting: "Handwritten Notes"
             case .inkMark: "Handwritten Marks"
+        }
+    }
+}
+
+/// Versions that iCloud sync replaced or deleted, with a way to bring one back.
+private struct KeptVersionsView: View {
+    let title: (BookID) -> String
+    let changed: () async -> Void
+    @State private var versions: [AnnotationRecoveredVersion] = []
+    @State private var restoring: AnnotationRecoveredVersion?
+    @State private var message: String?
+
+    var body: some View {
+        List(versions, id: \.self) { version in
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title(version.record.bookID)).font(.caption).foregroundStyle(.secondary)
+                Text(summary(version.record)).lineLimit(3)
+                Text(
+                    "\(version.reason) · \(version.savedAt.formatted(date: .abbreviated, time: .shortened))"
+                )
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                if version.record.payload != nil {
+                    Button("Use This Version") { restoring = version }
+                        .font(.callout)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .overlay {
+            if versions.isEmpty {
+                ContentUnavailableView("Nothing Kept", systemImage: "clock.arrow.circlepath")
+            }
+        }
+        .navigationTitle("Kept Versions")
+        .task { versions = await AppAnnotationSync.engine.recoveredVersions() }
+        .confirmationDialog(
+            "Use this version?",
+            isPresented: Binding(get: { restoring != nil }, set: { if !$0 { restoring = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Use This Version") {
+                guard let version = restoring else { return }
+                Task {
+                    let applied = await AppAnnotationSync.engine.restore(version)
+                    message =
+                        applied
+                        ? "Restored. It will appear on your other devices shortly."
+                        : "This version couldn't be restored because the book's annotations need recovery."
+                    await changed()
+                }
+            }
+        } message: {
+            Text(
+                "It replaces the current version on all your devices. The current one is kept here."
+            )
+        }
+        .alert(
+            "Kept Versions",
+            isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })
+        ) {
+            Button("OK") { message = nil }
+        } message: {
+            Text(message ?? "")
+        }
+    }
+
+    private func summary(_ record: AnnotationSyncRecord) -> String {
+        guard let payload = record.payload else { return "Deleted annotation" }
+        switch record.kind {
+            case .highlight:
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                guard let highlight = try? decoder.decode(Highlight.self, from: payload) else {
+                    return "Highlight"
+                }
+                let note = highlight.note.map { " — \($0)" } ?? ""
+                return highlight.isBookmark
+                    ? "Bookmark\(note)" : "“\(highlight.displayText)”\(note)"
+            case .inkNote: return "Handwritten note"
+            case .inkMark: return "Handwritten mark"
         }
     }
 }

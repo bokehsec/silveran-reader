@@ -362,4 +362,37 @@ struct AnnotationSyncTests {
         await settle(all, clock: clock)
         #expect(await ipad.highlights(book).map(\.note) == ["written directly"])
     }
+
+    @Test("A kept version can be brought back and then wins everywhere")
+    func restoreKeptVersion() async throws {
+        let (all, clock) = devices(["ipad", "mac"])
+        defer { for d in all { try? FileManager.default.removeItem(at: d.root) } }
+        let (ipad, mac) = (all[0], all[1])
+        let id = UUID()
+        _ = await ipad.bookmarks.addHighlight(highlight(id, note: "original"))
+        await settle(all, clock: clock)
+        _ = await mac.bookmarks.updateHighlight(highlight(id, note: "mac edit"))
+        await mac.engine.reconcileAll()
+        clock.advance(60)
+        _ = await ipad.bookmarks.updateHighlight(highlight(id, note: "ipad edit"))
+        await ipad.engine.reconcileAll()
+        await settle([mac, ipad], clock: clock)
+        let kept = try #require(
+            await mac.engine.recoveredVersions().first {
+                String(decoding: $0.record.payload ?? Data(), as: UTF8.self).contains("mac edit")
+            }
+        )
+        #expect(await mac.engine.restore(kept))
+        #expect(
+            await mac.engine.recoveredVersions().contains {
+                $0.reason.contains("restored")
+                    && String(decoding: $0.record.payload ?? Data(), as: UTF8.self).contains(
+                        "ipad edit"
+                    )
+            }
+        )
+        await settle(all, clock: clock)
+        #expect(await ipad.highlights(book).map(\.note) == ["mac edit"])
+        #expect(await mac.highlights(book).map(\.note) == ["mac edit"])
+    }
 }

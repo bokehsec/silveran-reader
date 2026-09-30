@@ -476,6 +476,37 @@ public actor AnnotationSyncEngine {
         }
     }
 
+    /// Brings a kept version back as a new change on this device; it then syncs everywhere as
+    /// the latest version. Returns whether it was applied.
+    @discardableResult
+    public func restore(_ version: AnnotationRecoveredVersion) async -> Bool {
+        let record = version.record
+        guard let payload = record.payload else { return false }
+        let bookID = record.bookID
+        await lock(bookID)
+        await reconcileLocked(bookID)
+        let key = "\(record.kind.rawValue)/\(record.annotationID)"
+        if let local = await localSnapshot(bookID)?[key],
+            let entry = loadState(bookID).entries[key],
+            local.hash != canonicalHash(record)
+        {
+            keep(
+                localRecord(local, bookID: bookID, entry: entry),
+                reason: "Replaced when an earlier version was restored"
+            )
+        }
+        let applied = await applyRemote(
+            record.kind,
+            payload: payload,
+            href: record.href,
+            bookID: bookID
+        )
+        if applied { await reconcileLocked(bookID) }
+        unlock(bookID)
+        if applied { await onRemoteChange(bookID) }
+        return applied
+    }
+
     /// Versions kept by merges, newest first.
     public func recoveredVersions() -> [AnnotationRecoveredVersion] {
         let folder = directory.appendingPathComponent("Recovery", isDirectory: true)
