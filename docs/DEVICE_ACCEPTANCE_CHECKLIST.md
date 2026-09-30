@@ -78,3 +78,20 @@ Setup (once): in the Apple Developer portal, add iCloud with CloudKit to the App
 | 37 | Export a book's notes as Markdown and as a Web Page | Markdown has chapters, quotes and notes; the web page also shows handwriting drawings and opens in Safari |
 
 Simulator pre-check (2026-09-30, unsigned iPad simulator): items 14 (export only), 31, 32, 34 (fallback case) and 36 passed with synthetic data. They still need a real-device run with real annotations.
+
+## Annotation and settings sync between devices (signed builds with the container and push provisioned; Phase 4S)
+
+Setup: as for iCloud backup (items 22–30), plus enable Push Notifications for the App ID. After a Development run creates the `Annotation` record type, deploy the schema to Production before TestFlight.
+
+| # | Check | Pass when |
+| --- | --- | --- |
+| 38 | Turn on "Sync annotations and settings with iCloud" on two devices | Existing highlights, bookmarks, notes and handwriting appear on the other device |
+| 39 | With both apps open, add a highlight on one | It appears on the other within about a minute |
+| 40 | Write handwriting on the iPad with the same book open on the iPhone | The iPhone's open page shows it without reopening |
+| 41 | Delete a highlight on one device | It disappears on the other |
+| 42 | Airplane mode on both; change the same highlight's note on each (the second change later); reconnect | Both show the later note; the other appears under Annotations > kept versions |
+| 43 | Airplane mode on both; add strokes to the same handwritten note on each; reconnect | Both devices show all strokes |
+| 44 | Erase a stroke on one device | It's erased on the other |
+| 45 | Use a kept version | It becomes current on both devices; the replaced one is kept |
+| 46 | Sign in to a different Apple ID on one device | Nothing from the old account appears; that device's annotations upload to the new account |
+| 47 | Change reader settings on one device | They apply on the other (settings sync, unchanged) |
