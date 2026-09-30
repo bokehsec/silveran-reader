@@ -357,9 +357,17 @@ public final class EphemeralProgressManager {
     private func resolveInitialLocator() async -> BookLocator? {
         // "Show in book" from the annotation browser wins over the saved reading position.
         if let bookID, let requested = ReaderOpenRequest.shared.take(bookID) {
-            debugLog("[EPM] Opening at a requested annotation location")
-            openedAtRequest = true
-            return requested
+            let hasCFI = !(requested.locations?.partialCfi ?? "").isEmpty
+            if hasCFI || bookStructure.isEmpty
+                || findSectionIndex(for: requested.href, in: bookStructure) != nil
+            {
+                debugLog("[EPM] Opening at a requested annotation location")
+                openedAtRequest = true
+                return requested
+            }
+            // The annotation's chapter isn't in this edition: open where the reader left off
+            // rather than at the first page.
+            debugLog("[EPM] Requested chapter not in this book; using the saved position")
         }
         if let bookID,
             let psaProgress = await ProgressSyncActor.shared.getBookProgress(for: bookID),

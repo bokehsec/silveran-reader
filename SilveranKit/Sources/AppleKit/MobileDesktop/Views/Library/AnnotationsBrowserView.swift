@@ -177,7 +177,17 @@ struct AnnotationsBrowserView: View {
     // MARK: Actions
 
     private func reload() async {
-        books = await AnnotationLibrary.load()
+        // Library books by title; books no longer in the library last.
+        books = await AnnotationLibrary.load().sorted { lhs, rhs in
+            let left = metadata(for: lhs.bookID)?.title
+            let right = metadata(for: rhs.bookID)?.title
+            switch (left, right) {
+                case (nil, nil): return false
+                case (nil, _): return false
+                case (_, nil): return true
+                case (let l?, let r?): return l.localizedStandardCompare(r) == .orderedAscending
+            }
+        }
         loading = false
     }
 
@@ -311,12 +321,14 @@ private struct StrokeThumbnail: View {
             let width = max(maxX - minX, 1)
             let height = max(maxY - minY, 1)
             let scale = min((size.width - 4) / width, (size.height - 4) / height)
+            let offsetX = (size.width - width * scale) / 2
+            let offsetY = (size.height - height * scale) / 2
             for stroke in strokes {
                 var path = Path()
                 for (index, point) in stroke.points.enumerated() where point.count >= 2 {
                     let location = CGPoint(
-                        x: 2 + (point[0] - minX) * scale,
-                        y: 2 + (point[1] - minY) * scale
+                        x: offsetX + (point[0] - minX) * scale,
+                        y: offsetY + (point[1] - minY) * scale
                     )
                     if index == 0 { path.move(to: location) } else { path.addLine(to: location) }
                 }
