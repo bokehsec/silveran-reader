@@ -979,6 +979,15 @@ public final class MediaOverlayManager {
     private func flipPageIfNotDebounced() async {
         guard isPlaying else { return }
 
+        // Audio keeps playing while the reader writes; the page catches up afterwards.
+        if let ink = commsBridge?.inkSession, ink.isWriting {
+            debugLog("[MOM] Holding page flip while writing with the Pencil")
+            ink.deferUntilIdle(key: "readaloud-flip") { [weak self] in
+                Task { await self?.flipPageIfNotDebounced() }
+            }
+            return
+        }
+
         if let last = lastFlipTime, Date().timeIntervalSince(last) < 0.3 {
             debugLog("[MOM] Debouncing page flip")
             return

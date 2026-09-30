@@ -2,6 +2,7 @@ import { Overlayer } from "./foliate-js/overlayer.js";
 import { SpanHighlighter } from "./SpanHighlighter.js";
 import { debugLog } from "./DebugConfig.js";
 import { SelectionToolbar } from "./SelectionToolbar.js";
+import { logicalTextPosition } from "./InkFilters.js";
 
 console.log("[BookmarkManager] Module loaded");
 
@@ -240,6 +241,9 @@ class BookmarkManager {
 
     const startContainer = range.startContainer;
     const endContainer = range.endContainer;
+    // A handwritten note may split a text node; locators count as if it were absent.
+    const start = logicalTextPosition(startContainer, range.startOffset);
+    const end = logicalTextPosition(endContainer, range.endOffset);
 
     const payload = {
       sectionIndex,
@@ -248,11 +252,11 @@ class BookmarkManager {
       href,
       title,
       startCssSelector: this.#getCssSelector(startContainer.parentElement || startContainer),
-      startTextNodeIndex: this.#getTextNodeIndex(startContainer),
-      startCharOffset: range.startOffset,
+      startTextNodeIndex: start.index,
+      startCharOffset: start.offset,
       endCssSelector: this.#getCssSelector(endContainer.parentElement || endContainer),
-      endTextNodeIndex: this.#getTextNodeIndex(endContainer),
-      endCharOffset: range.endOffset,
+      endTextNodeIndex: end.index,
+      endCharOffset: end.offset,
     };
 
     return { payload, range };
@@ -395,21 +399,6 @@ class BookmarkManager {
     }
 
     return parts.join(" > ");
-  }
-
-  #getTextNodeIndex(node) {
-    if (node.nodeType !== Node.TEXT_NODE) return 0;
-
-    const parent = node.parentElement;
-    if (!parent) return 0;
-
-    let index = 0;
-    for (const child of parent.childNodes) {
-      if (child === node) return index;
-      if (child.nodeType === Node.TEXT_NODE) index++;
-    }
-
-    return 0;
   }
 
   #renderHighlightsForSection(sectionIndex, doc, forceSpanUpdate = false) {

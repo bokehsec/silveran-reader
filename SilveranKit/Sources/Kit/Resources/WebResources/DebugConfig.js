@@ -3,6 +3,7 @@ export const DEBUG_CATEGORIES = {
   BookLoader: true,
   FoliateManager: true,
   BookmarkManager: true,
+  InkEngine: true,
   WebViewCommsBridge: true,
 
   trace: false,

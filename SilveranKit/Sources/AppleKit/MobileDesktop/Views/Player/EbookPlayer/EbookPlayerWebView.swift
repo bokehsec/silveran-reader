@@ -140,6 +140,8 @@ private class WebViewCoordinator2: NSObject, WKNavigationDelegate, WKScriptMessa
     var onReaderReady: (() -> Void)?
     #if os(iOS)
     var pageCurlAnimator: PageCurlAnimator?
+    var inkInputController: InkInputController?
+    var inkToolController: InkToolController?
     #endif
 
     init(onNavigationFinished: @escaping () -> Void) {
@@ -452,11 +454,50 @@ private func makeWebViewConfiguration2(
     contentController.add(coordinator, name: "HighlightSetColor")
     contentController.add(coordinator, name: "HighlightDelete")
     contentController.add(coordinator, name: "HighlightEdit")
+    contentController.add(coordinator, name: "InkSectionReady")
+    contentController.add(coordinator, name: "InkOrphaned")
     contentController.add(coordinator, name: "FileAccessDiagnostic")
     contentController.add(coordinator, name: "SelectionState")
     contentController.add(coordinator, name: "ReaderReady")
 
     contentController.addUserScript(consoleOverrideScript)
+    #if os(iOS)
+    if UIDevice.current.userInterfaceIdiom == .pad {
+        // The Pencil writes on iPad; the page ignores its touches (InkTouchGuard.js).
+        contentController.addUserScript(
+            WKUserScript(
+                source: "window.__silveranInkEnabled = true;",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true,
+            )
+        )
+    }
+    #endif
+    #if DEBUG
+    // Launch argument `-SilveranInkSelfTest YES` runs the ink engine's self test in each
+    // section the reader opens (results are logged as "[InkSelfTest]").
+    // `-SilveranInkDemoStroke <kinds>` writes synthetic strokes on the first page shown (the
+    // simulator has no Pencil): comma-separated note, underline, strike, circle, bracket,
+    // highlight, erase, erase-highlight (see InkDebug.js).
+    contentController.add(coordinator, name: "InkDebugStroke")
+    contentController.add(coordinator, name: "InkDebugErase")
+    var debugGlobals: [String] = []
+    if UserDefaults.standard.bool(forKey: "SilveranInkSelfTest") {
+        debugGlobals.append("window.__silveranInkSelfTest = true;")
+    }
+    if let demo = UserDefaults.standard.string(forKey: "SilveranInkDemoStroke"), !demo.isEmpty, demo != "NO" {
+        debugGlobals.append("window.__silveranInkDemoStroke = \(String(reflecting: demo));")
+    }
+    if !debugGlobals.isEmpty {
+        contentController.addUserScript(
+            WKUserScript(
+                source: debugGlobals.joined(separator: "\n"),
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true,
+            )
+        )
+    }
+    #endif
     contentController.addUserScript(makeBookOpenScript(ebookPath: ebookPath))
     config.userContentController = contentController
 
@@ -657,6 +698,26 @@ private struct WebViewRepresentable2: PlatformViewRepresentable {
             context.coordinator.pageCurlAnimator = animator
             bridge.pageTurnAnimator = animator
             wkWebView.onSizeChange = { [weak animator] in animator?.cancel() }
+
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                let ink = InkInputController(
+                    webView: wkWebView,
+                    overlayParent: wkWebView.superview ?? wkWebView,
+                    session: bridge.inkSession,
+                )
+                ink.isBlocked = { [weak animator, weak bridge] in
+                    (animator?.isTurning ?? false) || (bridge?.isScrollingMode ?? false)
+                }
+                let tools = InkToolController(
+                    session: bridge.inkSession,
+                    host: wkWebView.superview ?? wkWebView,
+                )
+                ink.tools = tools
+                bridge.toggleInkTools = { [weak tools] in tools?.toggle() }
+                bridge.hideInkTools = { [weak tools] in tools?.hide() }
+                context.coordinator.inkInputController = ink
+                context.coordinator.inkToolController = tools
+            }
             #endif
 
             self.commsBridge = bridge

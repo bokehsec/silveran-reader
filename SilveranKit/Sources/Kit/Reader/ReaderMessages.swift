@@ -168,6 +168,26 @@ public struct HighlightSetColorMessage: Codable {
     public let colorId: String
 }
 
+/// Sent from JS when a section has loaded and is ready to have its Apple Pencil ink drawn.
+public struct InkSectionReadyMessage: Codable {
+    public let href: String
+
+    public init(href: String) {
+        self.href = href
+    }
+}
+
+/// Sent from JS when some of a section's ink could not be placed in this edition of the book.
+public struct InkOrphanedMessage: Codable {
+    public let href: String
+    public let ids: [String]
+
+    public init(href: String, ids: [String]) {
+        self.href = href
+        self.ids = ids
+    }
+}
+
 /// Sent from JS to delete an existing highlight from the toolbar
 public struct HighlightDeleteMessage: Codable {
     public let id: String

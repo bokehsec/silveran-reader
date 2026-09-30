@@ -572,6 +572,7 @@ public struct EbookPlayerView: View {
                     onSearchResultSelected: viewModel.handleSearchResultNavigation,
                     onSleepTimerStart: viewModel.handleSleepTimerStart,
                     onSleepTimerCancel: viewModel.handleSleepTimerCancel,
+                    onToggleInkTools: viewModel.commsBridge?.toggleInkTools,
                     settingsVM: viewModel.settingsVM,
                 )
                 .simultaneousGesture(chromeInteractionGesture)

@@ -24,6 +24,16 @@ public final class ReaderCommsBridge {
     public var isNarrationPlaying: () -> Bool = { false }
     /// Reader background color last sent to JS, used to back page-curl snapshots.
     public private(set) var readerBackgroundColorHex: String?
+    /// Whether the reader last got Scrolling Mode (no Pencil writing, no page turns to lock).
+    public private(set) var isScrollingMode = false
+
+    /// Apple Pencil state for this book. While it is writing, user navigation is refused
+    /// here and JS is told to ignore touches (see `InkSession`).
+    public let inkSession: InkSession
+
+    /// Shows or hides the writing tool palette. Set by the iPad reader; nil where the Pencil does not write.
+    public var toggleInkTools: (() -> Void)?
+    public var hideInkTools: (() -> Void)?
 
     /// Notifies when book structure (TOC) is ready
     public var onBookStructureReady: ((BookStructureReadyMessage) -> Void)?
@@ -85,8 +95,21 @@ public final class ReaderCommsBridge {
     /// Notifies when the selection should be piped into the in-book search panel
     public var onSelectionSearch: ((String) -> Void)?
 
-    public init(js: (any JSEvaluating)? = nil) {
+    public init(js: (any JSEvaluating)? = nil, inkSession: InkSession = InkSession()) {
         self.js = js
+        self.inkSession = inkSession
+        inkSession.engine = self
+        inkSession.onWritingUpdate = { [weak self] writing in
+            self?.pushInkWriting(writing)
+        }
+    }
+
+    /// Tells JS the writing lock changed so it drops touches while the Pencil is on the page.
+    private func pushInkWriting(_ writing: Bool) {
+        guard let js else { return }
+        Task { @SilveranUIActor in
+            _ = try? await js.evaluate("window.foliateManager?.setInkWriting(\(writing))")
+        }
     }
 
     /// JS is sending Swift a BookStructureReady event when book TOC is loaded
@@ -130,6 +153,13 @@ public final class ReaderCommsBridge {
         )
         if message.source == "swipe", pageTurnAnimator?.suppressesSwipeNavigation == true {
             debugLog("[ReaderCommsBridge] Ignoring swipe handled by native drag turn")
+            return
+        }
+        // Margin taps, swipes and arrow keys never turn the page while writing. A "drag" is
+        // a finger-driven curl that started before the lock (the animator won't start one
+        // while writing) and must be allowed to finish.
+        if message.source != "drag", inkSession.isWriting {
+            debugLog("[ReaderCommsBridge] Ignoring navigation while writing with the Pencil")
             return
         }
         onMarginClickNav?(message)
@@ -379,6 +409,7 @@ public final class ReaderCommsBridge {
             hasAnimator: pageTurnAnimator != nil,
         )
         pageTurnStyle = effectivePageTurnStyle
+        isScrollingMode = scrollingMode
         self.animateReadaloudPageTurns = animateReadaloudPageTurns
         readerBackgroundColorHex = backgroundColor
 
@@ -514,6 +545,20 @@ public final class ReaderCommsBridge {
             "[ReaderCommsBridge] sendSwiftHighlightSetColor - id: \(message.id), color: \(message.colorId)"
         )
         onHighlightSetColor?(message)
+    }
+
+    /// JS loaded a section and is waiting for its Apple Pencil ink
+    public func sendSwiftInkSectionReady(_ message: InkSectionReadyMessage) {
+        debugLog("[ReaderCommsBridge] sendSwiftInkSectionReady - \(message.href)")
+        Task { @SilveranUIActor in
+            await inkSession.sectionReady(href: message.href)
+        }
+    }
+
+    /// JS could not place some ink in this edition of the book
+    public func sendSwiftInkOrphaned(_ message: InkOrphanedMessage) {
+        debugLog("[ReaderCommsBridge] sendSwiftInkOrphaned - \(message.href): \(message.ids.count)")
+        inkSession.setOrphans(href: message.href, ids: message.ids)
     }
 
     public func sendSwiftHighlightDelete(_ message: HighlightDeleteMessage) {

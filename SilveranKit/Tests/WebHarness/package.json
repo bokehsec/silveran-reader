@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Tests for the reader's JavaScript (ink). Run: npm install && npm test",
+  "scripts": { "test": "node --test *.test.mjs" },
+  "devDependencies": { "jsdom": "^26.0.0" }
+}

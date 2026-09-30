@@ -31,6 +31,11 @@ final class PageCurlAnimator: NSObject, PageTurnAnimating {
     /// Updated from the web view's SelectionState messages.
     var textSelectionActive = false
 
+    /// True while a curl owns the screen; Pencil strokes wait until it is done.
+    var isTurning: Bool {
+        activeCurl != nil || drag != nil || tapTurnsInFlight > 0
+    }
+
     // MARK: Tap turns
 
     /// The temporary overlay for the tap turn currently on screen, if any.
@@ -270,6 +275,12 @@ final class PageCurlAnimator: NSObject, PageTurnAnimating {
         // so margin taps keep working through JS.
         for gesture in dragController.gestureRecognizers {
             if gesture is UIPanGestureRecognizer {
+                // The Pencil writes (InkInputController); only fingers and pointers drag pages.
+                gesture.allowedTouchTypes = [
+                    NSNumber(value: UITouch.TouchType.direct.rawValue),
+                    NSNumber(value: UITouch.TouchType.indirect.rawValue),
+                    NSNumber(value: UITouch.TouchType.indirectPointer.rawValue),
+                ]
                 webView.addGestureRecognizer(gesture)
                 dragGestures.append(gesture)
             } else {
@@ -283,6 +294,8 @@ final class PageCurlAnimator: NSObject, PageTurnAnimating {
         guard bridge?.pageTurnStyle == "curl" else { return false }
         if bridge?.isNarrationPlaying() == true { return false }
         if textSelectionActive { return false }
+        // A resting palm must not start a curl under the Pencil.
+        if bridge?.inkSession.isWriting == true { return false }
         return activeCurl == nil && tapTurnsInFlight == 0
     }
 

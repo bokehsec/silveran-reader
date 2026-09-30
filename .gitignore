@@ -34,3 +34,6 @@ XCodeApps/Info-macOS.plist
 XCodeApps/Info-tvOS.plist
 XCodeApps/Info-watchOS.plist
 .build-archives/
+
+# JS test dependencies
+node_modules/

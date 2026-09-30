@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Writes two EPUBs with the same text and different markup (ebook, and Storyteller-style read-along)
+# for trying Apple Pencil ink across editions on a device. Usage: scripts/inkfixtures <output directory>
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+cd "${SCRIPT_DIR}/.."
+
+if [[ $# -lt 1 ]]; then
+    echo "usage: scripts/inkfixtures <output directory>" >&2
+    exit 1
+fi
+
+node SilveranKit/Tests/WebHarness/fixtures/makeEpubs.mjs "$1"

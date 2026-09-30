@@ -3,6 +3,10 @@ import { Overlayer } from "./foliate-js/overlayer.js";
 import { SpanHighlighter } from "./SpanHighlighter.js";
 import { debugLog } from "./DebugConfig.js";
 import BookmarkManager from "./BookmarkManager.js";
+import InkEngine from "./InkEngine.js";
+import { runInkSelfTest } from "./InkSelfTest.js";
+import { InkTouchGuard } from "./InkTouchGuard.js";
+import { maybeRunInkDebug } from "./InkDebug.js";
 
 // Discrete swipe detection (page curl mode): a horizontal flick of at least
 // SWIPE_MIN_DISTANCE px that is clearly more horizontal than vertical, or a
@@ -29,6 +33,28 @@ export const classifySwipe = ({ dx, dy, dt }) => {
 
 const nextAnimationFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
 
+const GENERIC_FONT_FAMILIES = new Set([
+  "serif",
+  "sans-serif",
+  "monospace",
+  "cursive",
+  "fantasy",
+  "system-ui",
+  "ui-serif",
+  "ui-sans-serif",
+  "ui-monospace",
+  "ui-rounded",
+]);
+
+// Named families (Apple system fonts, imported fonts) are quoted and given a serif
+// fallback so a setting synced from another device still renders where the font is missing.
+const resolveFontFamilyCSS = fontFamily => {
+  if (!fontFamily || fontFamily === "System Default") return "serif";
+  if (GENERIC_FONT_FAMILIES.has(fontFamily)) return fontFamily;
+  const escaped = fontFamily.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `"${escaped}", serif`;
+};
+
 const getCSS = ({
   lineSpacing = 1.4,
   textAlign = "justify",
@@ -47,7 +73,7 @@ const getCSS = ({
   customCSS = null,
 }) => {
   const activeClass = mediaActiveClass || "epub-media-overlay-active";
-  const resolvedFontFamily = fontFamily === "System Default" ? "serif" : fontFamily;
+  const resolvedFontFamily = resolveFontFamilyCSS(fontFamily);
   const fontFamilyCSS = resolvedFontFamily
     ? `font-family: ${resolvedFontFamily} !important;`
     : "";
@@ -198,6 +224,9 @@ class FoliateManager {
     console.log("[FoliateManager] Creating BookmarkManager instance");
     return new BookmarkManager();
   })();
+  #inkEngine = new InkEngine();
+  // The web side of the Pencil writing lock; see InkTouchGuard.js.
+  #inkTouchGuard = new InkTouchGuard();
 
   async open(file) {
     debugLog("FoliateManager", "open() called with file:", file.name);
@@ -209,6 +238,13 @@ class FoliateManager {
     container.appendChild(this.#view);
 
     debugLog("FoliateManager", "Setting up event listeners");
+    // Must be first on the window: it drops Pencil touches before the swipe interceptors,
+    // and again on each section window (see the load handler).
+    this.#inkTouchGuard.configure({
+      enabled: window.__silveranInkEnabled === true,
+      suspended: () => this.#scrollingMode,
+    });
+    this.#inkTouchGuard.install(window);
     this.#attachEventListeners();
     // Touches on the page margins outside the section iframe.
     this.#attachSwipeInterceptors(window, document, { onlyReaderTouches: true });
@@ -217,6 +253,8 @@ class FoliateManager {
     await this.#view.open(file);
 
     this.#bookmarkManager.setView(this.#view);
+    // Before anything records a position: CFIs must ignore handwritten notes.
+    this.#inkEngine.setView(this.#view);
 
     debugLog("FoliateManager", "Book opened, reporting structure to Swift");
     await this.#reportBookStructureReady();
@@ -244,6 +282,7 @@ class FoliateManager {
       if (doc) {
         let isDragging = false;
 
+        this.#inkTouchGuard.install(doc.defaultView);
         this.#attachSwipeInterceptors(doc.defaultView, doc);
         doc.addEventListener("selectionchange", () => this.#reportSelectionState(doc));
 
@@ -306,6 +345,7 @@ class FoliateManager {
 
         this.#markAlignableText(doc);
         this.#bookmarkManager.setupSection(index, doc);
+        this.#inkEngine.setupSection(index, doc);
       }
     });
 
@@ -386,6 +426,7 @@ class FoliateManager {
 
   #reportRelocate(detail) {
     debugLog("trace", "[FM2] Relocate event");
+    maybeRunInkDebug(this, detail, this.#view);
 
     if (!detail || !detail.cfi) {
       console.warn("[FM2] Relocate event missing detail or CFI");
@@ -393,6 +434,7 @@ class FoliateManager {
     }
 
     this.#bookmarkManager.redrawAllOverlayers();
+    this.#inkEngine.redrawMarks();
 
     this.#lastRelocateRange = detail.range || null;
     debugLog("trace", "[FM2] Stored relocate range:", this.#lastRelocateRange ? "available" : "null");
@@ -1585,6 +1627,59 @@ class FoliateManager {
 
   setDefaultHighlightColor(colorId) {
     this.#bookmarkManager.setDefaultColor(colorId);
+  }
+
+  // MARK: - Apple Pencil ink (see docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.7)
+
+  /** Swift reports the Pencil is on the page (or has just lifted); see InkTouchGuard. */
+  setInkWriting(writing) {
+    this.#inkTouchGuard.setWriting(writing);
+  }
+
+  /** Mode and theme: { enabled?, background?, isWriting? }. */
+  inkSetContext(jsonString) {
+    const { isWriting, ...context } = JSON.parse(jsonString);
+    if (isWriting !== undefined) this.#inkTouchGuard.setWriting(isWriting);
+    this.#inkEngine.setContext(context);
+  }
+
+  /** Draws a section's ink (idempotent); `focusId` names a note to bring into view. */
+  inkRender(href, sectionJSON, focusId) {
+    return JSON.stringify(this.#inkEngine.render(href, JSON.parse(sectionJSON), focusId ?? null));
+  }
+
+  /** What to do with a finished stroke: a proposal for Swift to apply. Points are in viewport coordinates. */
+  inkPropose(strokeJSON) {
+    try {
+      return JSON.stringify(this.#inkEngine.propose(JSON.parse(strokeJSON)));
+    } catch (error) {
+      console.error("[FM2] inkPropose failed:", error);
+      return JSON.stringify({ op: "none", reason: String(error) });
+    }
+  }
+
+  /** What the eraser path touches on the current page. */
+  inkHitTest(pointsJSON, radius) {
+    return JSON.stringify(this.#inkEngine.hitTest(JSON.parse(pointsJSON), radius));
+  }
+
+  /** The CFI of a note, to navigate to it (null when its section is not loaded or it is not placed). */
+  inkLocate(href, id) {
+    return JSON.stringify({ cfi: this.#inkEngine.locate(href, id) });
+  }
+
+  /** Word anchors for version 1 notes (which had CFIs); see InkEngine.migrate. */
+  inkMigrate(href, notesJSON) {
+    return JSON.stringify(this.#inkEngine.migrate(href, JSON.parse(notesJSON)));
+  }
+
+  /** DEBUG: runs the ink self test in the current section (see InkDebug.js). */
+  async inkSelfTest() {
+    const report = await runInkSelfTest(this.#view);
+    const { checks, failures = [], ...summary } = report;
+    console.log(`[InkSelfTest] ${report.pass ? "PASS" : "FAIL"} ${checks?.length ?? 0} checks ${JSON.stringify(summary)}`);
+    for (const failure of failures.slice(0, 12)) console.log(`[InkSelfTest] failed ${JSON.stringify(failure)}`);
+    return JSON.stringify(report);
   }
 }
 

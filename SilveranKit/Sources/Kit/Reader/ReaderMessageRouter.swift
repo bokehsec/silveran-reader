@@ -135,6 +135,29 @@ public final class ReaderMessageRouter {
                     let msg = try decoder.decode(HighlightSetColorMessage.self, from: data)
                     bridge.sendSwiftHighlightSetColor(msg)
 
+                case "InkSectionReady":
+                    let data = try JSONSerialization.data(withJSONObject: body)
+                    let msg = try decoder.decode(InkSectionReadyMessage.self, from: data)
+                    bridge.sendSwiftInkSectionReady(msg)
+
+                #if DEBUG
+                case "InkDebugStroke":
+                    // DEBUG only: a synthetic stroke from InkDebug.js (the simulator has no Pencil).
+                    let data = try JSONSerialization.data(withJSONObject: body)
+                    let msg = try decoder.decode(InkStrokeInput.self, from: data)
+                    Task { @SilveranUIActor in await bridge.inkSession.finishStroke(msg) }
+
+                case "InkDebugErase":
+                    let data = try JSONSerialization.data(withJSONObject: body)
+                    let msg = try decoder.decode(InkStrokeInput.self, from: data)
+                    Task { @SilveranUIActor in await bridge.inkSession.erase(points: msg.points) }
+                #endif
+
+                case "InkOrphaned":
+                    let data = try JSONSerialization.data(withJSONObject: body)
+                    let msg = try decoder.decode(InkOrphanedMessage.self, from: data)
+                    bridge.sendSwiftInkOrphaned(msg)
+
                 case "HighlightDelete":
                     let data = try JSONSerialization.data(withJSONObject: body)
                     let msg = try decoder.decode(HighlightDeleteMessage.self, from: data)

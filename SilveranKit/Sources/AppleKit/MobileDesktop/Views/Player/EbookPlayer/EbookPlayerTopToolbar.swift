@@ -29,6 +29,8 @@ struct EbookPlayerTopToolbar: View {
     let onSearchResultSelected: (SearchResult) -> Void
     let onSleepTimerStart: (TimeInterval?, SleepTimerType) -> Void
     let onSleepTimerCancel: () -> Void
+    /// Shows or hides the Apple Pencil writing palette; nil when the Pencil does not write here.
+    var onToggleInkTools: (() -> Void)? = nil
 
     let settingsVM: SettingsViewModel
 
@@ -97,6 +99,19 @@ struct EbookPlayerTopToolbar: View {
                         buttonSize: 44,
                         showBackground: false,
                     )
+
+                    if isPad, let onToggleInkTools {
+                        Button {
+                            onToggleInkTools()
+                        } label: {
+                            Image(systemName: "pencil.tip.crop.circle")
+                                .font(.system(size: 20, weight: .regular))
+                                .foregroundStyle(toolbarForegroundColor)
+                                .contentShape(Rectangle())
+                        }
+                        .frame(width: 44, height: 44)
+                        .accessibilityLabel("Handwriting tools")
+                    }
 
                     Button {
                         showBookmarksPanel = true

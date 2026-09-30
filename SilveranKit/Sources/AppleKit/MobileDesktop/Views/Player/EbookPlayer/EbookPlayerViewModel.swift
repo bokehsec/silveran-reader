@@ -406,6 +406,8 @@ class EbookPlayerViewModel {
             isTopBarVisible = isReadingBarVisible
             debugLog("[EbookPlayerViewModel] Toggled overlay visibility: \(isReadingBarVisible)")
         }
+        // The writing palette goes with the chrome when the reader hides it (not when it fades on its own).
+        if !isTopBarVisible { commsBridge?.hideInkTools?() }
         #endif
     }
 
@@ -535,6 +537,7 @@ class EbookPlayerViewModel {
             guard let self else { return }
             self.applyInitialReaderStyles()
             await self.loadHighlights()
+            await self.openInk()
         }
         session.onIncomingServerPosition = { [weak self] position in
             Task { @MainActor [weak self] in
@@ -791,6 +794,12 @@ class EbookPlayerViewModel {
         Task { @MainActor in
             await searchManager?.navigateToResult(result)
         }
+    }
+
+    /// Loads the book's saved Apple Pencil ink; the session then draws every section the page reports.
+    func openInk() async {
+        guard let bookID = bookData?.metadata.id, let bridge = commsBridge else { return }
+        await bridge.inkSession.open(bookID: bookID)
     }
 
     func loadHighlights() async {
