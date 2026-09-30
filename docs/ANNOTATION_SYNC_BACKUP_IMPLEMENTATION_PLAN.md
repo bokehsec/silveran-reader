@@ -1,6 +1,6 @@
 # Phased implementation plan: annotations, Storyteller and iCloud backup
 
-Date: 2026-09-30. Status: implementation started; no full phase exit gate has been passed. See the implementation progress record below.
+Date: 2026-09-30. Status: Phases 1, 3 and 4 are implemented in code and awaiting device/signed-account acceptance; Phase 2 foundations exist but the reader has not been cut over; Phases 5–7 not started. No exit gate is marked passed until its device evidence exists. See the status summary and progress record below.
 
 This plan implements the direction in [the architecture review](ANNOTATION_SYNC_BACKUP_REVIEW.md) and follows [AGENTS.md](../AGENTS.md), [ARCHITECTURE.md](../ARCHITECTURE.md) and [CONTRIBUTING.md](../CONTRIBUTING.md). It owns sequencing and release gates. The review owns supporting findings and rationale; the earlier [Pencil plan](PENCIL_INK_IMPLEMENTATION_PLAN.md) and [configuration plan](ICLOUD_CONFIGURATION_IMPLEMENTATION_PLAN.md) retain their implementation history. Their narrower MVP exclusions do not limit the long-term scope.
 
@@ -184,6 +184,21 @@ Estimate each phase after its entry evidence exists. Phase 0 should yield estima
 This change creates the plan and links it from the project guidance/review. No implementation phase, runtime bugfix, build, device test, cloud operation or server change was performed by this task. Existing working-tree implementation and validation records are preserved. `git diff --check` passed. A Python documentation check verified local link targets in all four changed/new documents and confirmed eight ordered phases with eight exit gates.
 
 
+## Status summary (2026-09-30)
+
+| Phase | Code | Remaining before the exit gate |
+| --- | --- | --- |
+| 0 Contracts | ADRs 001–009; inventories; SQLite and drawing decisions | Refreshed Scribe feature baseline; real EPUB/Pencil fixture corpus; numerical device budgets |
+| 1 Protect data | Done (BF-017–BF-019, BF-022–BF-028) | iPad/iPhone/Mac checks 1–13 in [DEVICE_ACCEPTANCE_CHECKLIST.md](DEVICE_ACCEPTANCE_CHECKLIST.md) |
+| 2 Repository | Repository, anchors/editions, snapshots, legacy staging; not used by the reader | Owner freeze + journaled cutover of ink/highlights; edition persistence; conflict-aware undo; typed-highlight anchors |
+| 3 Local archive | Done: `.silveranbackup` export/import, preview, journaled resumable restore, safety copies, source reconnection | Checks 14–21; reading-progress participant (see below) |
+| 4 iCloud backup | Done behind a build switch: CloudKit transport, scheduling, retention, account isolation, UI | Provision container; checks 22–30 on signed builds; small opt-in rollout |
+| 5 EPUB UX | Not started (BF-020 anchor fix only) | All of P5 |
+| 6 Storyteller | Not started | Server version matrix and contract tests |
+| 7 Broader parity | Not started | Separate scoping |
+
+Known gaps in the implemented phases: reading positions for local-folder books are not in the archive yet (server positions return from the server); the "last opened book" route is not restored; background backup uses the existing background-task window only (no BGTaskScheduler job).
+
 ## Implementation progress
 
 ### 2026-09-30 — First local ink safety increment
@@ -275,3 +290,20 @@ Validation: two pre-fix regressions fail with **five issues**; the focused post-
 - This is local UserDefaults acceptance and recovery, not a complete tool-preference archive or guaranteed process-loss survival after a failed write. The separate full archive participant and iPad interaction acceptance are still required.
 
 Validation: focused persistence/model/configuration checks pass **21 tests in three suites**. The first full run encountered timeouts in existing two-second Pencil writing-lock waits while three Apple builds were compiling concurrently; the quiet `scripts/test` rerun passes **292 tests in 23 suites**. Final unsigned Mac, arm64 iOS and watchOS simulator builds pass with BF-024's exact commands. Scoped format lint, `git diff --check` and local document links pass; an existing reader-loop style warning remains. Real Pencil/status/export interaction, physical power-loss, signed cloud/server and unavailable-platform gates remain open. No reader JavaScript or cloud transport changed.
+
+### 2026-09-30 — Review fixes, local archive/restore and automatic iCloud backup
+
+Review of the work above found and fixed:
+
+- [BF-025](../BUGFIX_LOG.md#bf-025--a-failed-credential-save-could-erase-the-working-server-login): a failed credential save could erase the working server login (the in-progress increment had a failing test and no owner fix).
+- [BF-026](../BUGFIX_LOG.md#bf-026--each-ink-stroke-re-read-decoded-and-re-encoded-the-whole-book): each stroke save cost scaled with the whole book (0.2–2 s on large books); now ~50 ms at any size.
+- [BF-027](../BUGFIX_LOG.md#bf-027--annotation-store-could-refuse-valid-records-after-an-encoder-change-and-restore-checkpoints-grew-without-limit): the repository rejected records on any encoder formatting change; restore checkpoints grew without limit.
+- [BF-028](../BUGFIX_LOG.md#bf-028--the-mac-content-server-password-was-stored-in-plain-preferences): the Mac content server password was in plain preferences.
+
+Decisions: [ADR 008](decisions/008-portable-ink-model-and-native-drawing.md) (portable ink stays canonical) and [ADR 009](decisions/009-backup-archive-and-icloud-transport.md) (archive, CloudKit transport, tiered retention, notes + settings scope, no credentials — product choices confirmed by the product owner). ADR 009 also moves the archive ahead of the reader cutover: schema 1 captures the current legacy files read-only.
+
+Phase 3 implemented: `Kit/Backup` archive codec (path/size/hash validation before use, atomic writes), `BackupService` (capture, dry-run preview, safety copy, journal, resume/discard, unknown kinds kept aside) and participants for annotations (merge by identity, local wins, conflicts preserved), configuration (device-scoped fields only on the same device class; not published to preference sync), sources (no secrets; reconnect with original IDs), smart shelves, fonts, preferences (registry units plus allowlisted layout keys and Pencil tools) and recovery copies. Settings > Backup & Restore on iOS and macOS.
+
+Phase 4 implemented: `CloudBackupCoordinator` (debounced/launch/foreground/background opportunities, unchanged-content skip, content-addressed uploads, commit after assets and post-commit re-check, backoff, quota/sign-in reporting, account-change pause, tiered retention, orphan cleanup with a 24-hour grace period) and `CloudKitBackupTransport` (zone `Backups`, zone-change enumeration). Off unless `SILVERAN_CLOUD_BACKUP_CONTAINER` and the CloudBackup entitlements are set in `Local.xcconfig`.
+
+Validation: `scripts/test` passes **330 tests in 30 suites** (new: archive format 5, restore 6, participants 6, cloud backup 8, plus regression tests for BF-025–028). WebHarness 120 tests pass. Unsigned `scripts/macbuild`, `scripts/iosbuild` (iPad A16 simulator) and `scripts/watchbuild` pass; `scripts/verify-sqlite-vendor` and `git diff --check` pass. Not run: any device, signed-build, real CloudKit or visual UI check (simulator access was not granted during this session). Device and account checks are listed in [DEVICE_ACCEPTANCE_CHECKLIST.md](DEVICE_ACCEPTANCE_CHECKLIST.md).

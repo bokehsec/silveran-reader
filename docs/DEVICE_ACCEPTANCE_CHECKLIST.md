@@ -36,6 +36,31 @@ Use a test book you don't mind annotating.
 
 Follow [ICLOUD_CONFIGURATION_SYNC.md](ICLOUD_CONFIGURATION_SYNC.md). Confirm a shared setting changed on one device appears on the other, a device-only setting does not, and nothing is overwritten while a device is offline.
 
-## Later phases
+## Backup file and restore (any device; Phase 3)
 
-Backup/restore (Phase 3/4) device checks are added here as those features land.
+| # | Check | Pass when |
+| --- | --- | --- |
+| 14 | Settings > Backup & Restore > Export Backup; save to Files / Finder | A `.silveranbackup` file is saved; no warning unless something on the device is damaged |
+| 15 | On a second device (or after deleting and reinstalling the app), Restore from Backup with that file | Preview lists the right counts; after restore, highlights, notes, handwriting, themes, reader settings, smart shelves and fonts are back |
+| 16 | After 15, open "Sources to Reconnect" and reconnect each server/folder | Books reappear and their highlights and handwriting attach to them |
+| 17 | Restore the same file again | "Everything in this backup is already on this device"; nothing duplicated |
+| 18 | Change a highlight note on this device, then restore an older backup | This device's note is kept; the result mentions a difference saved for recovery |
+| 19 | Restore, then use Before-Restore Copies to restore the copy | The state before the restore comes back |
+| 20 | Force-quit during a large restore, reopen Backup & Restore | "Unfinished Restore" appears; Resume completes it |
+| 21 | Restore an iPad backup on a Mac | Themes and highlight colors apply; iPad-only layout (font size, margins) does not |
+
+## Automatic iCloud backup (signed builds with the container provisioned; Phase 4)
+
+Setup (once): in the Apple Developer portal, add iCloud with CloudKit to the App ID and create container `iCloud.<bundle ID>`; then set the three `SILVERAN_*` lines from `XCodeApps/Configs/Local.example.xcconfig` in `Local.xcconfig`, run `scripts/genxproj`, and build signed. Run a Development build once so CloudKit creates the `BackupGeneration` and `BackupAsset` record types, then deploy the schema to Production in the CloudKit Console before any TestFlight or App Store build (those use the Production environment).
+
+| # | Check | Pass when |
+| --- | --- | --- |
+| 22 | Turn on "Back Up Automatically to iCloud" | Status shows "Backed up just now" within a minute |
+| 23 | Add a highlight; wait ~3 minutes with the app open | Status returns to "Backed up …" with a new time |
+| 24 | Airplane mode, add notes, background the app, reconnect, reopen | Status shows waiting, then backed up; nothing lost |
+| 25 | On a second device with the same Apple ID, Restore from iCloud | Both devices' backups are listed; restoring one brings its data back |
+| 26 | Two devices back up at the same time | Both appear in the list; each restores correctly |
+| 27 | Delete the app, reinstall, Restore from iCloud | Everything in the backup comes back (sources need sign-in) |
+| 28 | Sign in to a different Apple ID on the device | Backup pauses and asks before backing up to the new account |
+| 29 | With iCloud storage full (or a nearly full test account) | Status says storage is full; earlier backups still restore |
+| 30 | CloudKit Console (Development) | Zone `Backups` has BackupGeneration and BackupAsset records; no annotation text appears in record fields other than the file assets |
