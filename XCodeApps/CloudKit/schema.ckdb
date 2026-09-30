@@ -1,0 +1,45 @@
+DEFINE SCHEMA
+
+    RECORD TYPE Annotation (
+        "___createTime" TIMESTAMP,
+        "___recordID" REFERENCE QUERYABLE,
+        clockMillis INT64,
+        clockCounter INT64,
+        clockDevice STRING,
+        deleted INT64,
+        sourceID ENCRYPTED STRING,
+        bookUUID ENCRYPTED STRING,
+        kind ENCRYPTED STRING,
+        annotationID ENCRYPTED STRING,
+        href ENCRYPTED STRING,
+        erased ENCRYPTED STRING,
+        payload ENCRYPTED BYTES,
+        payloadAsset ASSET,
+        GRANT WRITE TO "_creator",
+        GRANT CREATE TO "_icloud",
+        GRANT READ TO "_world"
+    );
+
+    RECORD TYPE BackupAsset (
+        "___createTime" TIMESTAMP,
+        "___recordID" REFERENCE QUERYABLE,
+        data ASSET,
+        byteCount INT64,
+        GRANT WRITE TO "_creator",
+        GRANT CREATE TO "_icloud",
+        GRANT READ TO "_world"
+    );
+
+    RECORD TYPE BackupGeneration (
+        "___createTime" TIMESTAMP,
+        "___recordID" REFERENCE QUERYABLE,
+        manifest ASSET,
+        deviceID STRING,
+        deviceClass STRING,
+        createdAt TIMESTAMP,
+        appVersion STRING,
+        complete INT64,
+        GRANT WRITE TO "_creator",
+        GRANT CREATE TO "_icloud",
+        GRANT READ TO "_world"
+    );
