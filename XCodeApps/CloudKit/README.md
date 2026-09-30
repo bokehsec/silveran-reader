@@ -6,7 +6,7 @@ The records live in private zones (`Annotations`, `Backups`), so the grants only
 
 ## Apply it without a token (recommended)
 
-1. Build and run a signed Debug Mac build with the iCloud settings enabled in `Local.xcconfig`, passing `-SilveranCloudKitSchemaBootstrap`. It saves one sample record of each type to the Development database, deletes it, prints the result and quits.
+1. Build and run a signed Debug Mac build with the iCloud settings enabled in `Local.xcconfig`, passing `-SilveranCloudKitSchemaBootstrap`. It saves one sample record of each type to the Development database, deletes it, prints the result and quits. On an iOS device, launch a signed Debug build the same way (`xcrun devicectl device process launch --device <id> --console <bundle id> -- -SilveranCloudKitSchemaBootstrap`); the result is logged to the console and the app keeps running. `xcodebuild` can't create iCloud provisioning when Xcode's account isn't visible to the command line. In that case, press Run once in Xcode to provision, then build from the command line.
 2. In the CloudKit Console, open **Schema** and choose **Deploy Schema Changes…**.
 
 ## Apply it with a management token

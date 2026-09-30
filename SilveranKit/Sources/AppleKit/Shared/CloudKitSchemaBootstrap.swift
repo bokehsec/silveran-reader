@@ -8,7 +8,7 @@ import SilveranKit
 /// record of each type, with every field set, into a throwaway zone and then deletes the zone.
 /// The schema can then be deployed to Production from the CloudKit Console.
 ///
-/// Run a Debug build with the launch argument `-SilveranCloudKitSchemaBootstrap`.
+/// Run a Debug build (Mac or iOS device) with the launch argument `-SilveranCloudKitSchemaBootstrap`.
 enum CloudKitSchemaBootstrap {
     static let argument = "-SilveranCloudKitSchemaBootstrap"
 

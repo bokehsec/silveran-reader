@@ -122,6 +122,16 @@ struct SilveranReaderApp: App {
 
     init() {
         StorytellerFontRegistration.registerBundledFonts()
+        #if DEBUG
+        if CloudKitSchemaBootstrap.isRequested, let container = AppBackup.cloudContainerIdentifier {
+            // One-off tool run: define the CloudKit Development schema and report. The app keeps
+            // starting normally; the result appears in the device console.
+            Task {
+                let result = await CloudKitSchemaBootstrap.run(containerIdentifier: container)
+                NSLog("%@", result)
+            }
+        }
+        #endif
 
         let vm = MediaViewModel()
         _mediaViewModel = State(initialValue: vm)
