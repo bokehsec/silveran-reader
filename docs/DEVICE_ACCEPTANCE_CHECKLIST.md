@@ -76,3 +76,5 @@ Setup (once): in the Apple Developer portal, add iCloud with CloudKit to the App
 | 35 | Tap a handwritten note | The book opens at that chapter |
 | 36 | Remove a book from the library that has notes | It stays listed as "Not in your library — notes are kept" |
 | 37 | Export a book's notes as Markdown and as a Web Page | Markdown has chapters, quotes and notes; the web page also shows handwriting drawings and opens in Safari |
+
+Simulator pre-check (2026-09-30, unsigned iPad simulator): items 14 (export only), 31, 32, 34 (fallback case) and 36 passed with synthetic data. They still need a real-device run with real annotations.

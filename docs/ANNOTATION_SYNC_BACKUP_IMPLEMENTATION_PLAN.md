@@ -194,7 +194,7 @@ This change creates the plan and links it from the project guidance/review. No i
 | 3 Local archive | Done: `.silveranbackup` export/import, preview, journaled resumable restore, safety copies, source reconnection | Checks 14–21 |
 | 4 iCloud backup | Done behind a build switch: CloudKit transport, scheduling, retention, account isolation, UI | Provision container; checks 22–30 on signed builds; small opt-in rollout |
 | 5 EPUB UX | P5.1 started: library-wide Annotations browser (search, filters, books not in the library, damaged-file notice, "Show in Book"), P5.5 Markdown and web-page (handwriting as SVG) export | Manual reattachment/orphan repair, margin notes (P5.2), lasso/move/resize tools (P5.3), device input/accessibility (P5.4), PDF export |
-| 6 Storyteller | Not started | Server version matrix and contract tests |
+| 6 Storyteller | P6.1 started: [compatibility matrix](STORYTELLER_COMPATIBILITY.md) — beta.41 has no annotation API, so P6.3 is deferred; known progress/status quirks already handled | Contract test harness from sanitized fixtures; re-probe on each server upgrade |
 | 7 Broader parity | Not started | Separate scoping |
 
 Scope notes for the implemented phases: reading positions, status and ratings for local-folder books are stored in `library_metadata.json` inside the book folder itself, so they travel with the books (outside the notes + settings scope); server positions return from the server. The "last opened book" route is not restored. Background backup runs in the existing background-task window and the iOS background refresh task, which is also scheduled while a backup is pending.
@@ -316,3 +316,9 @@ Validation: `scripts/test` passes **330 tests in 30 suites** (new: archive forma
 Validation: `scripts/test` passes **335 tests in 31 suites** (new `AnnotationLibraryTests`: 3; `restoreIntoOpenBook` and `refusedWhenEditorsCannotSave` from the preceding restore fix). Unsigned Mac and iPad-simulator builds pass. Not run: visual/device checks of the browser and "Show in Book".
 
 Follow-up: web-page export draws handwriting as inline SVG with its original colors and widths (text escaped; stroke colors restricted to hex), groups every annotation under its chapter title (handwriting borrows the title from other annotations in the same chapter, else the chapter file name), and renders in light and dark mode (checked via a Quick Look render of a synthetic sample). `scripts/test` passes **337 tests in 31 suites**; unsigned Mac and iPad-simulator builds pass.
+
+### 2026-09-30 — Simulator verification and Storyteller probe
+
+- iPad simulator (unsigned build, product owner's test library): verified Settings > Backup & Restore (iCloud "not set up in this build" state, export to Files with a dated `.silveranbackup` name) and the Annotations browser (empty state, synthetic annotations, case-insensitive search, no-results state, books not in the library, Show in Book). The exported archive validated (all hashes) and contained no passwords, tokens or account names. Found and fixed: Show in Book opened the first page when the annotation's chapter is missing (now the saved position); books ordered by internal ID (now by title); thumbnails not centred. Synthetic data and the test export were removed afterwards; the server reading position was checked before and after and was unchanged.
+- Unsigned simulator builds can't read the keychain, so the source reconnection hint (server address/username) and server sync can't be verified there; this stays on the signed-device checklist.
+- Storyteller beta.41 (read-only, product owner's session): no annotation routes or capability; recorded in [STORYTELLER_COMPATIBILITY.md](STORYTELLER_COMPATIBILITY.md).
