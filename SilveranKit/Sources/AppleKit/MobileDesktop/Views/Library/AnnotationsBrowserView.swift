@@ -410,7 +410,7 @@ private struct AnnotationRow: View {
 }
 
 /// Draws handwritten strokes scaled to fit, for recognition at a glance.
-private struct StrokeThumbnail: View {
+struct StrokeThumbnail: View {
     let strokes: [InkStroke]
 
     var body: some View {

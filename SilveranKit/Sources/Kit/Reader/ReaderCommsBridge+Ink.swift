@@ -28,6 +28,18 @@ extension ReaderCommsBridge: InkEngineCalling {
         return try decodeInkResult([InkMigratedAnchor].self, from: result)
     }
 
+    public func inkSuggestRepairs(href: String, ids: [String]) async throws -> [InkRepairAnswer] {
+        let result = try await callInk(
+            "return await window.foliateManager.inkSuggestRepairs(\(try jsString(href)), \(try jsLiteral(ids)));"
+        )
+        return try decodeInkResult([InkRepairAnswer].self, from: result)
+    }
+
+    public func inkPageStartAnchor() async throws -> InkPageAnchor {
+        let result = try await callInk("return await window.foliateManager.inkPageStartAnchor();")
+        return try decodeInkResult(InkPageAnchor.self, from: result)
+    }
+
     private func callInk(_ body: String) async throws -> String? {
         guard let js else { throw ReaderCommsBridgeError.jsNotAvailable }
         return try await js.callAsync(body)

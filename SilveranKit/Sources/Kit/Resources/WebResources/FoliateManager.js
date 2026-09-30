@@ -1671,6 +1671,16 @@ class FoliateManager {
     return JSON.stringify({ cfi: this.#inkEngine.locate(href, id) });
   }
 
+  /** Suggested places for orphaned ink, for a person to confirm; see InkEngine.suggestRepairs. */
+  inkSuggestRepairs(href, idsJSON) {
+    return JSON.stringify(this.#inkEngine.suggestRepairs(href, JSON.parse(idsJSON)));
+  }
+
+  /** The anchor of the first word on the current page; see InkEngine.pageStartAnchor. */
+  inkPageStartAnchor() {
+    return JSON.stringify(this.#inkEngine.pageStartAnchor());
+  }
+
   /** Word anchors for version 1 notes (which had CFIs); see InkEngine.migrate. */
   inkMigrate(href, notesJSON) {
     return JSON.stringify(this.#inkEngine.migrate(href, JSON.parse(notesJSON)));

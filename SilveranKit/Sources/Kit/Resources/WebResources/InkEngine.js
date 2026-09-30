@@ -1,9 +1,12 @@
 import { debugLog } from "./DebugConfig.js";
-import { INK_TAG, buildTextIndex, resolveAnchor, resolveMarkOffsets, anchorForBoundary } from "./InkAnchoring.js";
+import {
+  INK_TAG, buildTextIndex, resolveAnchor, resolveMarkOffsets, anchorForBoundary, makeAnchor, makeMarkAnchors,
+  suggestAnchorOffset, suggestMarkOffsets, excerptAround,
+} from "./InkAnchoring.js";
 import { MarkLayer } from "./InkMarks.js";
 import { installInkAwareCFI, rangeFromCFI } from "./InkFilters.js";
 import { ensureInkStyle, placeNotes, clearNotes } from "./InkLayout.js";
-import { proposeStroke, hitTestNotes, visibleWidth } from "./InkGeometry.js";
+import { proposeStroke, hitTestNotes, visibleWidth, pageStartOffset } from "./InkGeometry.js";
 import { selectInLasso } from "./InkSelection.js";
 
 /**
@@ -219,6 +222,65 @@ export default class InkEngine {
     const at = note ? resolveAnchor(index.text, note.anchor) : resolveMarkOffsets(index.text, mark)?.[0] ?? null;
     const range = at == null ? null : index.rangeFor(contents.doc, at, at);
     return range ? this.#view.getCFI(contents.index, range) : null;
+  }
+
+  /**
+   * Suggested new places for ink of a loaded section that no longer finds its words (P5.1), for a
+   * person to confirm. Nothing is moved here: Swift applies a suggestion only when it is accepted.
+   * Each answer: `{ id, kind: "note" | "mark" | "missing", suggestion? }`; a suggestion carries
+   * the new anchor(s), score, how it was found, an excerpt and a CFI to show the place.
+   */
+  suggestRepairs(href, ids) {
+    const contents = this.#contentsFor(href);
+    const section = this.#sections.get(href);
+    if (!contents || !section) return [];
+    const index = buildTextIndex(contents.doc.body);
+    const text = index.text;
+    const cfiAt = at => {
+      const range = index.rangeFor(contents.doc, at, at);
+      try {
+        return range ? this.#view.getCFI(contents.index, range) : null;
+      } catch {
+        return null;
+      }
+    };
+    return ids.map(id => {
+      const note = section.notes?.find(n => n.id === id);
+      const mark = note ? null : section.marks?.find(m => m.id === id);
+      if (note) {
+        const found = suggestAnchorOffset(text, note.anchor);
+        if (!found) return { id, kind: "note" };
+        let at = found.offset;
+        while (text[at] === " ") at++;
+        // Show the first few words the note goes before, ending on a whole word.
+        let end = Math.min(text.length, at + 40);
+        while (end < text.length && text[end] !== " ") end++;
+        return { id, kind: "note", suggestion: {
+          anchor: makeAnchor(text, at), score: found.score, matchedBy: found.matchedBy,
+          candidates: found.candidates, excerpt: excerptAround(text, at, end),
+          cfi: cfiAt(at),
+        } };
+      }
+      if (mark) {
+        const found = suggestMarkOffsets(text, mark);
+        if (!found) return { id, kind: "mark" };
+        const { start, end } = makeMarkAnchors(text, found.start, found.end);
+        return { id, kind: "mark", suggestion: {
+          start, end, score: found.score, matchedBy: found.matchedBy, candidates: found.candidates,
+          excerpt: excerptAround(text, found.start, found.end), cfi: cfiAt(found.start),
+        } };
+      }
+      return { id, kind: "missing" };
+    });
+  }
+
+  /** The anchor of the first word on the page now showing: `{ section, anchor }` (anchor null if none). */
+  pageStartAnchor() {
+    const contents = this.#currentContents();
+    if (!contents) return { section: null, anchor: null };
+    const index = buildTextIndex(contents.doc.body);
+    const at = pageStartOffset(contents.doc, index, window.innerWidth);
+    return { section: this.#href(contents.index), anchor: at == null ? null : makeAnchor(index.text, at) };
   }
 
   /**

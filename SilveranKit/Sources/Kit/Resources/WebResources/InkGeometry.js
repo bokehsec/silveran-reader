@@ -74,6 +74,19 @@ export const columnLines = (lines, bb) => {
   return columns[0].lines.sort((a, b) => a.top - b.top);
 };
 
+/**
+ * The chapter-text offset of the first word on the page now showing (the top of the leftmost
+ * column), or null when no text is visible. Used to attach a note "here".
+ */
+export const pageStartOffset = (doc, index, viewportWidth) => {
+  const lines = visibleLines(doc, viewportWidth);
+  if (!lines.length) return null;
+  const { left } = visibleWidth(doc, viewportWidth);
+  const first = columnLines(lines, { left, right: left })[0];
+  const range = first ? caret(doc, first.left + 1, (first.top + first.bottom) / 2) : null;
+  return range ? index.offsetOf(range.startContainer, range.startOffset) : null;
+};
+
 const caret = (doc, x, y) => {
   const r = doc.caretRangeFromPoint?.(x, y);
   if (!r || inkAncestor(r.startContainer)) return null;

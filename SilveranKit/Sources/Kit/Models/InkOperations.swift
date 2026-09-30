@@ -193,6 +193,85 @@ public struct InkStrokeTransform: Codable, Sendable, Hashable {
     }
 }
 
+/// Words shown to a person around a suggested place: `match` is the passage itself.
+public struct InkRepairExcerpt: Codable, Sendable, Hashable {
+    public var before: String
+    public var match: String
+    public var after: String
+
+    public init(before: String = "", match: String, after: String = "") {
+        self.before = before
+        self.match = match
+        self.after = after
+    }
+}
+
+/// Where the page thinks orphaned ink belongs now (`InkEngine.suggestRepairs`). Only shown to
+/// the person; applied only if they accept it.
+public struct InkRepairSuggestion: Codable, Sendable, Hashable {
+    /// For a note: the words it would go before.
+    public var anchor: TextAnchor?
+    /// For a mark: the words it would cover.
+    public var start: TextAnchor?
+    public var end: TextAnchor?
+    /// Share of the old words found there (1 for an exact or repeated passage).
+    public var score: Double
+    /// How it was found: "similar-words", "repeated-passage", or an exact match.
+    public var matchedBy: String?
+    /// Copies of the passage in the chapter (more than 1 for a repeated passage).
+    public var candidates: Int
+    public var excerpt: InkRepairExcerpt
+    /// Where to go to see it.
+    public var cfi: String?
+
+    public init(
+        anchor: TextAnchor? = nil,
+        start: TextAnchor? = nil,
+        end: TextAnchor? = nil,
+        score: Double,
+        matchedBy: String? = nil,
+        candidates: Int = 1,
+        excerpt: InkRepairExcerpt,
+        cfi: String? = nil,
+    ) {
+        self.anchor = anchor
+        self.start = start
+        self.end = end
+        self.score = score
+        self.matchedBy = matchedBy
+        self.candidates = candidates
+        self.excerpt = excerpt
+        self.cfi = cfi
+    }
+
+    public var isRepeatedPassage: Bool { candidates > 1 }
+}
+
+/// The page's answer for one piece of orphaned ink.
+public struct InkRepairAnswer: Codable, Sendable, Hashable {
+    public var id: String
+    /// "note", "mark", or "missing" (not in the section the page has).
+    public var kind: String
+    public var suggestion: InkRepairSuggestion?
+
+    public init(id: String, kind: String, suggestion: InkRepairSuggestion? = nil) {
+        self.id = id
+        self.kind = kind
+        self.suggestion = suggestion
+    }
+}
+
+/// The first word on the page now showing (`InkEngine.pageStartAnchor`).
+public struct InkPageAnchor: Codable, Sendable, Hashable {
+    public var section: String?
+    public var anchor: TextAnchor?
+
+    public init(section: String? = nil, anchor: TextAnchor? = nil) {
+        self.section = section
+        self.anchor = anchor
+    }
+}
+
 /// The word anchor the page worked out for a version 1 note (`nil` if its CFI no longer resolves).
 public struct InkMigratedAnchor: Codable, Sendable, Hashable {
     public var id: String
@@ -219,12 +298,17 @@ public enum InkOperation: Sendable, Equatable {
         href: String, noteID: String, indexes: [Int], transform: InkStrokeTransform, at: Date)
     /// Replaces a section outright. Not undoable; used to migrate version 1 ink.
     case replaceSection(href: String, section: SectionInk)
+    /// Attaches a note to new words in its section (P5.1 repair, confirmed by the person).
+    case reanchorNote(href: String, noteID: String, anchor: TextAnchor, at: Date)
+    /// Moves a mark onto new words in its section (P5.1 repair, confirmed by the person).
+    case reanchorMark(href: String, markID: String, start: TextAnchor, end: TextAnchor)
 
     public var href: String {
         switch self {
             case .addNote(let href, _), .appendToNote(let href, _, _, _), .addMark(let href, _),
                 .erase(let href, _, _, _), .transformStrokes(let href, _, _, _, _),
-                .replaceSection(let href, _):
+                .replaceSection(let href, _), .reanchorNote(let href, _, _, _),
+                .reanchorMark(let href, _, _, _):
                 href
         }
     }
@@ -241,6 +325,8 @@ public enum InkOperation: Sendable, Equatable {
             case .appendToNote(_, let noteID, _, _): noteID
             case .transformStrokes(_, let noteID, _, _, _): noteID
             case .addMark(_, let mark): mark.id
+            case .reanchorNote(_, let noteID, _, _): noteID
+            case .reanchorMark(_, let markID, _, _): markID
             case .erase, .replaceSection: nil
         }
     }
@@ -313,6 +399,23 @@ public enum InkOperation: Sendable, Equatable {
             case .replaceSection(_, let replacement):
                 guard replacement != section else { return false }
                 section = replacement
+                return true
+
+            case .reanchorNote(_, let noteID, let anchor, let at):
+                guard let index = section.notes.firstIndex(where: { $0.id == noteID }),
+                    section.notes[index].anchor != anchor
+                else { return false }
+                section.notes[index].anchor = anchor
+                section.notes[index].legacyCFI = nil
+                section.notes[index].updatedAt = at
+                return true
+
+            case .reanchorMark(_, let markID, let start, let end):
+                guard let index = section.marks.firstIndex(where: { $0.id == markID }),
+                    section.marks[index].start != start || section.marks[index].end != end
+                else { return false }
+                section.marks[index].start = start
+                section.marks[index].end = end
                 return true
         }
     }

@@ -138,6 +138,9 @@ class EbookPlayerViewModel {
     /// Per-book lifecycle ownership keeps pending edits alive beyond a view or WebView.
     let inkSession: InkSession
     var inkPersistenceState: InkSessionPersistenceState = .saved
+    /// Ink in the loaded chapters that no longer finds its words (P5.1 repair).
+    var inkOrphanCount = 0
+    var showInkRepair = false
     var highlightPersistenceError: String?
     var hasPendingHighlightChanges = false
     var playbackProgressMessage: Any? = nil
@@ -261,6 +264,29 @@ class EbookPlayerViewModel {
         inkSession.onPersistenceStateChanged = { [weak self] in
             guard let self else { return }
             self.inkPersistenceState = self.inkSession.persistenceState
+        }
+        inkOrphanCount = inkSession.orphans.values.reduce(0) { $0 + $1.count }
+        inkSession.onOrphansChanged = { [weak self] in
+            guard let self else { return }
+            self.inkOrphanCount = self.inkSession.orphans.values.reduce(0) { $0 + $1.count }
+            if self.inkOrphanCount == 0 { self.showInkRepair = false }
+        }
+    }
+
+    /// The chapter name for a section href, for the ink repair list.
+    func chapterLabel(forHref href: String) -> String? {
+        let path = href.components(separatedBy: "#").first ?? href
+        guard let index = findSectionIndex(for: path, in: bookStructure) else { return nil }
+        let label = bookStructure[safe: index]?.label
+        return label?.isEmpty == false ? label : "Chapter \(index + 1)"
+    }
+
+    /// Goes to a suggested place so the person can see it before deciding.
+    func showInkRepairPlace(cfi: String) async {
+        do {
+            try await commsBridge?.sendJsGoToCFICommand(cfi: cfi)
+        } catch {
+            debugLog("[EbookPlayerViewModel] Showing repair place failed: \(error)")
         }
     }
 

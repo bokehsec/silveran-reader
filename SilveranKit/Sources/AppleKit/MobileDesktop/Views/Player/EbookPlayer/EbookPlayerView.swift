@@ -76,6 +76,9 @@ public struct EbookPlayerView: View {
                     state: viewModel.inkPersistenceState,
                     session: viewModel.inkSession
                 )
+                InkRepairBanner(count: viewModel.inkOrphanCount) {
+                    viewModel.showInkRepair = true
+                }
                 HighlightPersistenceBanner(
                     message: viewModel.highlightPersistenceError,
                     retry: viewModel.retryHighlightChanges,
@@ -195,6 +198,12 @@ public struct EbookPlayerView: View {
         }
         .onChange(of: viewModel.settingsVM.highlightColorsHash) { _, _ in
             Task { await viewModel.refreshHighlightColors() }
+        }
+        .sheet(isPresented: $viewModel.showInkRepair) {
+            InkRepairSheet(viewModel: viewModel) { viewModel.showInkRepair = false }
+                #if os(macOS)
+                .frame(minWidth: 520, minHeight: 480)
+                #endif
         }
         #if os(iOS)
         .sheet(isPresented: $viewModel.showBookmarksPanel) {

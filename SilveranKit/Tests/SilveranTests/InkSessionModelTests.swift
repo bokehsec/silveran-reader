@@ -22,6 +22,9 @@ private final class FakeEngine: InkEngineCalling {
     var hits: [InkHit] = []
     var hitTests: [(points: [[Double]], radius: Double)] = []
     var renderDelay: Duration = .zero
+    var repairAnswers: [InkRepairAnswer] = []
+    var repairCalls: [(href: String, ids: [String])] = []
+    var pageAnchor = InkPageAnchor()
 
     func inkPropose(_ stroke: InkStrokeInput) async throws -> InkProposal {
         proposed.append(stroke)
@@ -46,6 +49,13 @@ private final class FakeEngine: InkEngineCalling {
         if migrationFails { throw ReaderCommsBridgeError.jsNotAvailable }
         return migrationAnswers
     }
+
+    func inkSuggestRepairs(href: String, ids: [String]) async throws -> [InkRepairAnswer] {
+        repairCalls.append((href, ids))
+        return repairAnswers
+    }
+
+    func inkPageStartAnchor() async throws -> InkPageAnchor { pageAnchor }
 }
 
 @Suite("Ink session model")
@@ -637,6 +647,119 @@ struct InkSessionModelTests {
         session.setOrphans(href: "c1", ids: [])
         #expect(session.orphans.isEmpty)
         #expect(changes == 2)
+    }
+
+    // MARK: Repair (P5.1)
+
+    @Test("Suggestions are asked for a section's orphans only, and change nothing")
+    func repairSuggestionsAsk() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        #expect(await session.repairSuggestions(href: "c1").isEmpty)
+        #expect(engine.repairCalls.isEmpty, "no orphans, no question")
+
+        session.apply(.addNote(href: "c1", note: note("a")))
+        session.setOrphans(href: "c1", ids: ["a"])
+        engine.repairAnswers = [InkRepairAnswer(id: "a", kind: "note")]
+        #expect(await session.repairSuggestions(href: "c1") == engine.repairAnswers)
+        #expect(engine.repairCalls.map(\.ids) == [["a"]])
+        #expect(session.section("c1").notes.first?.anchor == anchor(10))
+    }
+
+    @Test("Accepting a suggestion moves the note or mark, as one undo step")
+    func acceptRepair() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        session.apply(.addNote(href: "c1", note: note("a")))
+        session.apply(.addMark(href: "c1", mark: mark("m")))
+        let excerpt = InkRepairExcerpt(match: "words")
+
+        #expect(
+            session.acceptRepair(
+                href: "c1",
+                answer: InkRepairAnswer(
+                    id: "a",
+                    kind: "note",
+                    suggestion: InkRepairSuggestion(anchor: anchor(40), score: 0.8, excerpt: excerpt)
+                )
+            )
+        )
+        #expect(session.section("c1").notes.first?.anchor == anchor(40))
+        #expect(session.section("c1").notes.first?.strokes.count == 1, "the handwriting is kept")
+
+        #expect(
+            session.acceptRepair(
+                href: "c1",
+                answer: InkRepairAnswer(
+                    id: "m",
+                    kind: "mark",
+                    suggestion: InkRepairSuggestion(
+                        start: anchor(50), end: anchor(60), score: 1, excerpt: excerpt)
+                )
+            )
+        )
+        #expect(session.section("c1").marks.first?.start == anchor(50))
+        #expect(session.section("c1").marks.first?.end == anchor(60))
+
+        // No suggestion, or the same place again, changes nothing.
+        #expect(!session.acceptRepair(href: "c1", answer: InkRepairAnswer(id: "a", kind: "note")))
+        #expect(
+            !session.acceptRepair(
+                href: "c1",
+                answer: InkRepairAnswer(
+                    id: "a", kind: "note",
+                    suggestion: InkRepairSuggestion(anchor: anchor(40), score: 1, excerpt: excerpt))
+            )
+        )
+
+        #expect(session.undo())
+        #expect(session.section("c1").marks.first?.start == anchor(3))
+        #expect(session.undo())
+        #expect(session.section("c1").notes.first?.anchor == anchor(10))
+        await session.flush()
+    }
+
+    @Test("A note attaches to the page showing only within its own chapter")
+    func attachToCurrentPage() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        session.apply(.addNote(href: "c1", note: note("a")))
+
+        engine.pageAnchor = InkPageAnchor(section: "c2", anchor: anchor(1))
+        #expect(await session.attachNoteToCurrentPage(href: "c1", noteID: "a") == .otherSection)
+        engine.pageAnchor = InkPageAnchor(section: "c1", anchor: nil)
+        #expect(await session.attachNoteToCurrentPage(href: "c1", noteID: "a") == .noText)
+        engine.pageAnchor = InkPageAnchor(section: "c1", anchor: anchor(77))
+        #expect(await session.attachNoteToCurrentPage(href: "c1", noteID: "a") == .attached)
+        #expect(session.section("c1").notes.first?.anchor == anchor(77))
+        #expect(await session.attachNoteToCurrentPage(href: "c1", noteID: "a") == .unchanged)
+        await session.flush()
+    }
+
+    @Test("Deleting orphaned ink removes the whole note or mark, and can be undone")
+    func deleteOrphanedInk() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        session.apply(.addNote(href: "c1", note: note("a", strokes: 3)))
+        session.apply(.addMark(href: "c1", mark: mark("m")))
+
+        #expect(session.deleteInk(href: "c1", id: "a"))
+        #expect(session.section("c1").notes.isEmpty)
+        #expect(session.deleteInk(href: "c1", id: "m"))
+        #expect(session.section("c1").isEmpty)
+        #expect(!session.deleteInk(href: "c1", id: "nothing"))
+        #expect(session.undo())
+        #expect(session.undo())
+        #expect(session.section("c1").notes.first?.strokes.count == 3)
+        await session.flush()
     }
 
     // MARK: Migration

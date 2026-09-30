@@ -12,6 +12,10 @@ public protocol InkEngineCalling: AnyObject {
     func inkHitTest(points: [[Double]], radius: Double) async throws -> InkHit
     /// The word anchors for version 1 notes, worked out from their CFIs.
     func inkMigrate(href: String, notes: [InkNote]) async throws -> [InkMigratedAnchor]
+    /// Suggested new places for ink in a loaded section that no longer finds its words.
+    func inkSuggestRepairs(href: String, ids: [String]) async throws -> [InkRepairAnswer]
+    /// The first word on the page now showing.
+    func inkPageStartAnchor() async throws -> InkPageAnchor
 }
 
 /// Apple Pencil ink for one open book (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.1).
@@ -408,6 +412,76 @@ public final class InkSession {
             await renderTail?.value
         } while capturedWork != acceptedWork || capturedRevision != revision
         return pendingSections.isEmpty
+    }
+
+    // MARK: - Repairing ink that lost its words (P5.1)
+
+    /// Where attaching an orphaned note to the page now showing led.
+    public enum PageAttachResult: Equatable, Sendable {
+        case attached
+        /// The page is in another chapter; a note stays in its own chapter.
+        case otherSection
+        /// No words on the page to attach to (or the page could not answer).
+        case noText
+        /// Nothing changed (the ink is gone or can no longer be edited).
+        case unchanged
+    }
+
+    /// Suggested places for a section's orphaned ink, for the person to confirm. Empty when the
+    /// section has none or is not loaded. Nothing is changed.
+    public func repairSuggestions(href: String) async -> [InkRepairAnswer] {
+        guard let ids = orphans[href], !ids.isEmpty, let engine else { return [] }
+        do {
+            return try await engine.inkSuggestRepairs(href: href, ids: ids)
+        } catch {
+            debugLog("[InkSession] Repair suggestions for \(href) failed: \(error)")
+            return []
+        }
+    }
+
+    /// Accepts a suggested place: the note or mark moves there, as one undo step.
+    @discardableResult
+    public func acceptRepair(href: String, answer: InkRepairAnswer) -> Bool {
+        guard let suggestion = answer.suggestion else { return false }
+        switch answer.kind {
+            case "note":
+                guard let anchor = suggestion.anchor else { return false }
+                return apply(.reanchorNote(href: href, noteID: answer.id, anchor: anchor, at: now()))
+            case "mark":
+                guard let start = suggestion.start, let end = suggestion.end else { return false }
+                return apply(.reanchorMark(href: href, markID: answer.id, start: start, end: end))
+            default:
+                return false
+        }
+    }
+
+    /// Attaches an orphaned note before the first word of the page now showing, as one undo step.
+    /// Only within the note's own chapter.
+    public func attachNoteToCurrentPage(href: String, noteID: String) async -> PageAttachResult {
+        guard canEdit, let engine else { return .unchanged }
+        let page: InkPageAnchor
+        do {
+            page = try await engine.inkPageStartAnchor()
+        } catch {
+            debugLog("[InkSession] Page anchor failed: \(error)")
+            return .noText
+        }
+        guard page.section == href else { return .otherSection }
+        guard let anchor = page.anchor else { return .noText }
+        return apply(.reanchorNote(href: href, noteID: noteID, anchor: anchor, at: now()))
+            ? .attached : .unchanged
+    }
+
+    /// Deletes a piece of orphaned ink (a whole note or mark), as one undo step.
+    @discardableResult
+    public func deleteInk(href: String, id: String) -> Bool {
+        let current = section(href)
+        if let note = current.notes.first(where: { $0.id == id }) {
+            let strokes = note.strokes.indices.map { InkStrokeRef(noteId: id, index: $0) }
+            return apply(.erase(href: href, strokes: strokes, markIDs: [], at: now()))
+        }
+        guard current.marks.contains(where: { $0.id == id }) else { return false }
+        return apply(.erase(href: href, strokes: [], markIDs: [id], at: now()))
     }
 
     // MARK: - Strokes

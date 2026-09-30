@@ -305,3 +305,146 @@ export function resolveMarkOffsets(text, mark) {
   if (covered > 0 && covered < MARK_EXACT_LENGTH) return [start, start + covered];
   return null;
 }
+
+/*
+ * Repair suggestions (P5.1). When ink no longer finds its words, the reader proposes where it most
+ * likely belongs now and a person confirms or declines. Nothing here places ink by itself: a
+ * suggestion is only ever shown, and ink moves only when someone accepts it.
+ */
+
+/** Share of the anchor's words a suggested passage must contain. */
+export const SUGGESTION_MIN_SCORE = 0.6;
+/** Fewer anchor words than this are too little to search for. */
+const SUGGESTION_MIN_WORDS = 3;
+
+const WORD = /[\p{L}\p{N}]+/gu;
+
+/** Words of `text` (lower-cased) with their chapter-text offsets. */
+const wordsOf = text => {
+  const words = [];
+  for (const match of (text ?? "").matchAll(WORD)) {
+    words.push({ word: match[0].toLowerCase(), start: match.index, end: match.index + match[0].length });
+  }
+  return words;
+};
+
+const nearestTo = (target, offsets) =>
+  offsets.reduce((best, at) => (Math.abs(at - target) < Math.abs(best - target) ? at : best));
+
+/**
+ * Where `anchor` most likely belongs in `text` now, for someone to confirm:
+ * `{ offset, score, matchedBy, candidates }` or null when there is no convincing place.
+ * - An anchor that still resolves gives its own place (score 1).
+ * - A passage that now appears several times gives the copy nearest the old offset
+ *   (`repeated-passage`, with the number of copies in `candidates`).
+ * - Otherwise the stretch of text sharing the most words with the anchor and its context
+ *   (`similar-words`); score is the share of those words found, at least SUGGESTION_MIN_SCORE.
+ */
+export function suggestAnchorOffset(text, anchor) {
+  if (!anchor || typeof text !== "string") return null;
+  const outcome = resolveAnchorOutcome(text, anchor);
+  if (outcome.offset != null) return { offset: outcome.offset, score: 1, matchedBy: outcome.matchedBy, candidates: 1 };
+  const target = Number.isSafeInteger(anchor.offset) ? anchor.offset : -1;
+  if (outcome.status === "ambiguous") {
+    return {
+      offset: nearestTo(target, outcome.candidates),
+      score: 1,
+      matchedBy: "repeated-passage",
+      candidates: outcome.candidates.length,
+    };
+  }
+
+  const prefix = wordsOf(anchor.prefix);
+  const exact = wordsOf(anchor.exact);
+  const needle = [...prefix, ...exact, ...wordsOf(anchor.suffix)].map(w => w.word);
+  if (needle.length < SUGGESTION_MIN_WORDS) return null;
+  const hay = wordsOf(text);
+  if (!hay.length) return null;
+
+  // Slide a window as long as the anchor over the chapter's words, counting shared words.
+  const want = new Map();
+  for (const word of needle) want.set(word, (want.get(word) ?? 0) + 1);
+  const exactWords = new Set(exact.map(w => w.word));
+  const have = new Map();
+  let shared = 0;
+  const add = word => {
+    const count = (have.get(word) ?? 0) + 1;
+    have.set(word, count);
+    if (count <= (want.get(word) ?? 0)) shared++;
+  };
+  const remove = word => {
+    const count = have.get(word);
+    have.set(word, count - 1);
+    if (count <= (want.get(word) ?? 0)) shared--;
+  };
+  const size = Math.min(needle.length, hay.length);
+  let best = null;
+  for (let i = 0; i < hay.length; i++) {
+    add(hay[i].word);
+    if (i >= size) remove(hay[i - size].word);
+    if (i < size - 1) continue;
+    const score = shared / needle.length;
+    if (score < SUGGESTION_MIN_SCORE) continue;
+    const from = i - size + 1;
+    const at = placeInWindow(hay, from, i, prefix.length, exact);
+    // The anchor's own words must be there, not just its context.
+    if (exactWords.size && !hay.slice(from, i + 1).some(w => exactWords.has(w.word))) continue;
+    if (!best || score > best.score || (score === best.score && Math.abs(at - target) < Math.abs(best.offset - target))) {
+      best = { offset: at, score, matchedBy: "similar-words", candidates: 1 };
+    }
+  }
+  return best;
+}
+
+/** Where the anchor's first word goes in window hay[from...to]: by its first words if present. */
+const placeInWindow = (hay, from, to, prefixCount, exact) => {
+  for (let k = 0; k < Math.min(3, exact.length); k++) {
+    for (let j = from; j <= to; j++) {
+      if (hay[j].word === exact[k].word && j - k >= from) return hay[j - k].start;
+    }
+  }
+  return hay[Math.min(from + prefixCount, to)].start;
+};
+
+/**
+ * Where a mark most likely covers now: `{ start, end, score, matchedBy, candidates }` or null.
+ * A mark whose words still resolve gives them; otherwise its opening words are suggested
+ * (see suggestAnchorOffset) and its end follows its closing words if they are close after,
+ * else the same length as before.
+ */
+export function suggestMarkOffsets(text, mark) {
+  if (!mark?.start || typeof text !== "string") return null;
+  const found = resolveMarkOffsets(text, mark);
+  if (found) return { start: found[0], end: found[1], score: 1, matchedBy: "exact", candidates: 1 };
+  const covered = mark.start.exact?.length ?? 0;
+  const start = suggestAnchorOffset(text, mark.start) ??
+    (covered > EXACT_LENGTH
+      ? suggestAnchorOffset(text, { ...mark.start, exact: mark.start.exact.slice(0, EXACT_LENGTH), suffix: "" })
+      : null);
+  if (!start) return null;
+  let end = null;
+  const closing = mark.end ? suggestAnchorOffset(text, mark.end) : null;
+  if (closing) {
+    const at = closing.offset + (mark.end.exact?.length ?? 0);
+    if (at > start.offset && at - start.offset <= Math.max(2 * covered, covered + MARK_EXACT_LENGTH)) end = at;
+  }
+  if (end == null) end = Math.min(text.length, start.offset + Math.max(1, covered));
+  const { offset, ...how } = start;
+  return { ...how, start: offset, end };
+}
+
+/** Text around chapter text [start, end) to show a person: `{ before, match, after }`, cut at words. */
+export function excerptAround(text, start, end, context = 60) {
+  const from = Math.max(0, start - context);
+  const to = Math.min(text.length, end + context);
+  const cut = (value, atStart) => {
+    if (atStart && from > 0) return "…" + value.replace(/^\S*\s/, "");
+    if (!atStart && to < text.length) return value.replace(/\s\S*$/, "") + "…";
+    return value;
+  };
+  return {
+    before: cut(text.slice(from, start), true),
+    match: text.slice(start, end),
+    after: cut(text.slice(end, to), false),
+  };
+}
