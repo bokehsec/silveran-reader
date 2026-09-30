@@ -10,15 +10,23 @@ struct ICloudSettingsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("iCloud Settings").font(.headline)
             Toggle(
-                "Sync settings with iCloud",
+                AppAnnotationSync.isAvailable
+                    ? "Sync annotations and settings with iCloud" : "Sync settings with iCloud",
                 isOn: Binding(
                     get: { sync.enabled },
-                    set: { value in run { await sync.setEnabled(value) } }
+                    set: { value in
+                        run {
+                            await sync.setEnabled(value)
+                            await AppAnnotationSync.setEnabled(value)
+                        }
+                    }
                 )
             )
             .disabled(busy)
             Text(
-                "Keep reader, theme, playback speed, and library preferences on devices using the same Apple account. Reader layout is shared between devices of the same type. Server connections, passwords, books, and reading progress are excluded."
+                AppAnnotationSync.isAvailable
+                    ? "Keep highlights, bookmarks, notes, handwriting and reader, theme, playback and library preferences the same on devices using the same Apple account. Changes usually arrive within a minute. If the same annotation is changed on two devices, the latest change wins and the other is kept for recovery. Reader layout is shared between devices of the same type. Server connections, passwords, books and reading progress are excluded."
+                    : "Keep reader, theme, playback speed, and library preferences on devices using the same Apple account. Reader layout is shared between devices of the same type. Server connections, passwords, books, and reading progress are excluded."
             )
             .font(.caption).foregroundStyle(.secondary)
             if sync.enabled {

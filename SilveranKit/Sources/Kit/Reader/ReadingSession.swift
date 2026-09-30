@@ -86,6 +86,12 @@ public final class ReadingSessionStore {
         return saved
     }
 
+    /// Reloads one open book's ink after it changed on another device.
+    public func reloadInk(for bookID: BookID) async {
+        let sessions = [inkSessions[bookID], releasedInkSessions[bookID]?.value].compactMap { $0 }
+        for session in sessions { await session.reloadFromStore() }
+    }
+
     /// Reloads every open book's ink after saved ink changed underneath it (a restore).
     public func reloadAllInk() async {
         for session in allInkSessions { await session.reloadFromStore() }

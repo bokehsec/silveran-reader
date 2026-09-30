@@ -411,6 +411,19 @@ public actor AnnotationSyncEngine {
         if changed { await onRemoteChange(bookID) }
     }
 
+    /// The cloud no longer has this record (for example its zone was reset): send it fresh.
+    public func clearSystemFields(named name: String) async {
+        guard let bookID = loadIndex()[name] else { return }
+        await lock(bookID)
+        defer { unlock(bookID) }
+        var state = loadState(bookID)
+        guard var entry = entry(named: name, in: state) else { return }
+        entry.systemFields = nil
+        entry.pending = true
+        state.entries[entry.key] = entry
+        saveState(state)
+    }
+
     /// The cloud copy was removed (tombstone clean-up elsewhere). Local data is never deleted
     /// for this; the mapping is dropped.
     public func forgetRecord(named name: String) async {

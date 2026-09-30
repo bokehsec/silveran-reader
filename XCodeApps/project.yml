@@ -151,6 +151,7 @@ targets:
         UIBackgroundModes:
           - audio
           - fetch
+          - remote-notification
         BGTaskSchedulerPermittedIdentifiers:
           - com.kyonifer.silveran.progresssync.refresh
         ITSAppUsesNonExemptEncryption: false

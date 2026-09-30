@@ -28,6 +28,7 @@ struct SilveranReaderApp: App {
         Task {
             guard await SilveranRuntime.start() else { return }
             await AppleConfigurationSyncCoordinator.shared.start()
+            await AppAnnotationSync.start()
             await AppBackup.start()
 
             do {
@@ -81,6 +82,7 @@ struct SilveranReaderApp: App {
                     await AppleConfigurationSyncCoordinator.shared.foreground()
                     await BookServiceActor.shared.setActive(true, source: .mac)
                     await AppBackup.opportunity()
+                    await AppAnnotationSync.foreground()
                 }
             case .inactive:
                 break
