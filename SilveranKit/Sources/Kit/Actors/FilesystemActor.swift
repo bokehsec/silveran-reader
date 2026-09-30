@@ -467,6 +467,31 @@ public actor FilesystemActor {
         try await task.value
     }
 
+    /// The user's unsent book edits (`BookEditSyncActor`), keyed by source-scoped `BookID`.
+    public func loadPendingBookEdits() async throws -> [PendingBookEdit] {
+        let url = getConfigDirectory().appendingPathComponent(
+            "pending_book_edits.json",
+            isDirectory: false,
+        )
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        do {
+            return try JSONDecoder().decode([PendingBookEdit].self, from: data)
+        } catch is DecodingError {
+            try FileManager.default.removeItem(at: url)
+            return []
+        }
+    }
+
+    public func savePendingBookEdits(_ edits: [PendingBookEdit]) async throws {
+        let configDir = getConfigDirectory()
+        try ensureDirectoryExists(at: configDir)
+        let url = configDir.appendingPathComponent("pending_book_edits.json", isDirectory: false)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(edits).write(to: url, options: .atomic)
+    }
+
     public func progressUploadSpoolDirectory() -> URL {
         applicationSupportBaseDirectory()
             .appendingPathComponent("ProgressUploadSpool", isDirectory: true)
@@ -685,6 +710,11 @@ public actor FilesystemActor {
             try fm.removeItem(at: bookRoot)
         }
         try removeCoverImages(bookID: BookID(sourceID: sourceID, uuid: uuid))
+    }
+
+    public func getInkDirectory() -> URL {
+        applicationSupportBaseDirectory()
+            .appendingPathComponent("Ink", isDirectory: true)
     }
 
     public func getHighlightsDirectory() -> URL {

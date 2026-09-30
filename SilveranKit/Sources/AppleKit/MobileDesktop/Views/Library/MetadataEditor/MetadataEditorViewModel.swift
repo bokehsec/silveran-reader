@@ -71,7 +71,7 @@ final class MetadataEditorViewModel {
             self.description = metadata.description ?? ""
             self.language = metadata.language ?? ""
             self.publicationDate = Self.dateOnly(metadata.publicationDate) ?? ""
-            self.rating = metadata.rating.map { String($0) } ?? ""
+            self.rating = metadata.communityRating.map { String($0) } ?? ""
             self.status = metadata.status?.name ?? ""
             self.statusUuid = metadata.status?.uuid ?? ""
             self.authors = metadata.authors?.compactMap { $0.name } ?? []
@@ -528,7 +528,7 @@ final class MetadataEditorViewModel {
             case "publicationDate":
                 return displayValue(EditableBook.dateOnly(original.publicationDate) ?? "")
             case "rating":
-                return displayValue(original.rating.map { String($0) } ?? "")
+                return displayValue(original.communityRating.map { String($0) } ?? "")
             case "status":
                 return displayValue(original.status?.name ?? "")
             case "authors":
@@ -1210,7 +1210,7 @@ final class MetadataEditorViewModel {
             case "publicationDate":
                 books[index].publicationDate = EditableBook.dateOnly(orig.publicationDate) ?? ""
             case "rating":
-                books[index].rating = orig.rating.map { String($0) } ?? ""
+                books[index].rating = orig.communityRating.map { String($0) } ?? ""
             case "status":
                 books[index].status = orig.status?.name ?? ""
                 books[index].statusUuid = orig.status?.uuid ?? ""
@@ -1260,7 +1260,7 @@ final class MetadataEditorViewModel {
         books[index].description = orig.description ?? ""
         books[index].language = orig.language ?? ""
         books[index].publicationDate = EditableBook.dateOnly(orig.publicationDate) ?? ""
-        books[index].rating = orig.rating.map { String($0) } ?? ""
+        books[index].rating = orig.communityRating.map { String($0) } ?? ""
         books[index].status = orig.status?.name ?? ""
         books[index].statusUuid = orig.status?.uuid ?? ""
         books[index].authors = orig.authors?.compactMap { $0.name } ?? []

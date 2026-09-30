@@ -271,7 +271,9 @@ public actor LocalMediaActor: GlobalActor {
         let relisted = current.filter { $0.isRemovedFromSource && listedUUIDs.contains($0.uuid) }
 
         let preserved = sourceCacheMetadata.filter { $0.sourceID != sourceID }
-        let nextMetadata = preserved + metadata + retained
+        // This device's unsent edits win over the listing (they are sent on the next sync).
+        let listed = await BookEditSyncActor.shared.applyPendingEdits(to: metadata)
+        let nextMetadata = preserved + listed + retained
         sourceCacheMetadata = nextMetadata
         sourceCacheLoaded = true
         let grouped = metadataBySourceID(nextMetadata)
@@ -289,7 +291,7 @@ public actor LocalMediaActor: GlobalActor {
         // after the source stopped listing them, and must not be taken as the source confirming
         // a pending upload.
         let positions = Dictionary(
-            (preserved + metadata).compactMap { book -> (BookID, BookReadingPosition)? in
+            (preserved + listed).compactMap { book -> (BookID, BookReadingPosition)? in
                 guard let pos = book.position else { return nil }
                 return (book.id, pos)
             },
@@ -304,6 +306,7 @@ public actor LocalMediaActor: GlobalActor {
         // Progress held back while these books were missing from the source can upload again.
         if !relisted.isEmpty {
             await ProgressSyncActor.shared.scheduleQueueFlush()
+            await BookEditSyncActor.shared.scheduleFlush()
         }
     }
 
@@ -342,12 +345,15 @@ public actor LocalMediaActor: GlobalActor {
             debugLog("[LMA] forgetRemovedBookIfEmpty: persist failed for \(bookID): \(error)")
         }
         await ProgressSyncActor.shared.removePendingSync(for: bookID)
+        await BookEditSyncActor.shared.removeEdits(for: bookID)
     }
 
     public func updateSourceCacheBookMetadata(
         _ metadata: BookMetadata
     ) async throws {
         await ensureSourceCacheLoaded()
+        // This device's unsent edits win over a single-book refresh too.
+        let metadata = await BookEditSyncActor.shared.applyPendingEdits(to: [metadata])[0]
 
         sourceCacheMetadata.removeAll { $0.id == metadata.id }
         sourceCacheMetadata.append(metadata)
@@ -439,6 +445,7 @@ public actor LocalMediaActor: GlobalActor {
                     alignedWith: existing.alignedWith,
                     source: existing.source,
                     removedFromSourceAt: existing.removedFromSourceAt,
+                    communityRating: existing.communityRating,
                 )
                 sourceCacheMetadata[index] = updatedMetadata
                 debugLog("[LocalMediaActor] updateBookProgress: updated source-cache metadata")

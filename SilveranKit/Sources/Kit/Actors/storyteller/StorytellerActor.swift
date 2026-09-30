@@ -181,6 +181,7 @@ public actor StorytellerActor {
         if wasNotConnected && status == .connected {
             debugLog("[StorytellerActor] Connection restored, scheduling pending queue flush")
             await ProgressSyncActor.shared.scheduleQueueFlush(notifyUser: true)
+            await BookEditSyncActor.shared.scheduleFlush()
         }
     }
 
@@ -202,6 +203,7 @@ public actor StorytellerActor {
         if connectionStatus == .connected, !reconnected {
             let _ = await fetchLibraryInformation()
             await ProgressSyncActor.shared.scheduleQueueFlush(notifyUser: true)
+            await BookEditSyncActor.shared.scheduleFlush()
         }
     }
 
@@ -2085,6 +2087,107 @@ public actor StorytellerActor {
             logStorytellerError("updateStatus", error: error)
             return false
         }
+    }
+
+    /// Sets or clears the current user's own rating using `/api/v2/books/{id}/rating`.
+    /// Server implementation: `storyteller/web/src/app/api/v2/books/[bookId]/rating/route.ts`.
+    /// The endpoint needs only a logged-in user (not `bookUpdate`) and stores any 0–5 value, so
+    /// half stars round-trip. Servers predating the per-user ratings table 404 on it.
+    public func updateRating(forBook bookId: String, to rating: Double?) async -> RatingUpdateResult
+    {
+        guard let (baseURL, token) = await ensureAuthentication() else { return .failed }
+        let ratingURL =
+            baseURL
+            .appendingPathComponent("books")
+            .appendingPathComponent(bookId)
+            .appendingPathComponent("rating")
+
+        var allowedStatuses = Set(200..<300)
+        allowedStatuses.formUnion([401, 403, 404, 405])
+        let headers = [
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": authorizationHeaderValue(for: token),
+        ]
+
+        do {
+            let response: HTTPResponse
+            if let rating {
+                let payload = try JSONSerialization.data(withJSONObject: ["rating": rating])
+                response = try await httpPut(
+                    ratingURL.absoluteString,
+                    headers: headers,
+                    body: payload,
+                    session: urlSession,
+                    allowedStatusCodes: allowedStatuses,
+                )
+            } else if let review = await existingRatingReview(at: ratingURL, token: token) {
+                // DELETE would drop the user's written review along with the stars; a PUT that
+                // nulls only the rating keeps the review (the server requires one of the two).
+                let payload = try JSONSerialization.data(
+                    withJSONObject: ["rating": NSNull(), "review": review]
+                )
+                response = try await httpPut(
+                    ratingURL.absoluteString,
+                    headers: headers,
+                    body: payload,
+                    session: urlSession,
+                    allowedStatusCodes: allowedStatuses,
+                )
+            } else {
+                response = try await httpDelete(
+                    ratingURL.absoluteString,
+                    headers: headers,
+                    session: urlSession,
+                    allowedStatusCodes: allowedStatuses,
+                )
+            }
+
+            if response.statusCode == 404 {
+                debugLog(
+                    "[StorytellerActor] updateRating: endpoint not supported (status 404) for book \(bookId)"
+                )
+                return .notSupported
+            }
+
+            guard
+                case .success = evaluateResponse(
+                    response,
+                    methodName: "updateRating",
+                    context: "book \(bookId)",
+                )
+            else {
+                return .failed
+            }
+            // No refetch: BookServiceActor already wrote the rating to the local cache.
+            return .success
+        } catch {
+            logStorytellerError("updateRating", error: error)
+            return .failed
+        }
+    }
+
+    /// The user's existing written review for a book, if any. Nil when there is no rating record
+    /// (the server answers 404) or it has no review text.
+    private func existingRatingReview(at ratingURL: URL, token: AccessToken) async -> String? {
+        guard
+            let response = try? await httpGet(
+                ratingURL.absoluteString,
+                headers: [
+                    "Accept": "application/json",
+                    "Authorization": authorizationHeaderValue(for: token),
+                ],
+                session: urlSession,
+                allowedStatusCodes: Set(200..<300).union([404]),
+            ),
+            (200..<300).contains(response.statusCode),
+            let existing = try? decoder.decode(StorytellerUserBookRating.self, from: response.data),
+            let review = existing.review,
+            !review.isEmpty
+        else {
+            return nil
+        }
+        return review
     }
 
     /// Removes tags from books using `/api/v2/books/tags` (DELETE).

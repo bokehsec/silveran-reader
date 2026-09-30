@@ -1398,6 +1398,63 @@ public actor BookServiceActor {
         return true
     }
 
+    /// Sets or clears (nil) the user's own rating for one book, rounded to half-star steps.
+    /// Folder sources save it directly. For a Storyteller source the rating is queued in
+    /// `BookEditSyncActor` and shown straight away, then sent now if the server is reachable or on
+    /// the next sync if not (`.queued`). This device's rating wins over the server's when sent.
+    public func updateRating(bookID: BookID, to rating: Double?) async -> RatingUpdateResult {
+        await ensureSourceRegistryLoaded()
+        guard let source = sourceActor(for: bookID.sourceID) else { return .failed }
+        let rating = normalizedUserRating(rating)
+
+        if source is FolderSourceActor {
+            let result = await source.updateRating(forBook: bookID.uuid, to: rating)
+            if result == .success {
+                await notifyLibraryObservers()
+            }
+            return result
+        }
+
+        let previous = await LocalMediaActor.shared.libraryMetadata().first { $0.id == bookID }
+        let edit = await BookEditSyncActor.shared.record(.rating(rating), for: bookID)
+        await writeCachedRating(rating, from: previous)
+
+        guard
+            await connectionStatus(sourceID: bookID.sourceID) == .connected,
+            await !LocalMediaActor.shared.sourceRemovedBookIDs().contains(bookID)
+        else {
+            return .queued
+        }
+
+        switch await BookEditSyncActor.shared.send(edit) {
+            case .success:
+                return .success
+            case .notSupported:
+                // The server can never store it: undo the local change.
+                await writeCachedRating(previous?.rating, from: previous)
+                return .notSupported
+            case .failed, .queued:
+                return .queued
+        }
+    }
+
+    /// The network half of `updateRating`, used by `BookEditSyncActor` when it sends.
+    func sendRatingToSource(bookID: BookID, rating: Double?) async -> RatingUpdateResult {
+        await ensureSourceRegistryLoaded()
+        guard let source = sourceActor(for: bookID.sourceID) else { return .failed }
+        return await source.updateRating(forBook: bookID.uuid, to: rating)
+    }
+
+    private func writeCachedRating(_ rating: Double?, from book: BookMetadata?) async {
+        guard let book else { return }
+        do {
+            try await LocalMediaActor.shared.updateSourceCacheBookMetadata(book.withRating(rating))
+        } catch {
+            debugLog("[BookServiceActor] failed to cache rating for \(book.id): \(error)")
+        }
+        await notifyLibraryObservers()
+    }
+
     public func fetchCollections(sourceID: BookSourceID) async -> [StorytellerCollection]? {
         guard let storyteller = await storytellerActor(for: sourceID) else { return nil }
         return await storyteller.fetchCollections()

@@ -298,6 +298,25 @@ public enum ReplaceAssetResult: Sendable {
     case failed
 }
 
+/// Outcome of setting the user's own rating on a book. `.notSupported` means a Storyteller server
+/// predating per-user ratings (no `/books/{id}/rating` endpoint). `.queued` is returned only by
+/// `BookServiceActor.updateRating`: the rating is saved on this device and will be sent on the
+/// next sync.
+public enum RatingUpdateResult: Sendable, Equatable {
+    case success
+    case queued
+    case notSupported
+    case failed
+}
+
+/// Normalizes a user rating to what Silveran stores: half-star steps from 0.5 to 5. Nil or a value
+/// that rounds below half a star means "no rating".
+public func normalizedUserRating(_ rating: Double?) -> Double? {
+    guard let rating, rating.isFinite else { return nil }
+    let stepped = (min(rating, 5) * 2).rounded() / 2
+    return stepped >= 0.5 ? stepped : nil
+}
+
 public protocol BookSourceActor: Actor {
     var sourceRecord: BookSourceRecord { get async }
     var connectionStatus: ConnectionStatus { get async }
@@ -370,6 +389,12 @@ public protocol BookSourceActor: Actor {
     /// Sets the named reading status on the books. Implementations must leave their own cache
     /// consistent so the caller only needs to notify observers, never force a refetch/rescan.
     func updateStatus(forBooks bookIDs: [String], toStatusNamed statusName: String) async -> Bool
+
+    /// Sets (or, with nil, clears) the current user's own rating for one book. `rating` is already
+    /// normalized to half-star steps. A folder source saves it and updates its own cache. For a
+    /// Storyteller source this is only the network send: `BookServiceActor` has already queued the
+    /// edit in `BookEditSyncActor` and written it to the local cache, so no refetch is needed.
+    func updateRating(forBook bookID: String, to rating: Double?) async -> RatingUpdateResult
 
     /// Zips a book's local audiobook directory into a Readium `.audiobook` at a temp URL the caller
     /// must delete. Nil when no audiobook is available locally to package.

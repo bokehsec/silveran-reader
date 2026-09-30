@@ -29,6 +29,7 @@ extension BookMetadata {
             alignedByStorytellerVersion: alignedByStorytellerVersion,
             alignedWith: alignedWith,
             source: source,
+            communityRating: communityRating,
         )
     }
 }

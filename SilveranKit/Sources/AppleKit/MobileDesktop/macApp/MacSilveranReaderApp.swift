@@ -42,6 +42,7 @@ struct SilveranReaderApp: App {
             debugLog("[SilveranReaderApp] Syncing pending progress queue on launch")
             let (synced, failed) = await ProgressSyncActor.shared.syncPendingQueue()
             debugLog("[SilveranReaderApp] Queue sync: synced=\(synced), failed=\(failed)")
+            await BookEditSyncActor.shared.flush()
         }
     }
 

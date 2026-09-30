@@ -198,7 +198,7 @@ struct MediaGridInfoSidebar: View {
 
                     macCreatorSummary
                     macSeriesSummary
-                    BookDetailRatingView(rating: currentItem.rating)
+                    BookDetailRatingView(item: currentItem)
                         .padding(.top, 2)
 
                     if let mediaSummary = macHeroMediaSummary {
@@ -561,7 +561,7 @@ struct MediaGridInfoSidebar: View {
                         nameColor: heroColors.primary.opacity(0.9),
                     )
                     iosHeroSeriesSummary
-                    BookDetailRatingView(rating: currentItem.rating)
+                    BookDetailRatingView(item: currentItem)
                         .padding(.top, 2)
 
                     if let mediaSummary = iosHeroMediaSummary {

@@ -20,7 +20,11 @@ package struct StorytellerBookMetadataPayload: Codable, Sendable {
     let readaloud: BookReadaloud?
     let status: BookStatus?
     let position: BookReadingPosition?
+    /// Deprecated book-level third-party rating; surfaced as `BookMetadata.communityRating`.
     let rating: Double?
+    /// The requesting user's own rating. Storyteller omits it (or sends null) when the user has not
+    /// rated the book, and servers older than the per-user ratings table never send it.
+    let userBookRating: StorytellerUserBookRating?
     let pageCount: Int?
     let duration: Double?
     let alignedAt: String?
@@ -48,7 +52,8 @@ package struct StorytellerBookMetadataPayload: Codable, Sendable {
         readaloud = book.readaloud
         status = book.status
         position = book.position
-        rating = book.rating
+        rating = book.communityRating
+        userBookRating = book.rating.map { StorytellerUserBookRating(rating: $0, review: nil) }
         pageCount = book.pageCount
         duration = book.duration
         alignedAt = book.alignedAt
@@ -78,13 +83,21 @@ package struct StorytellerBookMetadataPayload: Codable, Sendable {
             readaloud: readaloud,
             status: status,
             position: position,
-            rating: rating,
+            rating: userBookRating?.rating,
             pageCount: pageCount,
             duration: duration,
             alignedAt: alignedAt,
             alignedByStorytellerVersion: alignedByStorytellerVersion,
             alignedWith: alignedWith,
             source: source,
+            communityRating: rating,
         )
     }
+}
+
+/// The per-user rating object Storyteller nests in each book (`user_book_rating` table). The
+/// server also sends `dimensions`, which Silveran does not use yet and so does not decode.
+package struct StorytellerUserBookRating: Codable, Sendable {
+    let rating: Double?
+    let review: String?
 }

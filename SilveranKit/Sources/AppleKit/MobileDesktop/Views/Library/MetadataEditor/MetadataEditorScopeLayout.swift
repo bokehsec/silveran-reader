@@ -130,7 +130,7 @@ struct WorkMetadataLayout: View {
         VStack(alignment: .leading, spacing: 18) {
             fieldGroup("Community") {
                 hardcoverSlugField()
-                scalarField("Rating", field: "rating", text: scalarBinding(\.rating))
+                scalarField("Community Rating", field: "rating", text: scalarBinding(\.rating))
                 expandedStringListField(
                     "Tags",
                     field: "tags",

@@ -636,11 +636,7 @@ private struct MacReaderSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private func isCustomFont(_ fontFamily: String) -> Bool {
-        !["System Default", "serif", "sans-serif", "monospace"].contains(fontFamily)
-    }
-
-    private var builtInFonts: [String] {
-        ["System Default", "serif", "sans-serif", "monospace"]
+        !ReaderFontOptions.isBuiltIn(fontFamily)
     }
 
     var body: some View {
@@ -682,10 +678,14 @@ private struct MacReaderSettingsView: View {
                     label("Font")
                     HStack(spacing: 12) {
                         Picker("", selection: $reading.fontFamily) {
-                            Text("System Default").tag("System Default")
-                            Text("Serif").tag("serif")
-                            Text("Sans-Serif").tag("sans-serif")
-                            Text("Monospace").tag("monospace")
+                            ForEach(ReaderFontOptions.generic, id: \.value) { font in
+                                Text(font.label).tag(font.value)
+                            }
+
+                            Divider()
+                            ForEach(ReaderFontOptions.apple, id: \.value) { font in
+                                Text(font.label).tag(font.value)
+                            }
 
                             if !customFamilies.isEmpty {
                                 Divider()

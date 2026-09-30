@@ -34,6 +34,7 @@ class SilveranAppDelegate: NSObject, UIApplicationDelegate {
             }
             _ = await ProgressSyncActor.shared.syncPendingQueue()
             await ProgressUploadManager.shared.enqueuePendingUploads()
+            await BookEditSyncActor.shared.flush()
             await Self.scheduleProgressSyncRefreshIfNeeded()
             task.setTaskCompleted(success: true)
         }

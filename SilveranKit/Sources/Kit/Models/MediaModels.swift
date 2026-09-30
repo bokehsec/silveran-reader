@@ -716,7 +716,12 @@ public struct BookMetadata: Codable, Sendable, Identifiable, Hashable {
     public let readaloud: BookReadaloud?
     public let status: BookStatus?
     public let position: BookReadingPosition?
+    /// The current user's own star rating (0.5 to 5 in half-star steps). On Storyteller this is the
+    /// server's per-user `userBookRating.rating`; on a folder source it is the work's saved rating.
     public let rating: Double?
+    /// Critic or crowd-sourced rating from a third party (Storyteller's deprecated book-level
+    /// `rating` field, filled by metadata imports such as Hardcover). Never shown as the user's stars.
+    public var communityRating: Double? = nil
     public var pageCount: Int? = nil
     public var duration: Double? = nil
     public var alignedAt: String? = nil
@@ -762,6 +767,7 @@ public struct BookMetadata: Codable, Sendable, Identifiable, Hashable {
         alignedWith: String? = nil,
         source: String? = nil,
         removedFromSourceAt: String? = nil,
+        communityRating: Double? = nil,
     ) {
         self.id = bookID
         self.title = title
@@ -790,6 +796,41 @@ public struct BookMetadata: Codable, Sendable, Identifiable, Hashable {
         self.alignedWith = alignedWith
         self.source = source
         self.removedFromSourceAt = removedFromSourceAt
+        self.communityRating = communityRating
+    }
+
+    /// A copy with the user's own rating replaced; every other field is carried over.
+    public func withRating(_ rating: Double?) -> BookMetadata {
+        BookMetadata(
+            bookID: id,
+            title: title,
+            subtitle: subtitle,
+            description: description,
+            language: language,
+            createdAt: createdAt,
+            updatedAt: updatedAt,
+            publicationDate: publicationDate,
+            authors: authors,
+            narrators: narrators,
+            creators: creators,
+            series: series,
+            tags: tags,
+            collections: collections,
+            ebook: ebook,
+            audiobook: audiobook,
+            readaloud: readaloud,
+            status: status,
+            position: position,
+            rating: rating,
+            pageCount: pageCount,
+            duration: duration,
+            alignedAt: alignedAt,
+            alignedByStorytellerVersion: alignedByStorytellerVersion,
+            alignedWith: alignedWith,
+            source: source,
+            removedFromSourceAt: removedFromSourceAt,
+            communityRating: communityRating,
+        )
     }
 
     public var hasAudioNarration: Bool {

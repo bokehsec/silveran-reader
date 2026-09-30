@@ -811,33 +811,129 @@ struct BookDetailCoverArtwork: View {
     }
 }
 
+/// The user's own star rating for a book. Tapping a star's left half sets a half star, its right
+/// half a whole star; tapping the current rating again (or "Clear Rating") removes it.
 struct BookDetailRatingView: View {
-    let rating: Double?
+    let item: BookMetadata
+    @Environment(MediaViewModel.self) private var mediaViewModel
 
-    private var roundedRating: Double {
-        guard let rating else { return 0 }
-        return (rating * 2).rounded() / 2
+    /// Shown while a change is being saved, so the stars respond immediately.
+    @State private var pendingRating: Double??
+    @State private var isUpdating = false
+    @State private var errorMessage: String?
+
+    #if os(iOS)
+    private let starSize: CGFloat = 22
+    private let starSpacing: CGFloat = 6
+    #else
+    private let starSize: CGFloat = 16
+    private let starSpacing: CGFloat = 4
+    #endif
+
+    private var currentItem: BookMetadata {
+        mediaViewModel.library.bookMetaData.first { $0.id == item.id } ?? item
+    }
+
+    private var displayedRating: Double? {
+        if let pendingRating { return pendingRating }
+        return normalizedUserRating(currentItem.rating)
     }
 
     var body: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: starSpacing) {
             ForEach(0..<5, id: \.self) { index in
                 starImage(for: index)
-                    .font(.system(size: 13))
+                    .font(.system(size: starSize))
+                    .frame(width: starSize, height: starSize)
                     .foregroundStyle(
-                        rating == nil ? Color.secondary.opacity(0.25) : Color.yellow
+                        displayedRating == nil ? Color.secondary.opacity(0.35) : Color.yellow
                     )
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture(coordinateSpace: .local) { location in
+            let tapped = rating(atX: location.x)
+            commit(tapped == displayedRating ? nil : tapped)
+        }
+        .opacity(isUpdating ? 0.6 : 1)
+        .allowsHitTesting(!isUpdating)
+        .onChange(of: currentItem.rating) { _, _ in
+            // The refreshed library has caught up with the saved value.
+            if !isUpdating { pendingRating = nil }
+        }
+        .contextMenu {
+            if displayedRating != nil {
+                Button("Clear Rating", systemImage: "star.slash") { commit(nil) }
+            }
+        }
+        #if os(macOS)
+        .help("Click a star to rate. Click its left half for a half star.")
+        #endif
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(rating.map { "Rating, \($0.formatted()) out of 5" } ?? "Not rated")
+        .accessibilityLabel("Your rating")
+        .accessibilityValue(
+            displayedRating.map { "\($0.formatted()) out of 5 stars" } ?? "Not rated"
+        )
+        .accessibilityHint("Swipe up or down to change the rating")
+        .accessibilityAdjustableAction { direction in
+            let current = displayedRating ?? 0
+            switch direction {
+                case .increment: commit(min(current + 0.5, 5))
+                case .decrement: commit(current - 0.5 >= 0.5 ? current - 0.5 : nil)
+                @unknown default: break
+            }
+        }
+        .alert(
+            "Cannot Change Rating",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } },
+            ),
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    /// Maps a tap position to a half-star step: the left half of a star rounds down to x.5.
+    private func rating(atX x: CGFloat) -> Double {
+        let pitch = starSize + starSpacing
+        let index = min(4, max(0, Int(x / pitch)))
+        let withinStar = x - CGFloat(index) * pitch
+        return Double(index) + (withinStar < starSize / 2 ? 0.5 : 1)
+    }
+
+    private func commit(_ rating: Double?) {
+        guard !isUpdating, rating != displayedRating else { return }
+        let bookID = currentItem.id
+        pendingRating = .some(rating)
+        isUpdating = true
+        Task {
+            let result = await BookServiceActor.shared.updateRating(bookID: bookID, to: rating)
+            isUpdating = false
+            switch result {
+                case .success, .queued:
+                    // Saved on this device (and sent, or sent on the next sync). Keep showing it
+                    // until the library update lands.
+                    if normalizedUserRating(currentItem.rating) == rating { pendingRating = nil }
+                    return
+                case .notSupported:
+                    errorMessage =
+                        "This Storyteller server does not support personal ratings. Update the server to rate books."
+                case .failed:
+                    errorMessage = "The rating could not be saved. Please try again."
+            }
+            pendingRating = nil
+        }
     }
 
     private func starImage(for index: Int) -> Image {
         let starValue = Double(index) + 1
-        if roundedRating >= starValue {
+        let rating = displayedRating ?? 0
+        if rating >= starValue {
             return Image(systemName: "star.fill")
-        } else if roundedRating >= starValue - 0.5 {
+        } else if rating >= starValue - 0.5 {
             return Image(systemName: "star.leadinghalf.filled")
         } else {
             return Image(systemName: "star")

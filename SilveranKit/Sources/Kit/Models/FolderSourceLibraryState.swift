@@ -39,6 +39,9 @@ public struct FolderSourceWork: Codable, Sendable, Hashable, Identifiable {
     public var status: BookStatus?
     public var position: BookReadingPosition?
     public var rating: Double?
+    /// True once the user explicitly removed their rating, so a rescan does not refill `rating`
+    /// from the rating embedded in the book file's own metadata. Setting a rating clears it.
+    public var ratingClearedByUser: Bool?
     public var mediaIDs: [FolderSourceMediaRole: String]
     public var groupingKey: String
     public var groupingReason: String?
@@ -66,6 +69,7 @@ public struct FolderSourceWork: Codable, Sendable, Hashable, Identifiable {
         mediaIDs: [FolderSourceMediaRole: String] = [:],
         groupingKey: String,
         groupingReason: String? = nil,
+        ratingClearedByUser: Bool? = nil,
     ) {
         self.uuid = uuid
         self.title = title
@@ -87,6 +91,7 @@ public struct FolderSourceWork: Codable, Sendable, Hashable, Identifiable {
         self.mediaIDs = mediaIDs
         self.groupingKey = groupingKey
         self.groupingReason = groupingReason
+        self.ratingClearedByUser = ratingClearedByUser
     }
 }
 

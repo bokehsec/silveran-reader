@@ -474,6 +474,34 @@ public actor FolderSourceActor: BookSourceActor {
         }
     }
 
+    public func updateRating(forBook bookID: String, to rating: Double?) async -> RatingUpdateResult {
+        do {
+            let resolved = try await resolvedFolderURL()
+            defer { stopAccessing(resolved) }
+
+            if metadataCache.isEmpty {
+                _ = try await scanLibrary(in: resolved.url)
+            }
+
+            var state = try await savedState(in: resolved.url)
+            guard let index = state.works.firstIndex(where: { $0.uuid == bookID }) else {
+                return .failed
+            }
+            state.works[index].rating = rating
+            state.works[index].ratingClearedByUser = rating == nil ? true : nil
+
+            try await filesystem.saveFolderSourceLibraryState(state, in: resolved.url)
+            stateCache = state
+            let projected = projectLibrary(from: state, folderURL: resolved.url)
+            metadataCache = projected.metadata
+            pathCache = projected.paths
+            return .success
+        } catch {
+            debugLog("[FolderSourceActor] Failed to save rating: \(error)")
+            return .failed
+        }
+    }
+
     /// Returns the UUID of the work that ended up holding the assets, which is not always the
     /// passed `bookUUID`: the post-import scan groups files by name, so assets can join an
     /// existing work, and brand-new works are minted by the scan itself.
@@ -1024,11 +1052,13 @@ public actor FolderSourceActor: BookSourceActor {
             collections: preferredMetadata?.collections,
             status: previous?.status ?? preferredMetadata?.status,
             position: previous?.position ?? preferredMetadata?.position,
-            rating: previous?.rating ?? preferredMetadata?.rating,
+            rating: previous?.ratingClearedByUser == true
+                ? nil : previous?.rating ?? preferredMetadata?.rating,
             mediaIDs: mediaIDs,
             groupingKey:
                 "\(candidates.first?.groupingDirectory ?? "")/\(candidates.first?.groupingStem ?? "")",
             groupingReason: "Grouped by matching folder and filename prefix",
+            ratingClearedByUser: previous?.ratingClearedByUser,
         )
     }
 
