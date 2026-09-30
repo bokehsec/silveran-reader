@@ -238,7 +238,9 @@ class EbookPlayerViewModel {
 
     init(bookData: PlayerBookData?, settingsVM: SettingsViewModel = SettingsViewModel()) {
         self.bookData = bookData
-        self.inkSession = bookData.map { ReadingSessionStore.shared.inkSession(for: $0.metadata.id) } ?? InkSession()
+        self.inkSession =
+            bookData.map { ReadingSessionStore.shared.inkSession(for: $0.metadata.id) }
+            ?? InkSession()
         self.settingsVM = settingsVM
         #if os(macOS)
         let savedAudioSidebarState =
@@ -369,13 +371,8 @@ class EbookPlayerViewModel {
         settingsVM.defaultPlaybackSpeed = rate
         mediaOverlayManager?.setPlaybackRate(rate)
 
-        Task { @MainActor in
-            do {
-                try await settingsVM.save()
-            } catch {
-                debugLog("[EbookPlayerViewModel] Failed to save playback rate: \(error)")
-            }
-        }
+        // Debounced; a failed save is kept as a pending edit and shown by the recovery banner.
+        settingsVM.save()
     }
 
     func handleVolumeChange(_ newVolume: Double) {
@@ -383,13 +380,8 @@ class EbookPlayerViewModel {
         settingsVM.defaultVolume = newVolume
         mediaOverlayManager?.setVolume(newVolume)
 
-        Task { @MainActor in
-            do {
-                try await settingsVM.save()
-            } catch {
-                debugLog("[EbookPlayerViewModel] Failed to save volume: \(error)")
-            }
-        }
+        // Debounced; a failed save is kept as a pending edit and shown by the recovery banner.
+        settingsVM.save()
     }
 
     func handleSleepTimerStart(_ duration: TimeInterval?, _ type: SleepTimerType) {
@@ -817,7 +809,8 @@ class EbookPlayerViewModel {
         guard let bookID = bookData?.metadata.id else { return }
         hasPendingHighlightChanges = await BookmarkActor.shared.hasPendingChanges(bookID: bookID)
         if hasPendingHighlightChanges {
-            highlightPersistenceError = await BookmarkActor.shared.pendingFailure(bookID: bookID)?.message
+            highlightPersistenceError =
+                await BookmarkActor.shared.pendingFailure(bookID: bookID)?.message
                 ?? "Bookmarks/highlights have pending changes. Retry or export them before closing."
         }
 
@@ -832,19 +825,24 @@ class EbookPlayerViewModel {
         await sendHighlightsToJS()
     }
 
-    private func applyHighlightMutation(_ mutation: HighlightMutation, bookID: BookID) async -> Bool {
+    private func applyHighlightMutation(_ mutation: HighlightMutation, bookID: BookID) async -> Bool
+    {
         guard !hasPendingHighlightChanges else { return false }
         hasPendingHighlightChanges = true
         let result: Result<Void, AnnotationPersistenceFailure>
         switch mutation {
             case .add(let highlight): result = await BookmarkActor.shared.addHighlight(highlight)
-            case .update(let highlight): result = await BookmarkActor.shared.updateHighlight(highlight)
-            case .delete(let id): result = await BookmarkActor.shared.deleteHighlight(id: id, bookID: bookID)
+            case .update(let highlight):
+                result = await BookmarkActor.shared.updateHighlight(highlight)
+            case .delete(let id):
+                result = await BookmarkActor.shared.deleteHighlight(id: id, bookID: bookID)
             case .deleteAll: result = await BookmarkActor.shared.deleteAllHighlights(bookID: bookID)
         }
         switch result {
             case .success:
-                hasPendingHighlightChanges = await BookmarkActor.shared.hasPendingChanges(bookID: bookID)
+                hasPendingHighlightChanges = await BookmarkActor.shared.hasPendingChanges(
+                    bookID: bookID
+                )
                 highlightPersistenceError = nil
                 await loadHighlights()
                 return true

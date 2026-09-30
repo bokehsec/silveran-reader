@@ -10,6 +10,64 @@ func encodedIdentityPathComponent(_ input: String) -> String {
     return "b64_\(encoded)"
 }
 
+/// Inverse of `encodedIdentityPathComponent`; nil for any name it could not have produced.
+func decodedIdentityPathComponent(_ component: String) -> String? {
+    guard component.hasPrefix("b64_") else { return nil }
+    var base64 = String(component.dropFirst(4))
+        .replacingOccurrences(of: "-", with: "+")
+        .replacingOccurrences(of: "_", with: "/")
+    while base64.count % 4 != 0 { base64.append("=") }
+    guard let data = Data(base64Encoded: base64), let value = String(data: data, encoding: .utf8),
+        encodedIdentityPathComponent(value) == component
+    else { return nil }
+    return value
+}
+
+/// Book identities stored as `<root>/<encoded source>/<encoded book>.json`, sorted.
+func storedBookIDs(in root: URL) -> [BookID] {
+    let fm = FileManager.default
+    guard let sources = try? fm.contentsOfDirectory(atPath: root.path) else { return [] }
+    var result: [BookID] = []
+    for sourceName in sources {
+        guard let sourceID = decodedIdentityPathComponent(sourceName),
+            let files = try? fm.contentsOfDirectory(
+                atPath: root.appendingPathComponent(sourceName).path
+            )
+        else { continue }
+        for file in files where file.hasSuffix(".json") {
+            if let uuid = decodedIdentityPathComponent(String(file.dropLast(5))) {
+                result.append(BookID(sourceID: sourceID, uuid: uuid))
+            }
+        }
+    }
+    return result.sorted { ($0.sourceID, $0.uuid) < ($1.sourceID, $1.uuid) }
+}
+
+/// Result of merging one book's archived annotations into local storage during restore.
+public struct BackupRecordMerge: Sendable, Equatable {
+    public enum Outcome: String, Sendable, Equatable {
+        /// Nothing local; the archived book was written.
+        case restored
+        /// Archived records were added alongside local ones.
+        case merged
+        /// Local already had everything (conflicts may still be reported).
+        case unchanged
+        /// Local data needs recovery first; it was not touched.
+        case localNeedsRecovery
+        /// The archived copy itself cannot be read; it is kept as recovery material.
+        case archivedUnreadable
+    }
+    public let outcome: Outcome
+    public let added: Int
+    /// Same identity, different content: local kept, archived copy preserved for recovery.
+    public let conflicts: Int
+    public init(_ outcome: Outcome, added: Int = 0, conflicts: Int = 0) {
+        self.outcome = outcome
+        self.added = added
+        self.conflicts = conflicts
+    }
+}
+
 struct PersistedSyncHistory: Codable, Sendable {
     struct Book: Codable, Sendable {
         let bookID: BookID
@@ -779,6 +837,46 @@ public actor FilesystemActor {
         // Deletion must not bypass a failed read or unsupported payload either.
         guard try loadHighlights(bookID: bookID) != nil else { return }
         try removeHighlights(highlightsFileURL(bookID: bookID))
+    }
+
+    public func highlightBookIDs() -> [BookID] {
+        storedBookIDs(in: highlightsV2Directory())
+    }
+
+    /// Adds archived highlights/bookmarks whose IDs are not present locally. A local record with
+    /// the same ID wins; differing archived copies are counted as conflicts. Never writes over a
+    /// local file that needs recovery. Runs without suspension (no read/modify/write gap).
+    public func restoreHighlights(archived: Data, bookID: BookID, dryRun: Bool) -> BackupRecordMerge
+    {
+        guard let incoming = try? HighlightsCodec.decode(archived, bookID: bookID) else {
+            return BackupRecordMerge(.archivedUnreadable)
+        }
+        let local: [Highlight]
+        do { local = try loadHighlights(bookID: bookID) ?? [] } catch {
+            return BackupRecordMerge(.localNeedsRecovery)
+        }
+        var merged = local
+        var added = 0
+        var conflicts = 0
+        for record in incoming {
+            if let existing = local.first(where: { $0.id == record.id }) {
+                if (try? HighlightsCodec.equivalent(existing, record)) != true { conflicts += 1 }
+            } else {
+                merged.append(record)
+                added += 1
+            }
+        }
+        guard added > 0 else { return BackupRecordMerge(.unchanged, conflicts: conflicts) }
+        if !dryRun {
+            do { try saveHighlights(bookID: bookID, highlights: merged) } catch {
+                return BackupRecordMerge(.localNeedsRecovery)
+            }
+        }
+        return BackupRecordMerge(
+            local.isEmpty ? .restored : .merged,
+            added: added,
+            conflicts: conflicts
+        )
     }
 
     func highlightsV2Directory() -> URL {

@@ -154,6 +154,77 @@ public actor InkActor {
         return data
     }
 
+    /// Every book with an ink file, including files that need recovery.
+    public func storedBookIDs() async -> [BookID] {
+        SilveranKit.storedBookIDs(in: await versionRoot())
+    }
+
+    /// Adds archived notes and marks whose IDs are not present locally. A local record with the
+    /// same ID wins; differing archived copies are counted as conflicts. Never writes over ink
+    /// that needs recovery.
+    public func restoreInk(archived: Data, bookID: BookID, dryRun: Bool) async -> BackupRecordMerge
+    {
+        let url = await fileURL(bookID: bookID)
+        guard let incoming = try? decoder().decode(BookInk.self, from: archived) else {
+            return BackupRecordMerge(.archivedUnreadable)
+        }
+        committed[url] = nil
+        let loaded = read(url)
+        guard loaded.canEdit else { return BackupRecordMerge(.localNeedsRecovery) }
+        var candidate = loaded.ink
+        var localByID: [String: AnyHashable] = [:]
+        for section in candidate.sections.values {
+            for note in section.notes { localByID[note.id] = note }
+            for mark in section.marks { localByID[mark.id] = mark }
+        }
+        var added = 0
+        var conflicts = 0
+        for href in incoming.sections.keys.sorted() {
+            let archivedSection = incoming.sections[href]!
+            var section = candidate.sections[href] ?? SectionInk()
+            for note in archivedSection.notes {
+                if let existing = localByID[note.id] {
+                    if existing != AnyHashable(note) { conflicts += 1 }
+                } else {
+                    section.notes.append(note)
+                    added += 1
+                }
+            }
+            for mark in archivedSection.marks {
+                if let existing = localByID[mark.id] {
+                    if existing != AnyHashable(mark) { conflicts += 1 }
+                } else {
+                    section.marks.append(mark)
+                    added += 1
+                }
+            }
+            if !section.isEmpty { candidate.sections[href] = section }
+        }
+        guard added > 0 else { return BackupRecordMerge(.unchanged, conflicts: conflicts) }
+        candidate.version = BookInk.currentVersion
+        if !dryRun {
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                let data = try encoder.encode(candidate)
+                _ = try decoder().decode(BookInk.self, from: data)
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try writeFile(data, url)
+            } catch {
+                debugLog("[InkActor] Restoring ink failed: \(error)")
+                return BackupRecordMerge(.localNeedsRecovery)
+            }
+        }
+        return BackupRecordMerge(
+            loaded.ink.isEmpty ? .restored : .merged,
+            added: added,
+            conflicts: conflicts
+        )
+    }
+
     private func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.userInfo[.protectedInkRead] = true
@@ -247,7 +318,7 @@ public actor InkActor {
         }
     }
 
-    private func fileURL(bookID: BookID) async -> URL {
+    private func versionRoot() async -> URL {
         let root: URL
         if let fixedDirectory {
             root = fixedDirectory
@@ -255,6 +326,10 @@ public actor InkActor {
             root = await FilesystemActor.shared.getInkDirectory()
         }
         return root.appendingPathComponent("V1", isDirectory: true)
+    }
+
+    private func fileURL(bookID: BookID) async -> URL {
+        await versionRoot()
             .appendingPathComponent(
                 encodedIdentityPathComponent(bookID.sourceID),
                 isDirectory: true
