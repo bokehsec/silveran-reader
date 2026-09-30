@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Verify pinned, unmodified SQLite sources and their deterministic public aliases."""
+import hashlib
+from pathlib import Path
+import re
+
+root = Path(__file__).resolve().parent.parent / "SilveranKit/Sources/CSQLite"
+expected = {
+    "sqlite3.c": "b1dd5d74ec7f29055a6684fa06fb3c2f6821c87dd38f9a458dfd2e8a1db28189",
+    "sqlite3.h": "919e7f2e8ed1d8f56ac17b412b8971c76aa5d1a879752cc6058f75e7d5910e1d",
+}
+for name, digest in expected.items():
+    actual = hashlib.sha256((root / "Vendor" / name).read_bytes()).hexdigest()
+    if actual != digest:
+        raise SystemExit(f"Pinned SQLite source differs: {name}")
+
+header = (root / "Vendor/sqlite3.h").read_text()
+identifiers = sorted(set(re.findall(r"\bsqlite3(?:_[A-Za-z0-9_]+)?\b", header)))
+aliases = (root / "include/SilveranSQLiteAliases.h").read_text()
+actual = dict(re.findall(r"^#define (\w+) (\w+)$", aliases, re.MULTILINE))
+if actual != {name: "silveran_" + name for name in identifiers}:
+    raise SystemExit("SQLite public aliases differ from the pinned header")
+print(f"Verified SQLite 3.53.4 sources and {len(identifiers)} public aliases")

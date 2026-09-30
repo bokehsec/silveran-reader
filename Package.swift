@@ -18,6 +18,8 @@ let package = Package(
         .library(name: "SilveranNode", type: .dynamic, targets: ["SilveranNode"]),
     ],
     dependencies: [
+        // Already resolved transitively at 3.15.1; use the maintained portable hash API in Kit.
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.15.1"),
         // Fork pinned past 0.9.20: upstream's development branch gained Android
         // cross-compile support (platform-conditional CZLib + Bionic fixes) that
         // no tagged release has yet. Repoint at upstream once a release includes it.
@@ -32,8 +34,22 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "CSQLite",
+            path: "SilveranKit/Sources/CSQLite",
+            exclude: ["README.md", "Vendor"],
+            sources: ["SilveranSQLite.c"],
+            publicHeadersPath: "include",
+            cSettings: [
+                .define("SQLITE_THREADSAFE", to: "1"),
+                .define("SQLITE_DQS", to: "0"),
+                .define("SQLITE_OMIT_LOAD_EXTENSION"),
+            ]
+        ),
+        .target(
             name: "SilveranKit",
             dependencies: [
+                "CSQLite",
+                .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
             ],
