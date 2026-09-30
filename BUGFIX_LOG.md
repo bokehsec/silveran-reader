@@ -42,6 +42,34 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-029 — Watch builds for real devices failed on a 64-bit integer literal
+
+- Date: 2026-09-30
+- Status: Fixed
+- Platforms: watchOS (device); Shared
+- Components: `Kit/Annotations/AnnotationAnchors.swift`
+- Related links: BF-020
+
+#### Symptom
+
+Building for an Apple Watch failed: "Integer literal '9007199254740991' overflows when stored into 'Int'" in `AnnotationAnchors.swift`.
+
+#### Root cause
+
+The anchor resolver bounds offsets by JavaScript's largest safe integer (2^53 − 1) as an `Int` literal. Apple Watch hardware uses `arm64_32`, where `Int` is 32 bits. Validation had only built the watch app for the arm64 simulator, where `Int` is 64 bits.
+
+#### Change
+
+Compare as `Int64(anchor.offset) <= 9_007_199_254_740_991`. Behavior is unchanged on 64-bit platforms; on 32-bit the bound is always satisfied, as before in practice.
+
+#### Validation
+
+`xcodebuild -project Silveran.xcodeproj -scheme "Silveran Reader (watchOS)" -configuration Debug -destination 'generic/platform=watchOS' CODE_SIGNING_ALLOWED=NO build` succeeds (device architectures, including arm64_32). No other large integer literals in Swift sources. Future validation should include this generic-device watch build, not only the simulator.
+
+#### Compatibility and follow-up
+
+None known.
+
 ### BF-028 — The Mac content server password was stored in plain preferences
 
 - Date: 2026-09-30

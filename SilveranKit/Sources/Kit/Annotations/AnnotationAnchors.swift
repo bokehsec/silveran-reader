@@ -33,7 +33,8 @@ public enum AnnotationAnchorResolver {
             )
         }
         guard version == Self.version else { return unresolved("unsupported-anchor-version") }
-        guard anchor.offset >= -1, anchor.offset <= 9_007_199_254_740_991 else {
+        // JavaScript's largest safe integer; compared as Int64 so 32-bit watchOS compiles.
+        guard anchor.offset >= -1, Int64(anchor.offset) <= 9_007_199_254_740_991 else {
             return unresolved("invalid-selector")
         }
         func occurrences(_ needle: String) -> [Int] {
