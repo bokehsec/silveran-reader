@@ -4,7 +4,12 @@
 
 The records live in private zones (`Annotations`, `Backups`), so the grants only matter for CloudKit's schema format. Enumeration uses zone changes, so no query indexes are needed beyond `___recordID`.
 
-## Apply it
+## Apply it without a token (recommended)
+
+1. Build and run a signed Debug Mac build with the iCloud settings enabled in `Local.xcconfig`, passing `-SilveranCloudKitSchemaBootstrap`. It saves one sample record of each type to the Development database, deletes it, prints the result and quits.
+2. In the CloudKit Console, open **Schema** and choose **Deploy Schema Changes…**.
+
+## Apply it with a management token
 
 1. In the CloudKit Console (icloud.developer.apple.com), select the container, open **Settings > Tokens**, and create a **Management Token**.
 2. Save it for command-line use (you paste the token; it goes to the macOS keychain):

@@ -25,6 +25,17 @@ struct SilveranReaderApp: App {
     init() {
         StorytellerFontRegistration.registerBundledFonts()
         SidebarSelectionColor.install()
+        #if DEBUG
+        if CloudKitSchemaBootstrap.isRequested, let container = AppBackup.cloudContainerIdentifier {
+            // One-off tool run: define the CloudKit Development schema, report, and quit.
+            Task {
+                let result = await CloudKitSchemaBootstrap.run(containerIdentifier: container)
+                FileHandle.standardError.write(Data((result + "\n").utf8))
+                exit(result.contains("succeeded") ? 0 : 1)
+            }
+            return
+        }
+        #endif
         Task {
             guard await SilveranRuntime.start() else { return }
             await AppleConfigurationSyncCoordinator.shared.start()
