@@ -20,7 +20,7 @@ Probe method: the product owner signs in to the web UI in the in-app browser; re
 | Reading position | Yes | `GET /api/v2/books/{id}/positions` answers JSON (`{"message":"No position found"}` when none) | Implemented; 404/409 treated as permanent, 401 re-authenticates |
 | Reading status | Yes (beta.40) | Custom default status "Downloads" never auto-promotes (beta.40 writes) | Existing status sync |
 | Ratings, metadata, collections | Yes | Capabilities `metadata-edit`; book fields `rating`, `userBookRating`, `collections` | Existing (BF-012) |
-| Highlights, bookmarks, notes, handwriting | **No** (and out of scope regardless) | `/api/v2/books/{id}/annotations`, `/highlights`, `/bookmarks`, `/notes`, `/api/v2/annotations`, `/api/v2/highlights`, `/api/v2/bookmarks`, `/api/v2/user/annotations` all fall through to the web app's HTML 404 (not API routes) | Client-side only by product decision; kept on the device and in iCloud backup |
+| Highlights, bookmarks, notes, handwriting | **No** (and out of scope regardless) | `/api/v2/books/{id}/annotations`, `/highlights`, `/bookmarks`, `/notes`, `/api/v2/annotations`, `/api/v2/highlights`, `/api/v2/bookmarks`, `/api/v2/user/annotations` all fall through to the web app's HTML 404 (not API routes) | Never sent to the server by product decision; synced between the person's devices through iCloud (ADR 010) and backed up |
 
 ## Quirks that affect clients (verified on beta.40, same deployment)
 
@@ -31,5 +31,5 @@ Probe method: the product owner signs in to the web UI in the in-app browser; re
 
 ## Consequences for the plan
 
-- Annotations are client-side only by product decision (2026-09-30), independent of what the server supports; there is no annotation adapter to build. Annotations are protected locally and in iCloud backup (Phases 1, 3, 4).
+- Annotations are never sent to the server by product decision (2026-09-30), independent of what the server supports; there is no server annotation adapter to build. They sync between the person's devices through iCloud (ADR 010) and are backed up (Phases 3, 4).
 - P6.2 hardening: the known quirks above are already handled by Silveran's existing sync; remaining work is a contract test harness that replays sanitized fixtures of these responses.

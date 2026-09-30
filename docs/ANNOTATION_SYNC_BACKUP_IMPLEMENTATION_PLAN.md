@@ -2,7 +2,7 @@
 
 Date: 2026-09-30. Status: Phases 1, 3 and 4 are implemented in code and awaiting device/signed-account acceptance; Phase 2 foundations exist but the reader has not been cut over; Phases 5–7 not started. No exit gate is marked passed until its device evidence exists. See the status summary and progress record below.
 
-**Scope decision (product owner, 2026-09-30):** annotations are a client-side capability. They are stored on the device and protected by iCloud backup; they are **not** synchronized with Storyteller or any other book server, even if a server later adds annotation support. Server synchronization covers books, reading position, reading status, ratings, metadata and collections only.
+**Scope decisions (product owner, 2026-09-30):** annotations are never synchronized with Storyteller or any other book server, even if a server later adds annotation support; server synchronization covers books, reading position, reading status, ratings, metadata and collections only. Annotations **must** sync, together with application settings, between the person's own devices through iCloud ([ADR 010](decisions/010-live-icloud-annotation-sync.md)), and are protected by iCloud backup.
 
 This plan implements the direction in [the architecture review](ANNOTATION_SYNC_BACKUP_REVIEW.md) and follows [AGENTS.md](../AGENTS.md), [ARCHITECTURE.md](../ARCHITECTURE.md) and [CONTRIBUTING.md](../CONTRIBUTING.md). It owns sequencing and release gates. The review owns supporting findings and rationale; the earlier [Pencil plan](PENCIL_INK_IMPLEMENTATION_PLAN.md) and [configuration plan](ICLOUD_CONFIGURATION_IMPLEMENTATION_PLAN.md) retain their implementation history. Their narrower MVP exclusions do not limit the long-term scope.
 
@@ -21,6 +21,7 @@ Initial delivery targets iPad/Pencil authoring and Mac/iPhone annotation viewing
 | 4 | Automatic retained iCloud backups with tested restoration | Phase 3 | Cloud protection release |
 | 5 | Complete reflowable EPUB annotation experience | Phase 2; Phase 4 for broad authoring rollout | EPUB annotation release |
 | 6 | Verified Storyteller sync of books, reading position, status, ratings and metadata (no annotations) | Phase 0 baseline | Interoperability release |
+| 4S | Live iCloud sync of annotations and settings between the person's devices (ADR 010) | Phase 1; Phase 4 build switch | Device sync release |
 | 7 | Broader Scribe parity and additional platform capabilities | Relevant earlier foundations | Separate feature releases |
 
 Phase numbers express dependencies, not a requirement to finish every earlier phase before starting any later work. Phase 1 safety fixes can begin while Phase 0 decisions are being documented. UX prototypes and Storyteller contract tests can start early; Phase 5 implementation and Phase 6 existing-feature hardening can proceed after their own dependencies. Phase 4 must not wait for upstream annotation support.
@@ -116,6 +117,17 @@ Deliver in small reviewable changes:
 
 **Release boundary:** automatic backup can be advertised for the explicitly tested scope/platforms. Roll out to a small opt-in cohort first, then broaden after restore exercises and performance checks pass. Media-library backup and seamless credential transfer remain separate unless explicitly implemented and validated.
 
+## Phase 4S — Live iCloud sync of annotations and settings
+
+**Purpose:** the person's highlights, bookmarks, notes, handwriting and settings appear on their other devices within about a minute (ADR 010). Committed by product decision 2026-09-30.
+
+- **P4S.1 Sync state and reconciliation.** Per-annotation clocks, content hashes, tombstones and stroke sets beside the owners' files; change detection by reconciliation after commits and at launch.
+- **P4S.2 Merge rules.** Latest wins with the losing version kept in recovery; handwritten strokes combined; deletions win or lose by clock; incoming changes applied through the owners; open books reload.
+- **P4S.3 CloudKit transport.** `CKSyncEngine`, zone `Annotations`, push notifications, persisted engine state, change-tag conflicts merged and re-sent, account-change handling.
+- **P4S.4 One switch and status.** "Sync annotations and settings with iCloud" covers this and the existing settings sync; status and recovery of kept versions in the Annotations screen.
+
+**Exit gate:** simulated multi-device tests pass (convergence, deletions, both conflict rules, strokes, offline, crash between writes); signed two- and three-device checks on the device checklist pass, including offline edits, account change and a device returning after days offline.
+
 ## Phase 5 — Complete the reflowable EPUB annotation experience
 
 **Purpose:** finish the core Scribe-class workflows on durable, recoverable data.
@@ -153,7 +165,6 @@ Deliver as separately scoped features using the established data and backup cont
 | Handwriting recognition/search | Correctable derived text linked to immutable/editable originals; measured language/accuracy coverage and reindexing behavior |
 | Optional AI assistance | Explicit privacy/data-flow policy, user control, provenance and original preservation; local annotation remains independent |
 | Android/Linux and additional Apple surfaces | Appropriate input/rendering/storage adapters, portable archive round trips and honest cloud/platform capabilities |
-| Optional live iCloud annotation sync between the person's own devices | **Not committed; product decision pending.** iCloud backup (Phase 4) is the committed annotation cloud capability. If chosen: separate ADR and release; resolve the Phase 2 revision-growth blocker first; account isolation and conflict-safe undo; retain historical backup independently |
 
 **Exit gate:** each workstream has its own updated parity matrix, migration/backup tests, device acceptance and performance criteria. No blanket “all platforms” or “full parity” claim from completion of one workstream.
 
@@ -192,6 +203,7 @@ This change creates the plan and links it from the project guidance/review. No i
 | 2 Repository | Repository, anchors/editions, snapshots, legacy staging; not used by the reader | **Blocked by design issue**: per-stroke revisions grow storage quadratically and can't be compacted ([ADR 003](decisions/003-transactional-annotation-repository.md#cutover-blocker-found-2026-09-30-revision-growth-and-compaction)); deferred until a sync provider needs it. Then: compaction/coarser revisions, owner freeze + journaled cutover, edition persistence, conflict-aware undo |
 | 3 Local archive | Done: `.silveranbackup` export/import, preview, journaled resumable restore, safety copies, source reconnection | Checks 14–21 |
 | 4 iCloud backup | Done behind a build switch: CloudKit transport, scheduling, retention, account isolation, UI | Provision container; checks 22–30 on signed builds; small opt-in rollout |
+| 4S Device sync | Designed ([ADR 010](decisions/010-live-icloud-annotation-sync.md)); implementation in progress | Everything in Phase 4S |
 | 5 EPUB UX | P5.1 started: library-wide Annotations browser (search, filters, books not in the library, damaged-file notice, "Show in Book"), P5.5 Markdown and web-page (handwriting as SVG) export | Manual reattachment/orphan repair, margin notes (P5.2), lasso/move/resize tools (P5.3), device input/accessibility (P5.4), PDF export |
 | 6 Storyteller (books and reading state only) | P6.1 started: [compatibility matrix](STORYTELLER_COMPATIBILITY.md); known progress/status quirks already handled | Contract test harness from sanitized fixtures; multi-device position conflict tests; re-probe on each server upgrade |
 | 7 Broader parity | Not started | Separate scoping |
@@ -325,3 +337,7 @@ Follow-up: web-page export draws handwriting as inline SVG with its original col
 ### 2026-09-30 — Scope decision: annotations are client-side only
 
 The product owner confirmed that annotations are never synchronized with Storyteller or another book server; they stay on the device and are protected by iCloud backup. Server sync covers books, reading position, status, ratings, metadata and collections. The plan's Phase 6, AGENTS.md, ARCHITECTURE.md, ADR 003 and the Storyteller compatibility matrix were updated; the Storyteller annotation adapter and its conflict work were removed. Live iCloud annotation sync between the person's own devices (Phase 7) is not committed and awaits a product decision. Oddities seen during the work are now tracked in [OBSERVED_ODDITIES.md](OBSERVED_ODDITIES.md).
+
+### 2026-09-30 — Annotations must sync between devices (Phase 4S)
+
+The product owner decided annotations must sync, together with settings, between their own devices through iCloud: latest change wins with the older version kept in recovery, handwritten strokes combined, changes within about a minute. [ADR 010](decisions/010-live-icloud-annotation-sync.md) records the design: a sync layer beside the existing protected owners (no reader cutover), `CKSyncEngine` transport. Server annotation sync remains out of scope.
