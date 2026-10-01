@@ -168,4 +168,15 @@ struct InkBridgeTests {
         #expect(try js.arguments(of: "inkPreviewSelection")[1] as? String == "n'quote")
     }
 
+    @Test("Focused margin bridge preserves exact chapter and note identities")
+    func focusMargin() async throws {
+        let js = ScriptRecorder()
+        let bridge = ReaderCommsBridge(js: js)
+        js.result = #"{"shown":true}"#
+        #expect(try await bridge.inkFocusMarginNote(href: "chapter'\\x.xhtml", noteID: "note'\""))
+        let args = try js.arguments(of: "inkFocusMarginNote")
+        #expect(args[0] as? String == "chapter'\\x.xhtml")
+        #expect(args[1] as? String == "note'\"")
+    }
+
 }

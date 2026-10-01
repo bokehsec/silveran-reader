@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+cd "${SCRIPT_DIR}/.."
+
+# Keep tests explicit about their simulator. A dedicated UIKit host has its own sandbox;
+# it never initializes the reader or drives UI gestures.
+DESTINATION="${SILVERAN_IOS_DESTINATION:?Set SILVERAN_IOS_DESTINATION to an isolated iOS simulator destination}"
+# The dedicated scheme supplies the UIKit lifecycle required by WebKit and uses the app's
+# package graph rather than the aggregate workspace (which resolves unrelated products).
+# Keep this generated project separate from an open Xcode workspace's coordinated reads.
+mkdir -p .buildIosTestProject
+SILVERAN_COMPONENT_PACKAGE_ROOT="$(pwd)" xcodegen -r . -p .buildIosTestProject -s XCodeApps/component-tests.yml
+
+XCODEBUILD_OPTIONS=(test)
+if [[ "${SILVERAN_DISABLE_CODE_SIGNING:-0}" == "1" ]]; then
+    XCODEBUILD_OPTIONS=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test)
+fi
+
+xcodebuild -project .buildIosTestProject/Silveran.xcodeproj \
+    -scheme "Silveran Components (iOS)" \
+    -configuration Debug \
+    -destination "${DESTINATION}" \
+    -derivedDataPath .buildIos \
+    -parallel-testing-enabled NO \
+    "${XCODEBUILD_OPTIONS[@]}" "$@" | xcbeautify

@@ -200,6 +200,7 @@ public struct InkMarginStateMessage: Codable {
 public struct InkMarginNoteTappedMessage: Codable {
     public let href: String?
     public let id: String
+    public let ids: [String]?
 }
 
 /// Highlights of a section whose position no longer lands on their words (not drawn).

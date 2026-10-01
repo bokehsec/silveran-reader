@@ -141,16 +141,17 @@ public final class ReaderMessageRouter {
                     bridge.sendSwiftInkSectionReady(msg)
 
                 #if DEBUG
-                case "InkDebugStroke":
-                    // DEBUG only: a synthetic stroke from InkDebug.js (the simulator has no Pencil).
-                    let data = try JSONSerialization.data(withJSONObject: body)
-                    let msg = try decoder.decode(InkStrokeInput.self, from: data)
-                    Task { @SilveranUIActor in await bridge.inkSession.finishStroke(msg) }
+                    case "InkDebugStroke":
+                        // DEBUG only: a synthetic stroke from InkDebug.js (the simulator has no Pencil).
+                        let data = try JSONSerialization.data(withJSONObject: body)
+                        let msg = try decoder.decode(InkStrokeInput.self, from: data)
+                        Task { @SilveranUIActor in await bridge.inkSession.finishStroke(msg) }
 
-                case "InkDebugErase":
-                    let data = try JSONSerialization.data(withJSONObject: body)
-                    let msg = try decoder.decode(InkStrokeInput.self, from: data)
-                    Task { @SilveranUIActor in await bridge.inkSession.erase(points: msg.points) }
+                    case "InkDebugErase":
+                        let data = try JSONSerialization.data(withJSONObject: body)
+                        let msg = try decoder.decode(InkStrokeInput.self, from: data)
+                        Task { @SilveranUIActor in await bridge.inkSession.erase(points: msg.points)
+                        }
                 #endif
 
                 case "InkOrphaned":
@@ -164,7 +165,8 @@ public final class ReaderMessageRouter {
                     let session = bridge.inkSession
                     Task { @SilveranUIActor in
                         session.setMarginState(
-                            InkSession.MarginState(expanded: msg.expanded, available: msg.available))
+                            InkSession.MarginState(expanded: msg.expanded, available: msg.available)
+                        )
                     }
 
                 case "InkMarginNoteTapped":
@@ -172,7 +174,11 @@ public final class ReaderMessageRouter {
                     let msg = try decoder.decode(InkMarginNoteTappedMessage.self, from: data)
                     let session = bridge.inkSession
                     Task { @SilveranUIActor in
-                        session.marginNoteTapped(href: msg.href ?? "", noteID: msg.id)
+                        session.marginNoteTapped(
+                            href: msg.href ?? "",
+                            noteID: msg.id,
+                            noteIDs: msg.ids
+                        )
                     }
 
                 case "HighlightOrphaned":

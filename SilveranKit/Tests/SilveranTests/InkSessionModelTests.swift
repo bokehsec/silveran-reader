@@ -28,6 +28,11 @@ private final class FakeEngine: InkEngineCalling {
     var selectionHit = InkSelectionHit()
     var onSelect: (() async -> Void)?
     var previews: [InkStrokeTransform] = []
+    var marginFocusCalls: [(String, String)] = []
+    func inkFocusMarginNote(href: String, noteID: String) async throws -> Bool {
+        marginFocusCalls.append((href, noteID))
+        return true
+    }
     func inkSelect(lasso: [[Double]]) async throws -> InkSelectionHit {
         await onSelect?()
         return selectionHit
@@ -1256,6 +1261,40 @@ struct InkSessionModelTests {
         #expect(session.section("c1").marks == [legacy])
         #expect(session.correctMark(href: "c1", expected: legacy, kind: .strike))
         #expect(session.section("c1").marks[0].geometry.points == [[0, 0], [1, 0]])
+    }
+
+    @Test("Margin groups validate every identity and explicit focus never mutates passage or undo")
+    func marginGroups() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        var a = note("a")
+        a.placement = .margin
+        var b = note("b")
+        b.placement = .margin
+        #expect(session.apply(.addNote(href: "c1", note: a)))
+        #expect(session.apply(.addNote(href: "c1", note: b)))
+        #expect(session.apply(.addNote(href: "c1", note: note("inline"))))
+        var selected: [String] = []
+        session.onMarginNotesTapped = { href, ids in
+            #expect(href == "c1")
+            selected = ids
+        }
+        session.marginNoteTapped(
+            href: "c1",
+            noteID: "b",
+            noteIDs: ["b", "missing", "inline", "a", "b"]
+        )
+        #expect(selected == ["b", "a"])
+        #expect(!(await session.focusMarginNote(href: "c1", noteID: "inline")))
+        #expect(!(await session.focusMarginNote(href: "other-chapter", noteID: "a")))
+        let before = session.ink
+        #expect(await session.focusMarginNote(href: "c1", noteID: "b"))
+        #expect(session.ink == before)
+        #expect(engine.marginFocusCalls.count == 1)
+        #expect(session.undo())
+        #expect(session.section("c1").notes == [a, b], "focusing did not add an undo step")
     }
 
 }

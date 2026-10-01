@@ -23,6 +23,14 @@ extension ReaderCommsBridge: InkEngineCalling {
         return try decodeInkResult(InkHit.self, from: result)
     }
 
+    public func inkFocusMarginNote(href: String, noteID: String) async throws -> Bool {
+        struct Shown: Decodable { let shown: Bool }
+        let result = try await callInk(
+            "return await window.foliateManager.inkFocusMarginNote(\(try jsString(href)), \(try jsString(noteID)));"
+        )
+        return try decodeInkResult(Shown.self, from: result).shown
+    }
+
     public func inkSelect(lasso: [[Double]]) async throws -> InkSelectionHit {
         let result = try await callInk(
             "return await window.foliateManager.inkSelect(\(try jsLiteral(lasso)));"

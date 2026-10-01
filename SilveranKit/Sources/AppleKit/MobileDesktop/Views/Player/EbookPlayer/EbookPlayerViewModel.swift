@@ -151,6 +151,7 @@ class EbookPlayerViewModel {
     struct MarginNoteRef: Identifiable, Equatable {
         let href: String
         let noteID: String
+        var noteIDs: [String] = []
         var id: String { "\(href)|\(noteID)" }
     }
     /// Everything the repair banner and sheet cover: handwriting and typed highlights.
@@ -286,8 +287,9 @@ class EbookPlayerViewModel {
             guard let self else { return }
             self.inkMarginState = self.inkSession.marginState
         }
-        inkSession.onMarginNoteTapped = { [weak self] href, noteID in
-            self?.presentedMarginNote = MarginNoteRef(href: href, noteID: noteID)
+        inkSession.onMarginNotesTapped = { [weak self] href, ids in
+            guard let first = ids.first else { return }
+            self?.presentedMarginNote = MarginNoteRef(href: href, noteID: first, noteIDs: ids)
         }
         inkOrphanCount = inkSession.orphans.values.reduce(0) { $0 + $1.count }
         inkSession.onOrphansChanged = { [weak self] in

@@ -10,6 +10,7 @@ public protocol InkEngineCalling: AnyObject {
     func inkRender(href: String, section: SectionInk, focus: String?) async throws
     /// What the eraser path (web view coordinates) touches on the current page.
     func inkHitTest(points: [[Double]], radius: Double) async throws -> InkHit
+    func inkFocusMarginNote(href: String, noteID: String) async throws -> Bool
     func inkSelect(lasso: [[Double]]) async throws -> InkSelectionHit
     func inkPreviewSelection(
         href: String,
@@ -451,6 +452,7 @@ public final class InkSession {
     public private(set) var marginState = MarginState()
     public var onMarginStateChanged: (() -> Void)?
     /// A margin note icon was tapped where the margin can't open (narrow screen): show it.
+    public var onMarginNotesTapped: ((_ href: String, _ noteIDs: [String]) -> Void)?
     public var onMarginNoteTapped: ((_ href: String, _ noteID: String) -> Void)?
     private var reportedMarginNotes: Bool?
 
@@ -489,8 +491,31 @@ public final class InkSession {
         }
     }
 
-    public func marginNoteTapped(href: String, noteID: String) {
-        onMarginNoteTapped?(href, noteID)
+    public func marginNoteTapped(href: String, noteID: String, noteIDs: [String]? = nil) {
+        if let onMarginNotesTapped {
+            let available = Set(section(href).notes.filter(\.isMarginNote).map(\.id))
+            var seen = Set<String>()
+            let ids = (noteIDs ?? [noteID]).filter {
+                available.contains($0) && seen.insert($0).inserted
+            }
+            if !ids.isEmpty { onMarginNotesTapped(href, ids) }
+        } else {
+            onMarginNoteTapped?(href, noteID)
+        }
+    }
+
+    /// Selects one crowded margin canvas as presentation only; its passage stays unchanged.
+    public func focusMarginNote(href: String, noteID: String) async -> Bool {
+        guard canEdit, !isWriting, let engine,
+            let note = section(href).notes.first(where: { $0.id == noteID && $0.isMarginNote })
+        else { return false }
+        isSelectingInk = false
+        let renderer = rendererGeneration
+        do {
+            let shown = try await engine.inkFocusMarginNote(href: href, noteID: noteID)
+            return shown && renderer == rendererGeneration && canEdit
+                && section(href).notes.first(where: { $0.id == noteID }) == note
+        } catch { return false }
     }
 
     // MARK: - Repairing ink that lost its words (P5.1)
@@ -1048,6 +1073,9 @@ public enum InkSessionPersistenceState: Equatable, Sendable {
 }
 
 extension InkEngineCalling {
+    public func inkFocusMarginNote(href: String, noteID: String) async throws -> Bool {
+        throw ReaderCommsBridgeError.jsNotAvailable
+    }
     public func inkSelect(lasso: [[Double]]) async throws -> InkSelectionHit {
         throw ReaderCommsBridgeError.jsNotAvailable
     }

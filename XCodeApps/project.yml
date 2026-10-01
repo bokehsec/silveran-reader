@@ -29,6 +29,44 @@ targetTemplates:
         SWIFT_VERSION: 6.2
 
 targets:
+  Silveran Component Test Host (iOS):
+    type: application
+    platform: iOS
+    sources:
+      - path: SilveranKit/Tests/AppleTestHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.silveran.ComponentTestHost
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: 6.2
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+
+  Silveran Component Tests (iOS):
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: SilveranKit/Tests/SilveranTests
+        includes:
+          - AnnotationBookInspectorTests.swift
+          - AnnotationPDFExportTests.swift
+          - AnnotationImageExportTests.swift
+          - InkBridgeTests.swift
+          - InkSessionModelTests.swift
+          - InkModelsTests.swift
+          - InkMarginWebKitTests.swift
+    dependencies:
+      - target: Silveran Component Test Host (iOS)
+      - package: Silveran
+        product: SilveranKit
+      - package: Silveran
+        product: SilveranAppleKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.silveran.ComponentTests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: 6.2
+
   Silveran Reader (macOS):
     templates:
       - appBase
@@ -329,6 +367,17 @@ targets:
       - package: Silveran
         product: SilveranAppleKit
 schemes:
+  "Silveran Components (iOS)":
+    shared: true
+    build:
+      targets:
+        "Silveran Component Test Host (iOS)": all
+        "Silveran Component Tests (iOS)": [test]
+    test:
+      config: Debug
+      targets:
+        - "Silveran Component Tests (iOS)"
+
   "Silveran Reader (macOS)":
     shared: true
     build:
@@ -340,7 +389,8 @@ schemes:
       executable: "Silveran Reader (macOS)"
     test:
       config: Debug
-      targets: []
+      targets:
+        - package: Silveran/SilveranTests
     profile:
       config: Release
     analyze:
@@ -359,7 +409,8 @@ schemes:
       executable: "Silveran Reader (iOS)"
     test:
       config: Debug
-      targets: []
+      targets:
+        - "Silveran Component Tests (iOS)"
     profile:
       config: Release
     analyze:

@@ -762,28 +762,55 @@ struct StrokeThumbnail: View {
 
     var body: some View {
         Canvas { context, size in
-            let points = strokes.flatMap(\.points).filter { $0.count >= 2 }
-            guard let minX = points.map({ $0[0] }).min(), let maxX = points.map({ $0[0] }).max(),
-                let minY = points.map({ $0[1] }).min(), let maxY = points.map({ $0[1] }).max()
+            let shapes = strokes.compactMap { stroke -> (InkStroke, [[Double]])? in
+                let points =
+                    stroke.tool == .highlighter
+                    ? stroke.points.map { Array($0.prefix(2)) } : stroke.points
+                let outline = InkStrokeOutline.outline(points: points, size: stroke.width)
+                return outline.isEmpty ? nil : (stroke, outline)
+            }
+            let all = shapes.flatMap { $0.1 }
+            guard let minX = all.map({ $0[0] }).min(), let maxX = all.map({ $0[0] }).max(),
+                let minY = all.map({ $0[1] }).min(), let maxY = all.map({ $0[1] }).max()
             else { return }
             let width = max(maxX - minX, 1)
             let height = max(maxY - minY, 1)
-            let scale = min((size.width - 4) / width, (size.height - 4) / height)
+            let scale = max(0, min((size.width - 4) / width, (size.height - 4) / height))
             let offsetX = (size.width - width * scale) / 2
             let offsetY = (size.height - height * scale) / 2
-            for stroke in strokes {
+            for (stroke, outline) in shapes {
                 var path = Path()
-                for (index, point) in stroke.points.enumerated() where point.count >= 2 {
+                let highlighterLine = stroke.tool == .highlighter && stroke.points.count > 1
+                let points = highlighterLine ? stroke.points : outline
+                for (index, point) in points.enumerated() where point.count >= 2 {
                     let location = CGPoint(
                         x: offsetX + (point[0] - minX) * scale,
                         y: offsetY + (point[1] - minY) * scale
                     )
                     if index == 0 { path.move(to: location) } else { path.addLine(to: location) }
                 }
-                context.stroke(path, with: .color(.primary), lineWidth: 1)
+                let color = (Color(hex: stroke.color) ?? .primary).opacity(
+                    stroke.tool == .highlighter ? 0.35 : 1
+                )
+                if highlighterLine {
+                    context.stroke(
+                        path,
+                        with: .color(color),
+                        style: StrokeStyle(
+                            lineWidth: stroke.width * scale,
+                            lineCap: .butt,
+                            lineJoin: .round
+                        )
+                    )
+                } else {
+                    path.closeSubpath()
+                    context.fill(path, with: .color(color))
+                }
             }
         }
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 4))
+        // Stored colors are canonical for a light page, including ink captured in dark mode.
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 4))
+        .overlay(RoundedRectangle(cornerRadius: 4).stroke(.secondary.opacity(0.2), lineWidth: 1))
     }
 }
 

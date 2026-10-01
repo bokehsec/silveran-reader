@@ -8,6 +8,150 @@ Maintainers and contributors must add or update an entry for every bugfix. See [
 
 Copy this template for each new bugfix and add the completed entry at the top of `## Entries`.
 
+```markdown
+### BF-### — Short description
+
+- Date: YYYY-MM-DD
+- Status: Fixed | Investigating | Needs validation | Reverted
+- Platforms: Apple / Android / Linux / Shared / Other
+- Components: Paths, targets, or subsystems
+- Related links: Issue, commit, upstream reference, or `None`
+
+#### Symptom
+
+What the user observed, including reproduction conditions and frequency when known.
+
+#### Root cause
+
+Why the incorrect behavior occurred and what invariant or assumption was violated.
+
+#### Change
+
+What changed, why this approach was chosen, and what behavior was intentionally left unchanged.
+
+#### Validation
+
+Exact tests, build commands, manual checks, and results. List untested platforms or known limitations explicitly.
+
+#### Compatibility and follow-up
+
+Migration, data, release, or upstream-PR considerations. Use `None known` when applicable.
+```
+
+## Entries
+
+<!-- Add new entries immediately below this line, newest first. -->
+
+### BF-041 — Margin notes had no accessible in-reader viewing action on iPhone
+
+- Date: 2026-10-01
+- Status: Needs validation (native VoiceOver/menu interaction pending)
+- Platforms: iOS EPUB reader
+- Components: `EbookPlayerTopToolbar`, `EbookPlayerView.marginViewer`
+- Related links: [BF-040](#bf-040--margin-notes-disappeared-on-narrow-phones-and-in-scrolling-mode)
+
+#### Symptom and cause
+
+Margin tiles live in an aria-hidden SVG and are tapped through coordinate hit testing. The narrow-screen reader exposed no native viewing action for them, so VoiceOver users had to leave the book and find the notes in the library browser. The wide margin button is for Pencil authoring and is deliberately unavailable on iPhone.
+
+#### Change and validation
+
+When the current actual chapter contains margin notes, the existing bookmark control offers a native menu with Bookmarks & Highlights and Margin Notes in This Chapter. The latter uses the same session-validated member-ID path and readable full-drawing viewer; it does not infer an href from a TOC label or add another cramped toolbar button. Explicit accessibility labels describe the available actions. Native AppleKit compilation passes in the unsigned Mac build and iPhone component run; scoped strict formatting passes. VoiceOver/menu usability remains pending while Mac UI access is locked. No persistence/migration change; none known.
+
+
+### BF-040 — Margin notes disappeared on narrow phones and in scrolling mode
+
+- Date: 2026-10-01
+- Status: Needs validation (renderer regression passes; native workflows pending)
+- Platforms: EPUB renderer on Apple platforms
+- Components: `InkMargin.columnFrame`, `marginGap`, `FoliateManager.inkGap`
+- Related links: [Phase 5 backlog](docs/PHASE5_EXECUTION_BACKLOG.md)
+
+#### Symptom and root cause
+
+The collapsed six-percent gap gives half a gutter narrower than the sixteen-point icon on typical phone widths; the renderer then skips the icon. Scrolling explicitly removed the gap and only CSS-column layouts were recognized, so its margin notes had no reachable in-book projection at all. The notes remained saved and visible in the library, but their intended page access was lost.
+
+#### Change
+
+Use a twelve-percent collapsed gap for narrow paginated layouts and retain six percent in scrolling layouts. Recognize the paginator's horizontal scrolling padding as a single-column icon gutter. Expanded drawing remains available only in wide paginated readers. Stored notes, anchors, original coordinates and user font settings remain unchanged.
+
+#### Validation and compatibility
+
+A scrolling-layout regression fails before the fix (seven pass, one fail because no frame exists), then all eight margin tests pass. Geometry checks verify sixteen-point tiles fit supported 320–430-point phone widths; scrolling hit testing returns the original note. Actual WebKit lays out an unclipped counted tile and returns both member IDs at its real rendered center on Mac, iPad and iPhone; a UTF-8 snapshot fixture was visually inspected. Actual phone scrolling/rotation/theme and gesture checks remain pending while Mac UI is locked. No persistence or migration change; vertical scrolling writing modes remain unverified. None known beyond pending acceptance.
+
+### BF-039 — Headless iOS component tests falsely reported inspector startup failure
+
+- Date: 2026-10-01
+- Status: Fixed in test harness
+- Platforms: iOS simulator test infrastructure
+- Components: `XCodeApps/project.yml`, `scripts/iostest`, `ComponentTestHost`
+- Related links: [Phase 5 backlog](docs/PHASE5_EXECUTION_BACKLOG.md)
+
+#### Symptom and investigation
+
+The package inspector integration test timed out in the iPad A16/iOS 18.6 headless `xctest` process, while the same fixture passed on Mac WebKit. Temporary module-error diagnostics and a nonzero frame did not fix it. Simulator logs showed a detached WebKit process associated with the anonymous runner; the package test runner supplies no UIKit application lifecycle. It was incorrect to present this run as representative native component evidence.
+
+#### Change
+
+Add a dedicated UIKit app host and component test scheme with their own sandbox and bundle identity. The host never initializes the reader, persisted owners, credentials or cloud services; component tests do not drive UI gestures. The script requires an explicit isolated simulator destination. Reverted exploratory production HTML/inspector changes: no inspector implementation fix is claimed from the headless failure.
+
+#### Validation
+
+The hosted inspector fixture passes on iPad A16/iOS 18.6 in 1.814 seconds. The expanded run passes 65 tests on iPhone 16/iOS 18.6 with the original zero-frame inspector and original module bootstrap, plus PDF/PNG, actual WebKit margin layout and ink session/bridge tests. The final isolated-project run also passes 65 tests on iPad A16/iOS 18.6. Hands-on repair/export/usability and real-device acceptance remain pending because Mac UI access is locked.
+
+#### Compatibility
+
+No production storage, code or behavior change. None known.
+
+### BF-038 — Handwriting thumbnails hid pressure, color and single-point dots
+
+- Date: 2026-09-30
+- Status: Needs validation (native visual/zoom interaction pending)
+- Platforms: iOS/macOS annotation browser, repair/classification previews and margin viewer
+- Components: `StrokeThumbnail`, shared `InkStrokeOutline`, `MarginNoteSheet`
+- Related links: [BF-034](#bf-034--htmlsvg-handwriting-sharing-flattened-pressure-and-lost-single-point-dots)
+
+#### Symptom and cause
+
+Thumbnails drew all strokes as one-point-width monochrome centerlines. Pressure and saved color were not shown, and a lone move-only dot could disappear. The margin viewer inherited the same projection and offered no full-size view.
+
+#### Change
+
+Measure pressure-aware painted outlines and fill them with saved colors; dots use the same closed outline as the reader. Highlighters keep constant width, flat caps and translucency. Preserve aspect ratio and painted bounds. A full vector drawing view now provides scrolling/pinch zoom separately from editing, without changing stored samples or anchors.
+
+#### Validation and compatibility
+
+Shared outline golden tests and visual-export pressure/dot tests pass; the full margin increment's Mac suite passed 393 tests in 40 suites. Native thumbnail screenshots, zoom gestures, contrast/theme and VoiceOver still require the blocked simulator pass. No persistence/migration change; none known beyond pending native acceptance.
+
+### BF-037 — Nearby margin drawings and duplicate notes occluded each other
+
+- Date: 2026-09-30
+- Status: Needs validation (native group selection/editing acceptance pending)
+- Platforms: EPUB margin renderer; Apple reader margin-note viewer
+- Components: `MarginLayer`, margin tap/focus bridge and session, `MarginNoteSheet`
+- Related links: [Phase 5 backlog](docs/PHASE5_EXECUTION_BACKLOG.md)
+
+#### Symptom and reproduction
+
+Two margin notes beside the same or nearby lines were drawn on top of each other. Duplicating a margin note reproduced this reliably: the copy kept its intended passage but became indistinguishable from the original. Tall drawings could extend past the page.
+
+#### Root cause
+
+Each note was placed independently at its anchored line's top with no collision grouping, capacity check or individual canvas focus. Icon hit testing returned only the first matching note.
+
+#### Change
+
+Group overlapping extents transitively within each column and display a counted icon for crowded/oversized notes. Tapping returns all explicit member identities. The native viewer lists each original drawing and quote; wide iPad readers can explicitly focus one canvas for lasso editing. Focus is ephemeral presentation, never a passage mutation or undo step; reflow preserves it. Oversized focused canvases fit page height with original coordinates preserved. Native session validates/deduplicates real margin IDs, refuses wrong-chapter/inline IDs and checks the renderer/current note after asynchronous focus. Counted icon targets have 44-point effective hit bounds; missing/deleted notes remain explicit.
+
+#### Validation
+
+Seven margin web tests pass: transitive grouping, separate columns, every identity, focused canvas, reflow, deletion, tall-note capacity and unchanged originals. Focus/session/typed-bridge tests pass, including exact escaped href/note arguments and unchanged undo scope. Full `scripts/test` passes 393 tests in 40 suites and WebHarness passes 157. Dedicated UIKit-hosted component tests pass on iPad and iPhone (iOS 18.6), and unsigned Mac build passes; actual group/zoom/lasso and real-device interaction remain pending while Mac UI access is locked.
+
+#### Compatibility and release implications
+
+No schema/version change. Optional member-ID bridge data remains compatible with single-note messages. Save/sync/backup paths are unchanged. None known beyond the required native/real-device acceptance.
+
+
 ### BF-036 — Exports used filename order and merged distinct chapters with matching titles
 
 - Date: 2026-09-30
@@ -100,41 +244,6 @@ New mark proposals preserve every original sample and pressure in a standalone c
 #### Compatibility and migration
 
 No schema key/version change: `InkMark.stroke.points` already stores portable samples and old builds decode the retained samples. Previously discarded samples cannot be recovered by migration. Existing semantic shapes remain unchanged until a person explicitly corrects them. Annotations continue through the same sync/backup participants; no server payload changes.
-
-
-```markdown
-### BF-### — Short description
-
-- Date: YYYY-MM-DD
-- Status: Fixed | Investigating | Needs validation | Reverted
-- Platforms: Apple / Android / Linux / Shared / Other
-- Components: Paths, targets, or subsystems
-- Related links: Issue, commit, upstream reference, or `None`
-
-#### Symptom
-
-What the user observed, including reproduction conditions and frequency when known.
-
-#### Root cause
-
-Why the incorrect behavior occurred and what invariant or assumption was violated.
-
-#### Change
-
-What changed, why this approach was chosen, and what behavior was intentionally left unchanged.
-
-#### Validation
-
-Exact tests, build commands, manual checks, and results. List untested platforms or known limitations explicitly.
-
-#### Compatibility and follow-up
-
-Migration, data, release, or upstream-PR considerations. Use `None known` when applicable.
-```
-
-## Entries
-
-<!-- Add new entries immediately below this line, newest first. -->
 
 ### BF-032 — Tapping the words of an ink mark could turn the page
 

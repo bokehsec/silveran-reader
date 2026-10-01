@@ -68,6 +68,33 @@ public struct EbookPlayerView: View {
         return viewModel.toggleInkMargin
     }
 
+    private var marginViewer: (() -> Void)? {
+        guard let index = viewModel.progressManager?.selectedChapterId,
+            let href = viewModel.bookStructure[safe: index]?.id
+        else { return nil }
+        let ids = viewModel.inkSession.section(href).notes.filter(\.isMarginNote).map(\.id)
+        guard let first = ids.first else { return nil }
+        return { viewModel.inkSession.marginNoteTapped(href: href, noteID: first, noteIDs: ids) }
+    }
+
+    private func marginEditingAction(href: String) -> ((InkNote) async -> Bool)? {
+        #if os(iOS)
+        guard UIDevice.current.userInterfaceIdiom == .pad, viewModel.inkMarginState.available,
+            viewModel.commsBridge?.selectInkWithLasso != nil
+        else { return nil }
+        return { note in
+            guard await viewModel.inkSession.focusMarginNote(href: href, noteID: note.id) else {
+                return false
+            }
+            viewModel.presentedMarginNote = nil
+            viewModel.commsBridge?.selectInkWithLasso?()
+            return true
+        }
+        #else
+        return nil
+        #endif
+    }
+
     public var body: some View {
         Group {
             #if os(macOS)
@@ -208,11 +235,14 @@ public struct EbookPlayerView: View {
         }
         .sheet(item: $viewModel.presentedMarginNote) { shown in
             MarginNoteSheet(
-                strokes: viewModel.inkSession.section(shown.href).notes
-                    .first(where: { $0.id == shown.noteID })?.strokes ?? [],
-                chapter: viewModel.chapterLabel(forHref: shown.href)
+                notes: viewModel.inkSession.section(shown.href).notes.filter {
+                    (shown.noteIDs.isEmpty ? [shown.noteID] : shown.noteIDs).contains($0.id)
+                },
+                chapter: viewModel.chapterLabel(forHref: shown.href),
+                edit: marginEditingAction(href: shown.href)
             ) { viewModel.presentedMarginNote = nil }
         }
+
         .sheet(isPresented: $viewModel.showInkRepair) {
             InkRepairSheet(viewModel: viewModel) { viewModel.showInkRepair = false }
                 #if os(macOS)
@@ -637,6 +667,7 @@ public struct EbookPlayerView: View {
                     onToggleInkTools: viewModel.commsBridge?.toggleInkTools,
                     onSelectInk: viewModel.commsBridge?.selectInkWithLasso,
                     onToggleMargin: marginToggle,
+                    onViewMarginNotes: marginViewer,
                     marginOpen: viewModel.inkMarginState.expanded,
                     settingsVM: viewModel.settingsVM,
                 )

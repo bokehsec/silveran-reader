@@ -174,11 +174,12 @@ export default class InkEngine {
   }
 
   /** Brings a margin note's line into view (after the margin opened and the text reflowed). */
-  revealMarginNote(id) {
-    for (const { doc } of this.#contents()) {
+  revealMarginNote(id, href = null) {
+    for (const { doc, index } of this.#contents()) {
+      if (href && this.#href(index) !== href) continue;
       const layer = this.#marginLayers.get(doc);
       if (!layer) continue;
-      layer.redraw();
+      if (!layer.focusNote(id)) continue;
       const range = layer.rangeOf(id);
       if (range) {
         this.#view?.renderer?.scrollToAnchor?.(range);
@@ -186,6 +187,10 @@ export default class InkEngine {
       }
     }
     return false;
+  }
+
+  marginIconIDsAt(doc, x, y) {
+    return this.#marginLayers.get(doc)?.iconIDsAt(x, y) ?? [];
   }
 
   /** The id of the margin note icon at (x, y) in `doc`, or null. */

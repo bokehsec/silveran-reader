@@ -133,3 +133,6 @@ Lasso geometry is an ephemeral renderer projection. Kit owns the selection draft
 
 
 Annotation sharing remains a projection: portable `InkVisualExport` builds pressure-aware SVG from saved samples; Apple PDF/PNG adapters use Core Graphics/Core Text/Image I/O. Native previews show the same bytes passed to the file exporter. None of these adapters writes annotations or supplies editable backups. Book export preparation may read EPUB spine metadata through the detached inspector without a reader session or reading-position mutation; missing-download exports retain their deterministic fallback.
+
+
+Margin presentation groups overlapping canvases within each column and reports all member identities through the typed bridge. Explicit focus is ephemeral renderer state; `InkSession` checks ownership/lifecycle before native lasso editing. The native margin viewer preserves individually readable originals and offers a full vector drawing view. Collapsed phone and horizontal scrolling gutters retain reachable icons. Native component verification uses a separate UIKit test host; it never initializes the reader's owners or cloud services and is distinct from simulator UI acceptance.

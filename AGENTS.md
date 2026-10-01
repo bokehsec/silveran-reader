@@ -71,6 +71,6 @@ Keep `BUGFIX_LOG.md` focused on engineering rationale and investigation history.
 - Read the relevant architecture and contributing documentation before making cross-cutting changes.
 - Keep fixes narrowly scoped. Do not rewrite unrelated code or discard existing worktree changes.
 - Prefer adding or updating regression coverage that fails before the fix and passes after it.
-- Use the repository's existing build, test, and formatting scripts where applicable; record the exact commands in the bugfix entry.
+- Use the repository's existing build, test, and formatting scripts where applicable; record the exact commands in the bugfix entry. Run the portable suite with `scripts/test`; use `scripts/iostest` with an explicit isolated simulator destination for Apple component tests. Simulator component success does not establish gesture/VoiceOver/usability acceptance.
 - Be explicit about platform scope. This repository contains shared Swift code plus Apple, Android, and Linux app surfaces, so a fix validated on one platform must not be presented as validated everywhere.
 - Preserve enough technical detail for a future upstream PR: identify the invariant, lifecycle boundary, platform API, data model, or race that matters—not only the final diff.

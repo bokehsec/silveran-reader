@@ -34,6 +34,7 @@ struct EbookPlayerTopToolbar: View {
     /// Opens or closes the wide margin for margin notes; nil where the margin can't open.
     var onSelectInk: (() -> Void)? = nil
     var onToggleMargin: (() -> Void)? = nil
+    var onViewMarginNotes: (() -> Void)? = nil
     var marginOpen = false
 
     let settingsVM: SettingsViewModel
@@ -146,15 +147,32 @@ struct EbookPlayerTopToolbar: View {
                         .accessibilityValue(marginOpen ? "Open" : "Closed")
                     }
 
-                    Button {
-                        showBookmarksPanel = true
-                    } label: {
-                        Image(systemName: "bookmark")
-                            .font(.system(size: 20, weight: .regular))
-                            .foregroundStyle(toolbarForegroundColor)
-                            .contentShape(Rectangle())
+                    if let onViewMarginNotes {
+                        Menu {
+                            Button("Bookmarks & Highlights", systemImage: "bookmark") {
+                                showBookmarksPanel = true
+                            }
+                            Button(
+                                "Margin Notes in This Chapter",
+                                systemImage: "pencil.and.list.clipboard",
+                                action: onViewMarginNotes
+                            )
+                        } label: {
+                            Image(systemName: "bookmark")
+                                .font(.system(size: 20)).foregroundStyle(toolbarForegroundColor)
+                        }
+                        .frame(width: 44, height: 44)
+                        .accessibilityLabel("Bookmarks, highlights and margin notes")
+                    } else {
+                        Button {
+                            showBookmarksPanel = true
+                        } label: {
+                            Image(systemName: "bookmark")
+                                .font(.system(size: 20)).foregroundStyle(toolbarForegroundColor)
+                        }
+                        .frame(width: 44, height: 44)
+                        .accessibilityLabel("Bookmarks and highlights")
                     }
-                    .frame(width: 44, height: 44)
 
                     Button {
                         showSearchSheet = true

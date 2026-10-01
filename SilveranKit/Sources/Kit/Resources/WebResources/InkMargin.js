@@ -21,6 +21,13 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 export const MARGIN_INSET = 6;
 export const ICON_SIZE = 16;
 
+/** Collapsed phone gutters must fit a legible tile; scrolling needs a gutter too. */
+export const marginGap = ({ hasNotes = false, expanded = false, narrow = false, scrolling = false }) => {
+  if (expanded && !scrolling) return "20%";
+  if (!hasNotes) return "0%";
+  return narrow && !scrolling ? "12%" : "6%";
+};
+
 export const isMarginNote = note => note?.placement === "margin";
 
 /**
@@ -31,7 +38,15 @@ export const columnFrame = doc => {
   const style = doc.defaultView?.getComputedStyle(doc.documentElement);
   const columnWidth = parseFloat(style?.columnWidth);
   const gap = parseFloat(style?.columnGap);
-  if (!Number.isFinite(columnWidth) || columnWidth <= 0) return null;
+  if (!Number.isFinite(columnWidth) || columnWidth <= 0) {
+    // The paginator's scrolling layout uses padding rather than CSS columns.
+    const left = parseFloat(style?.paddingLeft) || 0;
+    const right = parseFloat(style?.paddingRight) || 0;
+    const width = doc.documentElement.clientWidth;
+    if (style?.columnWidth !== "auto" || style?.writingMode?.startsWith("vertical") ||
+        right < ICON_SIZE || width <= left + right) return null;
+    return { columnWidth: width - left - right, gap: 2 * right, padLeft: left, scrolled: true };
+  }
   return {
     columnWidth,
     gap: Number.isFinite(gap) ? gap : 0,
@@ -42,7 +57,7 @@ export const columnFrame = doc => {
 /** The right edge of the column holding x (section-document coordinates), and the gutter after it. */
 export const gutterAt = (frame, x) => {
   const stride = frame.columnWidth + frame.gap;
-  const column = Math.max(0, Math.floor((x - frame.padLeft) / stride));
+  const column = frame.scrolled ? 0 : Math.max(0, Math.floor((x - frame.padLeft) / stride));
   const right = frame.padLeft + column * stride + frame.columnWidth;
   return { left: right, width: frame.gap / 2 };
 };
@@ -64,6 +79,31 @@ const lineAt = (doc, index, at) => {
   return { left: rect.left, top: rect.top, bottom: rect.bottom, range: line };
 };
 
+/** Overlapping drawing extents form one presentation group, independently per column. */
+export const groupMarginPlacements = entries => {
+  const columns = new Map();
+  for (const entry of entries) {
+    const key = entry.gutter.left;
+    if (!columns.has(key)) columns.set(key, []);
+    columns.get(key).push(entry);
+  }
+  const groups = [];
+  for (const entries of columns.values()) {
+    entries.sort((a, b) => a.line.top - b.line.top || a.note.id.localeCompare(b.note.id));
+    let group = null;
+    for (const entry of entries) {
+      const bottom = entry.line.top + Math.max(ICON_SIZE, entry.height);
+      if (!group || entry.line.top >= group.bottom + 8) {
+        group = { entries: [], top: entry.line.top, bottom, gutter: entry.gutter };
+        groups.push(group);
+      }
+      group.entries.push(entry);
+      group.bottom = Math.max(group.bottom, bottom);
+    }
+  }
+  return groups;
+};
+
 /** The margin notes of one section document, in a layer of their own above the text. */
 export class MarginLayer {
   #doc;
@@ -71,6 +111,8 @@ export class MarginLayer {
   /** id -> { left, top, scale, width, height, icon } as drawn (section-document coordinates). */
   #placed = new Map();
   #ranges = new Map();
+  #iconGroups = [];
+  #focused = null;
   #notes = [];
   #index = null;
   #options = {};
@@ -110,20 +152,34 @@ export class MarginLayer {
     this.#root.replaceChildren();
     this.#placed.clear();
     this.#ranges.clear();
+    this.#iconGroups = [];
     const orphaned = [];
     const frame = columnFrame(this.#doc);
+    const entries = [];
     for (const note of this.#notes) {
       const at = this.#index ? resolveAnchor(this.#index.text, note.anchor) : null;
       if (at == null) { orphaned.push(note.id); continue; }
       const line = lineAt(this.#doc, this.#index, at);
-      // Words found but not laid out (hidden, or no layout yet): nothing to draw beside.
       if (!line || !frame) continue;
       this.#ranges.set(note.id, line.range);
       const gutter = gutterAt(frame, line.left);
-      if (this.#options.expanded && drawingWidth(gutter.width) >= ICON_SIZE * 2) {
-        this.#drawNote(note, gutter, line);
-      } else if (gutter.width >= ICON_SIZE) {
-        this.#drawIcon(note, gutter, line);
+      const width = drawingWidth(gutter.width);
+      const box = bbox(note.strokes.flatMap(s => s.points));
+      const height = Number.isFinite(box.bottom) ? (box.bottom + 8) * Math.min(1, width / (note.refWidth || width || 1)) : 0;
+      const room = Math.max(1, (this.#doc.defaultView?.innerHeight ?? Infinity) - line.top - 4);
+      entries.push({ note, line, gutter, height, fits: height <= room });
+    }
+    if (!entries.some(e => e.note.id === this.#focused)) this.#focused = null;
+    for (const group of groupMarginPlacements(entries)) {
+      const first = group.entries[0];
+      const expanded = this.#options.expanded && drawingWidth(group.gutter.width) >= ICON_SIZE * 2;
+      const focused = group.entries.find(e => e.note.id === this.#focused);
+      if (expanded && ((group.entries.length === 1 && first.fits) || focused)) {
+        const chosen = focused ?? first;
+        this.#drawNote(chosen.note, chosen.gutter, chosen.line);
+      }
+      if ((!expanded || group.entries.length > 1 || !first.fits) && group.gutter.width >= ICON_SIZE) {
+        this.#drawIcon(first.note, first.gutter, first.line, group.entries.map(e => e.note.id), expanded && !!focused);
       }
     }
     return orphaned;
@@ -131,10 +187,12 @@ export class MarginLayer {
 
   #drawNote(note, gutter, line) {
     const width = drawingWidth(gutter.width);
-    const scale = Math.min(1, width / (note.refWidth || width));
+    const box = bbox(note.strokes.flatMap(s => s.points));
+    const room = Math.max(1, (this.#doc.defaultView?.innerHeight ?? Infinity) - line.top - 4);
+    const naturalHeight = Number.isFinite(box.bottom) ? Math.max(1, box.bottom + 8) : 1;
+    const scale = Math.min(1, width / (note.refWidth || width), room / naturalHeight);
     const left = gutter.left + MARGIN_INSET;
     const top = line.top;
-    const box = bbox(note.strokes.flatMap(s => s.points));
     const height = Number.isFinite(box.bottom) ? (box.bottom + 8) * scale : 0;
     const g = this.#doc.createElementNS(SVG_NS, "g");
     g.setAttribute("transform", `translate(${left} ${top}) scale(${scale})`);
@@ -150,13 +208,13 @@ export class MarginLayer {
     this.#placed.set(note.id, { left, top, scale, width, height, icon: false });
   }
 
-  #drawIcon(note, gutter, line) {
+  #drawIcon(note, gutter, line, ids = [note.id], above = false) {
     const left = gutter.left + Math.max(0, (gutter.width - ICON_SIZE) / 2);
-    const top = line.top + Math.max(0, (line.bottom - line.top - ICON_SIZE) / 2);
+    const top = above ? Math.max(0, line.top - ICON_SIZE - 4) : line.top + Math.max(0, (line.bottom - line.top - ICON_SIZE) / 2);
     const icon = this.#doc.createElementNS(SVG_NS, "g");
     icon.setAttribute("transform", `translate(${left} ${top}) scale(${ICON_SIZE / 16})`);
     icon.setAttribute("opacity", "0.8");
-    icon.dataset.id = note.id;
+    icon.dataset.id = ids.length > 1 ? `cluster:${note.id}` : note.id;
     // A small pencil on a rounded tile. Built element by element: chapters are XHTML, where
     // markup strings assigned to an SVG element do not reliably become SVG shapes.
     const shape = (name, attributes) => {
@@ -165,18 +223,39 @@ export class MarginLayer {
       icon.appendChild(el);
     };
     shape("rect", { x: "0.5", y: "0.5", width: "15", height: "15", rx: "4", fill: "rgba(31,79,209,0.14)", stroke: "rgba(31,79,209,0.55)" });
-    shape("path", { d: "M4 12 L4.6 9.6 L10.4 3.8 L12.2 5.6 L6.4 11.4 Z", fill: "none", stroke: "rgba(31,79,209,0.9)", "stroke-width": "1.2", "stroke-linejoin": "round" });
+    if (ids.length === 1) {
+      shape("path", { d: "M4 12 L4.6 9.6 L10.4 3.8 L12.2 5.6 L6.4 11.4 Z", fill: "none", stroke: "rgba(31,79,209,0.9)", "stroke-width": "1.2", "stroke-linejoin": "round" });
+    } else {
+      const text = this.#doc.createElementNS(SVG_NS, "text");
+      text.setAttribute("x", "8"); text.setAttribute("y", "11");
+      text.setAttribute("text-anchor", "middle"); text.setAttribute("font-size", "9");
+      text.setAttribute("fill", "#1f4fd1");
+      text.textContent = ids.length > 99 ? "99+" : String(ids.length);
+      icon.appendChild(text);
+    }
     this.#root.appendChild(icon);
-    this.#placed.set(note.id, { left, top, scale: 1, width: ICON_SIZE, height: ICON_SIZE, icon: true });
+    const placement = { left, top, scale: 1, width: ICON_SIZE, height: ICON_SIZE, icon: true };
+    this.#iconGroups.push({ ids, placement });
+    for (const id of ids) if (!this.#placed.has(id)) this.#placed.set(id, placement);
+  }
+
+  focusNote(id) {
+    if (!this.#notes.some(n => n.id === id)) return false;
+    this.#focused = id;
+    this.redraw();
+    return true;
+  }
+
+  iconIDsAt(x, y, slop = 14) {
+    for (const { ids, placement: p } of this.#iconGroups) {
+      if (x >= p.left - slop && x <= p.left + p.width + slop && y >= p.top - slop && y <= p.top + p.height + slop) return ids;
+    }
+    return [];
   }
 
   /** The id of the margin icon at (x, y), within `slop` points; null if none. */
-  iconAt(x, y, slop = 8) {
-    for (const [id, p] of this.#placed) {
-      if (!p.icon) continue;
-      if (x >= p.left - slop && x <= p.left + p.width + slop && y >= p.top - slop && y <= p.top + p.height + slop) return id;
-    }
-    return null;
+  iconAt(x, y, slop = 14) {
+    return this.iconIDsAt(x, y, slop)[0] ?? null;
   }
 
   /** True when (x, y) is on a drawn margin note or icon. */

@@ -1,0 +1,7 @@
+# The component project is generated separately; the script supplies the exact package root.
+include:
+  - path: XCodeApps/project.yml
+    relativePaths: false
+packages:
+  Silveran:
+    path: ${SILVERAN_COMPONENT_PACKAGE_ROOT}

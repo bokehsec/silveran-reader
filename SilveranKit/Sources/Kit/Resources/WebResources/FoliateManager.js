@@ -4,6 +4,7 @@ import { SpanHighlighter } from "./SpanHighlighter.js";
 import { debugLog } from "./DebugConfig.js";
 import BookmarkManager from "./BookmarkManager.js";
 import InkEngine from "./InkEngine.js";
+import { marginGap } from "./InkMargin.js";
 import { runInkSelfTest } from "./InkSelfTest.js";
 import { InkTouchGuard } from "./InkTouchGuard.js";
 import { maybeRunInkDebug } from "./InkDebug.js";
@@ -516,9 +517,9 @@ class FoliateManager {
   #handleSingleClick(event) {
     // A margin note's icon opens the margin (or, on a narrow screen, shows the note).
     const doc = event.target?.ownerDocument ?? event.view?.document;
-    const marginId = doc ? this.#inkEngine.marginIconAt(doc, event.clientX, event.clientY) : null;
-    if (marginId) {
-      this.#handleMarginIconTap(doc, marginId);
+    const marginIDs = doc ? this.#inkEngine.marginIconIDsAt(doc, event.clientX, event.clientY) : [];
+    if (marginIDs.length) {
+      this.#handleMarginIconTap(doc, marginIDs);
       return;
     }
 
@@ -1090,9 +1091,8 @@ class FoliateManager {
 
   /** The paginator gap: none, a thin gutter for margin icons, or a wide margin to write in. */
   #inkGap() {
-    if (this.#scrollingMode) return "0%";
-    if (this.#marginIsExpanded()) return "20%";
-    return this.#inkMargin.hasNotes ? "6%" : "0%";
+    return marginGap({ hasNotes: this.#inkMargin.hasNotes, expanded: this.#marginIsExpanded(),
+      narrow: this.#isNarrowColumn(), scrolling: this.#scrollingMode });
   }
 
   #applyInkMargin(focusId = null) {
@@ -1120,11 +1120,20 @@ class FoliateManager {
     return JSON.stringify({ expanded: this.#marginIsExpanded() });
   }
 
+  async inkFocusMarginNote(href, id) {
+    if (this.#isNarrowColumn() || this.#scrollingMode) return JSON.stringify({ shown: false });
+    this.#inkMargin = { ...this.#inkMargin, open: true };
+    this.#applyInkMargin();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    return JSON.stringify({ shown: this.#inkEngine.revealMarginNote(id, href) });
+  }
+
   /** A tap on a margin note's icon: open the margin, or on a narrow screen show that note. */
-  #handleMarginIconTap(doc, id) {
-    if (this.#isNarrowColumn() || this.#scrollingMode) {
+  #handleMarginIconTap(doc, ids) {
+    const id = ids[0];
+    if (ids.length > 1 || this.#isNarrowColumn() || this.#scrollingMode) {
       const href = this.#inkEngine.hrefOf(doc);
-      window.webkit?.messageHandlers?.InkMarginNoteTapped?.postMessage({ href, id });
+      window.webkit?.messageHandlers?.InkMarginNoteTapped?.postMessage({ href, id, ids });
       return;
     }
     this.#inkMargin = { ...this.#inkMargin, open: true };

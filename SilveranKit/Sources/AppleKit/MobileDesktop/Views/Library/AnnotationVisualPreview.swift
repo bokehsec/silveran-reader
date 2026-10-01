@@ -43,13 +43,13 @@ struct AnnotationVisualPreview: View {
 }
 
 #if os(iOS)
-private struct SVGPreviewSurface: UIViewRepresentable {
+struct SVGPreviewSurface: UIViewRepresentable {
     let data: Data
     func makeUIView(context: Context) -> WKWebView { makeSVGPreview(data) }
     func updateUIView(_ view: WKWebView, context: Context) {}
 }
 #else
-private struct SVGPreviewSurface: NSViewRepresentable {
+struct SVGPreviewSurface: NSViewRepresentable {
     let data: Data
     func makeNSView(context: Context) -> WKWebView { makeSVGPreview(data) }
     func updateNSView(_ view: WKWebView, context: Context) {}
@@ -62,6 +62,9 @@ private func makeSVGPreview(_ data: Data) -> WKWebView {
     configuration.websiteDataStore = .nonPersistent()
     configuration.defaultWebpagePreferences.allowsContentJavaScript = false
     let view = WKWebView(frame: .zero, configuration: configuration)
+    #if os(macOS)
+    view.allowsMagnification = true
+    #endif
     let svg = String(decoding: data, as: UTF8.self)
     view.loadHTMLString(
         "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'><style>body{margin:0;background:white}body>svg{max-width:100%;height:auto}</style></head><body>\(svg)</body></html>",
