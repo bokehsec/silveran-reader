@@ -20,7 +20,8 @@ struct InkMarginWebKitTests {
         let words = (1...160).map { "word\($0)" }.joined(separator: " ")
         let html = """
             <!doctype html><html><head><meta charset="utf-8">
-            <style>html{margin:0;padding:0 82px;box-sizing:border-box;width:656px;height:1100px;column-width:492px;column-gap:164px;
+            <style>html{margin:0;padding:0 \
+            82px;box-sizing:border-box;width:656px;height:1100px;column-width:492px;column-gap:164px;
             column-fill:auto;}body{margin:0;font:22px Georgia,serif;line-height:1.45;}</style>
             </head><body><p>\(words)</p><script type="module">
             import { proposeMarginStroke, proposeMarginGroup } from './InkMargin.js';
@@ -33,7 +34,10 @@ struct InkMarginWebKitTests {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
-        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 820, height: 1180), configuration: config)
+        let view = WKWebView(
+            frame: CGRect(x: 0, y: 0, width: 820, height: 1180),
+            configuration: config
+        )
         defer { view.stopLoading() }
         view.loadFileURL(file, allowingReadAccessTo: root)
         var ready = false
@@ -47,8 +51,10 @@ struct InkMarginWebKitTests {
         try #require(ready)
         let answer = try await view.callAsyncJavaScript(
             """
-            const stroke = { tool: 'pen', color: '#111111', width: 2, points: [[590, 200], [620, 230], [640, 210]] };
-            const p = window.propose({ doc: document, href: 'ch', stroke, viewportWidth: innerWidth, layer: null, notes: [] });
+            const stroke = { tool: 'pen', color: '#111111', width: 2, points: [[590, 200], [620, \
+            230], [640, 210]] };
+            const p = window.propose({ doc: document, href: 'ch', stroke, viewportWidth: \
+            innerWidth, layer: null, notes: [] });
             return p ? `${p.op}:${p.placement ?? p.reason}` : 'null';
             """,
             arguments: [:],
@@ -63,16 +69,19 @@ struct InkMarginWebKitTests {
             const word = (from, to, y = 200) => Array.from({ length: 6 }, (_, i) => {
               const x = from + (to - from) * i / 6;
               return { tool: 'pen', color: '#111111', width: 2,
-                points: [[x, y], [x + (to - from) / 12, y + 24], [x + (to - from) / 6 - 2, y + 4]] };
+                points: [[x, y], [x + (to - from) / 12, y + 24], [x + (to - from) / 6 - 2, y + 4]] \
+            };
             });
             const ask = strokes => {
-              const p = window.proposeGroup({ doc: document, href: 'ch', strokes, viewportWidth: innerWidth, layer: null, notes: [] });
+              const p = window.proposeGroup({ doc: document, href: 'ch', strokes, viewportWidth: \
+            innerWidth, layer: null, notes: [] });
               if (!p) return 'text';
               const minX = Math.min(...p.strokes.flatMap(s => s.points.map(q => q[0])));
               return `${p.placement}:${minX < 0 ? 'overlaps' : 'inside'}`;
             };
             // Column 82…574, margin 574…656; 30% of the column is 148 points.
-            return [ask(word(586, 650)), ask(word(540, 650)), ask(word(410, 650)), ask(word(300, 620))].join(',');
+            return [ask(word(586, 650)), ask(word(540, 650)), ask(word(410, 650)), ask(word(300, \
+            620))].join(',');
             """,
             arguments: [:],
             in: nil,
