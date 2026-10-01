@@ -190,6 +190,18 @@ public struct InkOrphanedMessage: Codable {
 }
 
 /// Sent from JS to delete an existing highlight from the toolbar
+/// The page's margin for margin notes (P5.2).
+public struct InkMarginStateMessage: Codable {
+    public let expanded: Bool
+    public let available: Bool
+}
+
+/// A margin note icon tapped where the margin can't open (narrow screen).
+public struct InkMarginNoteTappedMessage: Codable {
+    public let href: String?
+    public let id: String
+}
+
 /// Highlights of a section whose position no longer lands on their words (not drawn).
 public struct HighlightOrphanedMessage: Codable {
     public let sectionIndex: Int

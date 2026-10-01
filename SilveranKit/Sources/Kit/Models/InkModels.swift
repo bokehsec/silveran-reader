@@ -117,8 +117,15 @@ public struct TextAnchor: Codable, Sendable, Hashable {
     }
 }
 
-/// Handwriting that lives in the text flow just before the text at `anchor`. Stroke points are
-/// in the note's own coordinates, so the note keeps its shape wherever the text reflows.
+/// Where a note is drawn. Absent (nil) means in the text flow.
+public enum InkNotePlacement: String, Codable, Sendable, Hashable {
+    /// Beside the line that starts at `anchor`, in the margin (P5.2).
+    case margin
+}
+
+/// Handwriting that lives in the text flow just before the text at `anchor`, or beside that
+/// line in the margin (`placement`). Stroke points are in the note's own coordinates, so the
+/// note keeps its shape wherever the text reflows.
 public struct InkNote: Codable, Sendable, Hashable, Identifiable {
     public let id: String
     public var anchor: TextAnchor
@@ -128,6 +135,13 @@ public struct InkNote: Codable, Sendable, Hashable, Identifiable {
     /// Version 1 stored the note's position as an EPUB CFI. Set only until the reader has turned
     /// it into `anchor` (`InkSession` migrates on the first load of the section).
     public var legacyCFI: String?
+    /// Nil: in the text flow. `.margin`: beside its line.
+    public var placement: InkNotePlacement?
+    /// For a margin note: the drawing width when it was written. A narrower margin scales the
+    /// note down to fit.
+    public var refWidth: Double?
+
+    public var isMarginNote: Bool { placement == .margin }
 
     public init(
         id: String,
@@ -136,6 +150,8 @@ public struct InkNote: Codable, Sendable, Hashable, Identifiable {
         createdAt: Date = Date(),
         updatedAt: Date? = nil,
         legacyCFI: String? = nil,
+        placement: InkNotePlacement? = nil,
+        refWidth: Double? = nil,
     ) {
         self.id = id
         self.anchor = anchor
@@ -143,11 +159,14 @@ public struct InkNote: Codable, Sendable, Hashable, Identifiable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt ?? createdAt
         self.legacyCFI = legacyCFI
+        self.placement = placement
+        self.refWidth = refWidth
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case id, anchor, strokes, createdAt, updatedAt
         case legacyCFI, cfi, quote  // `cfi` and `quote` are the version 1 fields
+        case placement, refWidth
     }
 
     public init(from decoder: Decoder) throws {
@@ -162,6 +181,8 @@ public struct InkNote: Codable, Sendable, Hashable, Identifiable {
             )
         }
         strokes = try container.decode([InkStroke].self, forKey: .strokes)
+        placement = try container.decodeIfPresent(InkNotePlacement.self, forKey: .placement)
+        refWidth = try container.decodeIfPresent(Double.self, forKey: .refWidth)
         let created = (try container.decodeIfPresent(Double.self, forKey: .createdAt)).map(
             Date.init(timeIntervalSince1970:)
         )
@@ -208,6 +229,8 @@ public struct InkNote: Codable, Sendable, Hashable, Identifiable {
         try container.encode(createdAt.timeIntervalSince1970, forKey: .createdAt)
         try container.encode(updatedAt.timeIntervalSince1970, forKey: .updatedAt)
         try container.encodeIfPresent(legacyCFI, forKey: .legacyCFI)
+        try container.encodeIfPresent(placement, forKey: .placement)
+        try container.encodeIfPresent(refWidth, forKey: .refWidth)
     }
 }
 

@@ -51,6 +51,13 @@ extension ReaderCommsBridge: InkEngineCalling {
         return try decodeInkResult(Shown.self, from: result).shown
     }
 
+    public func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws {
+        struct Margin: Encodable { let hasNotes: Bool?; let open: Bool? }
+        _ = try await callInk(
+            "return await window.foliateManager.inkSetMargin(\(try jsLiteral(Margin(hasNotes: hasNotes, open: open))));"
+        )
+    }
+
     private func callInk(_ body: String) async throws -> String? {
         guard let js else { throw ReaderCommsBridgeError.jsNotAvailable }
         return try await js.callAsync(body)

@@ -158,6 +158,23 @@ public final class ReaderMessageRouter {
                     let msg = try decoder.decode(InkOrphanedMessage.self, from: data)
                     bridge.sendSwiftInkOrphaned(msg)
 
+                case "InkMarginState":
+                    let data = try JSONSerialization.data(withJSONObject: body)
+                    let msg = try decoder.decode(InkMarginStateMessage.self, from: data)
+                    let session = bridge.inkSession
+                    Task { @SilveranUIActor in
+                        session.setMarginState(
+                            InkSession.MarginState(expanded: msg.expanded, available: msg.available))
+                    }
+
+                case "InkMarginNoteTapped":
+                    let data = try JSONSerialization.data(withJSONObject: body)
+                    let msg = try decoder.decode(InkMarginNoteTappedMessage.self, from: data)
+                    let session = bridge.inkSession
+                    Task { @SilveranUIActor in
+                        session.marginNoteTapped(href: msg.href ?? "", noteID: msg.id)
+                    }
+
                 case "HighlightOrphaned":
                     let data = try JSONSerialization.data(withJSONObject: body)
                     let msg = try decoder.decode(HighlightOrphanedMessage.self, from: data)

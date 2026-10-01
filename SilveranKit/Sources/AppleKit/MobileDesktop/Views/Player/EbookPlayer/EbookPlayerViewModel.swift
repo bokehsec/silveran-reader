@@ -144,6 +144,15 @@ class EbookPlayerViewModel {
     /// by section index. They are not drawn until repaired.
     var highlightOrphans: [Int: [UUID]] = [:]
     var showInkRepair = false
+    /// The page's margin for margin notes (P5.2).
+    var inkMarginState = InkSession.MarginState()
+    /// A margin note opened by tapping its icon where the margin can't open (narrow screens).
+    var presentedMarginNote: MarginNoteRef?
+    struct MarginNoteRef: Identifiable, Equatable {
+        let href: String
+        let noteID: String
+        var id: String { "\(href)|\(noteID)" }
+    }
     /// Everything the repair banner and sheet cover: handwriting and typed highlights.
     var annotationRepairCount: Int {
         inkOrphanCount + highlightOrphans.values.reduce(0) { $0 + $1.count }
@@ -272,12 +281,26 @@ class EbookPlayerViewModel {
             guard let self else { return }
             self.inkPersistenceState = self.inkSession.persistenceState
         }
+        inkMarginState = inkSession.marginState
+        inkSession.onMarginStateChanged = { [weak self] in
+            guard let self else { return }
+            self.inkMarginState = self.inkSession.marginState
+        }
+        inkSession.onMarginNoteTapped = { [weak self] href, noteID in
+            self?.presentedMarginNote = MarginNoteRef(href: href, noteID: noteID)
+        }
         inkOrphanCount = inkSession.orphans.values.reduce(0) { $0 + $1.count }
         inkSession.onOrphansChanged = { [weak self] in
             guard let self else { return }
             self.inkOrphanCount = self.inkSession.orphans.values.reduce(0) { $0 + $1.count }
             if self.annotationRepairCount == 0 { self.showInkRepair = false }
         }
+    }
+
+    /// Opens or closes the wide margin for writing margin notes.
+    func toggleInkMargin() {
+        let open = !inkMarginState.expanded
+        Task { await inkSession.setMarginOpen(open) }
     }
 
     /// The chapter name for a section href, for the ink repair list.

@@ -6,8 +6,9 @@ import {
 import { MarkLayer } from "./InkMarks.js";
 import { installInkAwareCFI, rangeFromCFI } from "./InkFilters.js";
 import { ensureInkStyle, placeNotes, clearNotes } from "./InkLayout.js";
-import { proposeStroke, hitTestNotes, visibleWidth, pageStartOffset } from "./InkGeometry.js";
+import { proposeStroke, hitTestNotes, visibleWidth, pageStartOffset, toDoc } from "./InkGeometry.js";
 import { selectInLasso } from "./InkSelection.js";
+import { MarginLayer, proposeMarginStroke, isMarginNote } from "./InkMargin.js";
 
 /**
  * InkEngine - the page's half of Apple Pencil ink (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.1).
@@ -27,6 +28,10 @@ export default class InkEngine {
   #drawn = new WeakMap();
   /** doc -> the marks (underlines, highlights, ...) drawn over its words. */
   #markLayers = new WeakMap();
+  /** doc -> the margin notes drawn beside its lines (P5.2). */
+  #marginLayers = new WeakMap();
+  /** Whether the margin is wide enough to show and write margin notes (else icons). */
+  #marginExpanded = false;
   /**
    * href -> { index, ref } for sections whose document has loaded. foliate reports a section
    * with its `load` event before it lists it in `renderer.getContents()`, and Swift answers
@@ -95,9 +100,11 @@ export default class InkEngine {
 
   #draw(index, doc, section, focusId, { relayout = true } = {}) {
     const href = this.#href(index);
-    const notes = section?.notes ?? [];
+    const allNotes = section?.notes ?? [];
+    const notes = allNotes.filter(n => !isMarginNote(n));
+    const margins = allNotes.filter(isMarginNote);
     const marks = section?.marks ?? [];
-    const signature = JSON.stringify({ notes, marks, background: this.#context.background });
+    const signature = JSON.stringify({ allNotes, marks, background: this.#context.background, expanded: this.#marginExpanded });
     const hasInk = doc.querySelector(INK_TAG) !== null;
     const layer = this.#markLayers.get(doc);
     if (this.#drawn.get(doc) === signature && (hasInk || !notes.length) && (layer || !marks.length)) {
@@ -110,11 +117,13 @@ export default class InkEngine {
       ? placeNotes(doc, notes, { maxHeight: window.innerHeight, paint })
       : (clearNotes(doc), { placed: 0, orphaned: [] });
     orphaned.push(...this.#drawMarks(doc, marks));
+    orphaned.push(...this.#drawMargins(doc, margins));
     this.#drawn.set(doc, signature);
     if (!wasEmpty && relayout) {
       // Re-measure the column count now that the section changed height, keeping the reading anchor.
       this.#view?.renderer?.render?.();
       this.#markLayers.get(doc)?.redraw();
+      this.#marginLayers.get(doc)?.redraw();
       if (focusId) this.#reveal(doc, focusId);
     }
     this.#post("InkOrphaned", { href, ids: orphaned });
@@ -133,9 +142,60 @@ export default class InkEngine {
     return layer.setMarks(marks, buildTextIndex(doc.body), { paint: this.#paint, blend: this.#highlightBlend });
   }
 
-  /** Redraws marks from their words' current position; foliate has just changed the layout. */
+  /** Margin notes are drawn beside their lines, after the notes and marks. Returns orphaned ids. */
+  #drawMargins(doc, margins) {
+    let layer = this.#marginLayers.get(doc);
+    if (!margins.length && !layer) return [];
+    if (!layer || !layer.attached) {
+      layer = new MarginLayer(doc);
+      this.#marginLayers.set(doc, layer);
+    }
+    return layer.setNotes(margins, buildTextIndex(doc.body), { expanded: this.#marginExpanded, paint: this.#paint });
+  }
+
+  /** Redraws marks and margin notes from their words' current position; foliate has just changed the layout. */
   redrawMarks() {
-    for (const { doc } of this.#contents()) this.#markLayers.get(doc)?.redraw();
+    for (const { doc } of this.#contents()) {
+      this.#markLayers.get(doc)?.redraw();
+      this.#marginLayers.get(doc)?.redraw();
+    }
+  }
+
+  /** Shows margin notes as handwriting (`expanded`) or as icons; redraws the loaded sections. */
+  setMarginExpanded(expanded) {
+    if (this.#marginExpanded === !!expanded) return;
+    this.#marginExpanded = !!expanded;
+    for (const [href, section] of this.#sections) this.render(href, section);
+  }
+
+  get marginExpanded() {
+    return this.#marginExpanded;
+  }
+
+  /** Brings a margin note's line into view (after the margin opened and the text reflowed). */
+  revealMarginNote(id) {
+    for (const { doc } of this.#contents()) {
+      const layer = this.#marginLayers.get(doc);
+      if (!layer) continue;
+      layer.redraw();
+      const range = layer.rangeOf(id);
+      if (range) {
+        this.#view?.renderer?.scrollToAnchor?.(range);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** The id of the margin note icon at (x, y) in `doc`, or null. */
+  marginIconAt(doc, x, y) {
+    return this.#marginLayers.get(doc)?.iconAt(x, y) ?? null;
+  }
+
+  /** The section href of a loaded document. */
+  hrefOf(doc) {
+    const content = this.#contents().find(c => c.doc === doc);
+    return content ? this.#href(content.index) : null;
   }
 
   /** Adapts a stored (light-page) colour to the page background; the theme work of M5 hooks in here. */
@@ -157,7 +217,7 @@ export default class InkEngine {
       range = doc.createRange();
       range.selectNode(el);
     } else {
-      range = this.#markLayers.get(doc)?.rangeOf(id) ?? null;
+      range = this.#markLayers.get(doc)?.rangeOf(id) ?? this.#marginLayers.get(doc)?.rangeOf(id) ?? null;
       box = range?.getBoundingClientRect() ?? null;
     }
     if (!range || !box) return;
@@ -166,13 +226,22 @@ export default class InkEngine {
     if (box.left < left || box.right > right) this.#view?.renderer?.scrollToAnchor?.(range);
   }
 
-  /** What to do with a finished stroke; see InkGeometry.proposeStroke. */
+  /** What to do with a finished stroke; see InkMargin.proposeMarginStroke and InkGeometry.proposeStroke. */
   propose(stroke) {
     const contents = this.#currentContents();
     if (!contents) return { op: "none", reason: "no-section" };
+    const href = this.#href(contents.index);
+    if (this.#marginExpanded) {
+      const margin = proposeMarginStroke({
+        doc: contents.doc, href, stroke, viewportWidth: window.innerWidth,
+        layer: this.#marginLayers.get(contents.doc) ?? null,
+        notes: this.#sections.get(href)?.notes ?? [],
+      });
+      if (margin) return margin;
+    }
     return proposeStroke({
       doc: contents.doc,
-      href: this.#href(contents.index),
+      href,
       stroke,
       viewportWidth: window.innerWidth,
     });
@@ -184,9 +253,12 @@ export default class InkEngine {
     if (!contents) return { section: null, markIds: [], strokes: [] };
     const href = this.#href(contents.index);
     const section = this.#sections.get(href);
-    return { section: href, ...hitTestNotes({
+    const hit = hitTestNotes({
       doc: contents.doc, notes: section?.notes ?? [], points, radius, markLayer: this.#markLayers.get(contents.doc) ?? null,
-    }) };
+    });
+    const margins = this.#marginLayers.get(contents.doc);
+    if (margins) hit.strokes.push(...margins.hitTest(points.map(p => toDoc(contents.doc, p)), radius));
+    return { section: href, ...hit };
   }
 
   /** The strokes a lasso path encloses on the current page; see InkSelection.selectInLasso. */
@@ -207,6 +279,7 @@ export default class InkEngine {
       const r = el.getBoundingClientRect();
       if (x >= r.left - slop && x <= r.right + slop && y >= r.top - slop && y <= r.bottom + slop) return true;
     }
+    if (this.#marginLayers.get(doc)?.contains(x, y, slop)) return true;
     const layer = this.#markLayers.get(doc);
     return !!layer && layer.hitTest([[x, y]], slop).length > 0;
   }

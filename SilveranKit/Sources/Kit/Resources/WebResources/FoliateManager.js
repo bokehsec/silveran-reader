@@ -512,6 +512,14 @@ class FoliateManager {
   }
 
   #handleSingleClick(event) {
+    // A margin note's icon opens the margin (or, on a narrow screen, shows the note).
+    const doc = event.target?.ownerDocument ?? event.view?.document;
+    const marginId = doc ? this.#inkEngine.marginIconAt(doc, event.clientX, event.clientY) : null;
+    if (marginId) {
+      this.#handleMarginIconTap(doc, marginId);
+      return;
+    }
+
     if (!this.#enableMarginClickNavigation) {
       this.#reportOverlayToggle();
       return;
@@ -519,7 +527,6 @@ class FoliateManager {
 
     // A tap on handwriting, or any tap once the Pencil has written in this book, is never a
     // page turn; it shows or hides the reader controls like a tap in the middle of the page.
-    const doc = event.target?.ownerDocument ?? event.view?.document;
     if (this.#inkPencilMode || (doc && this.#inkEngine.inkAt(doc, event.clientX, event.clientY))) {
       this.#reportOverlayToggle();
       return;
@@ -1050,7 +1057,7 @@ class FoliateManager {
     this.#view.renderer.setAttribute("margin", `${marginPx}px`);
     debugLog("FoliateManager", `Set margin to ${marginPx}px`);
 
-    this.#view.renderer.setAttribute("gap", "0%");
+    this.#view.renderer.setAttribute("gap", this.#inkGap());
     this.#updateMaxInlineSize();
 
     if (!this.#resizeHandler) {
@@ -1059,6 +1066,67 @@ class FoliateManager {
     }
 
     this.#view.renderer.render?.();
+  }
+
+  // MARK: - Margin notes (P5.2)
+
+  /** Book has margin notes (from Swift) and whether the person has opened the wide margin. */
+  #inkMargin = { hasNotes: false, open: false };
+
+  /**
+   * One column is too narrow for a writable margin (iPhone): margin notes show only as icons,
+   * and tapping one asks Swift to show the note.
+   */
+  #isNarrowColumn() {
+    const columns = (this.#singleColumnMode || this.#scrollingMode) ? 1 : 2;
+    return window.innerWidth / columns < 480;
+  }
+
+  #marginIsExpanded() {
+    return this.#inkMargin.open && !this.#isNarrowColumn() && !this.#scrollingMode;
+  }
+
+  /** The paginator gap: none, a thin gutter for margin icons, or a wide margin to write in. */
+  #inkGap() {
+    if (this.#scrollingMode) return "0%";
+    if (this.#marginIsExpanded()) return "20%";
+    return this.#inkMargin.hasNotes ? "6%" : "0%";
+  }
+
+  #applyInkMargin(focusId = null) {
+    const expanded = this.#marginIsExpanded();
+    debugLog("InkEngine", "margin", JSON.stringify({ ...this.#inkMargin, expanded, gap: this.#inkGap() }));
+    this.#view?.renderer?.setAttribute("gap", this.#inkGap());
+    this.#inkEngine.setMarginExpanded(expanded);
+    this.#view?.renderer?.render?.();
+    this.#inkEngine.redrawMarks();
+    // The text reflowed: keep the note that was tapped in view.
+    if (focusId) requestAnimationFrame(() => this.#inkEngine.revealMarginNote(focusId));
+    window.webkit?.messageHandlers?.InkMarginState?.postMessage({
+      expanded, available: !this.#isNarrowColumn() && !this.#scrollingMode,
+    });
+  }
+
+  /** Swift: `{ hasNotes?, open? }`. Opening the margin widens the gutter so notes can be written there. */
+  inkSetMargin(jsonString) {
+    const next = { ...this.#inkMargin, ...JSON.parse(jsonString) };
+    if (next.hasNotes === this.#inkMargin.hasNotes && next.open === this.#inkMargin.open) {
+      return JSON.stringify({ expanded: this.#marginIsExpanded() });
+    }
+    this.#inkMargin = next;
+    this.#applyInkMargin();
+    return JSON.stringify({ expanded: this.#marginIsExpanded() });
+  }
+
+  /** A tap on a margin note's icon: open the margin, or on a narrow screen show that note. */
+  #handleMarginIconTap(doc, id) {
+    if (this.#isNarrowColumn() || this.#scrollingMode) {
+      const href = this.#inkEngine.hrefOf(doc);
+      window.webkit?.messageHandlers?.InkMarginNoteTapped?.postMessage({ href, id });
+      return;
+    }
+    this.#inkMargin = { ...this.#inkMargin, open: true };
+    this.#applyInkMargin(id);
   }
 
   #updateMaxInlineSize() {

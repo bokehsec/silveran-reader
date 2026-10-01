@@ -61,6 +61,13 @@ public struct EbookPlayerView: View {
         self.onClose = onClose
     }
 
+    /// The margin button's action, where the Pencil writes and the margin can open.
+    private var marginToggle: (() -> Void)? {
+        guard viewModel.commsBridge?.toggleInkTools != nil, viewModel.inkMarginState.available
+        else { return nil }
+        return viewModel.toggleInkMargin
+    }
+
     public var body: some View {
         Group {
             #if os(macOS)
@@ -198,6 +205,13 @@ public struct EbookPlayerView: View {
         }
         .onChange(of: viewModel.settingsVM.highlightColorsHash) { _, _ in
             Task { await viewModel.refreshHighlightColors() }
+        }
+        .sheet(item: $viewModel.presentedMarginNote) { shown in
+            MarginNoteSheet(
+                strokes: viewModel.inkSession.section(shown.href).notes
+                    .first(where: { $0.id == shown.noteID })?.strokes ?? [],
+                chapter: viewModel.chapterLabel(forHref: shown.href)
+            ) { viewModel.presentedMarginNote = nil }
         }
         .sheet(isPresented: $viewModel.showInkRepair) {
             InkRepairSheet(viewModel: viewModel) { viewModel.showInkRepair = false }
@@ -621,6 +635,8 @@ public struct EbookPlayerView: View {
                     onSleepTimerStart: viewModel.handleSleepTimerStart,
                     onSleepTimerCancel: viewModel.handleSleepTimerCancel,
                     onToggleInkTools: viewModel.commsBridge?.toggleInkTools,
+                    onToggleMargin: marginToggle,
+                    marginOpen: viewModel.inkMarginState.expanded,
                     settingsVM: viewModel.settingsVM,
                 )
                 .simultaneousGesture(chromeInteractionGesture)

@@ -31,6 +31,9 @@ struct EbookPlayerTopToolbar: View {
     let onSleepTimerCancel: () -> Void
     /// Shows or hides the Apple Pencil writing palette; nil when the Pencil does not write here.
     var onToggleInkTools: (() -> Void)? = nil
+    /// Opens or closes the wide margin for margin notes; nil where the margin can't open.
+    var onToggleMargin: (() -> Void)? = nil
+    var marginOpen = false
 
     let settingsVM: SettingsViewModel
 
@@ -111,6 +114,20 @@ struct EbookPlayerTopToolbar: View {
                         }
                         .frame(width: 44, height: 44)
                         .accessibilityLabel("Handwriting tools")
+                    }
+
+                    if isPad, let onToggleMargin {
+                        Button {
+                            onToggleMargin()
+                        } label: {
+                            Image(systemName: "sidebar.right")
+                                .font(.system(size: 19, weight: marginOpen ? .semibold : .regular))
+                                .foregroundStyle(marginOpen ? Color.accentColor : toolbarForegroundColor)
+                                .contentShape(Rectangle())
+                        }
+                        .frame(width: 44, height: 44)
+                        .accessibilityLabel("Margin for notes")
+                        .accessibilityValue(marginOpen ? "Open" : "Closed")
                     }
 
                     Button {

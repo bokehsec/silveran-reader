@@ -93,6 +93,9 @@ const caret = (doc, x, y) => {
   return r;
 };
 
+/** The caret range at (x, y) in section-document coordinates, outside ink; null if none. */
+export const caretAt = caret;
+
 /** The page as the classifier sees it (see InkClassify.js), over the section's current layout. */
 const classifierEnv = (doc, index, lines, lineHeight) => ({
   text: index.text,

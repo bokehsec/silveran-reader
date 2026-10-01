@@ -16,6 +16,9 @@ public protocol InkEngineCalling: AnyObject {
     func inkSuggestRepairs(href: String, ids: [String]) async throws -> [InkRepairAnswer]
     /// The first word on the page now showing.
     func inkPageStartAnchor() async throws -> InkPageAnchor
+    /// Margin notes: whether the book has any (a thin gutter for their icons), and whether the
+    /// person has opened the wide margin. Nil leaves a value as it is.
+    func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws
 }
 
 /// Apple Pencil ink for one open book (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.1).
@@ -81,6 +84,7 @@ public final class InkSession {
             rendererGeneration += 1
             if engine == nil { readySections.removeAll() }
             migrating.removeAll()
+            reportedMarginNotes = nil
         }
     }
     private var rendererGeneration: UInt64 = 0
@@ -199,6 +203,8 @@ public final class InkSession {
         redoStack.removeAll()
         isOpen = true
         onUndoStateChanged?()
+        reportedMarginNotes = nil
+        reportMarginNotes()
         for href in readySections.sorted() { await prepare(href: href) }
     }
 
@@ -229,6 +235,7 @@ public final class InkSession {
     public func sectionReady(href: String) async {
         readySections.insert(href)
         guard isOpen else { return }
+        reportMarginNotes()
         await prepare(href: href)
     }
 
@@ -332,6 +339,7 @@ public final class InkSession {
     private func commit(href: String, before: SectionInk, after: SectionInk, focus: String?) {
         ink.sections[href] = after.isEmpty ? nil : after
         persist(href: href)
+        reportMarginNotes()
         scheduleRender(href: href, focus: focus)
     }
 
@@ -412,6 +420,64 @@ public final class InkSession {
             await renderTail?.value
         } while capturedWork != acceptedWork || capturedRevision != revision
         return pendingSections.isEmpty
+    }
+
+    // MARK: - Margin notes (P5.2)
+
+    /// The page's margin: `available` is false where a column is too narrow to write beside
+    /// (margin notes then show as icons only).
+    public struct MarginState: Equatable, Sendable {
+        public var expanded = false
+        public var available = true
+        public init(expanded: Bool = false, available: Bool = true) {
+            self.expanded = expanded
+            self.available = available
+        }
+    }
+
+    public private(set) var marginState = MarginState()
+    public var onMarginStateChanged: (() -> Void)?
+    /// A margin note icon was tapped where the margin can't open (narrow screen): show it.
+    public var onMarginNoteTapped: ((_ href: String, _ noteID: String) -> Void)?
+    private var reportedMarginNotes: Bool?
+
+    /// True when some note in the book is a margin note.
+    public var hasMarginNotes: Bool {
+        ink.sections.values.contains { $0.notes.contains(where: \.isMarginNote) }
+    }
+
+    /// The page reports the margin's state.
+    public func setMarginState(_ state: MarginState) {
+        guard state != marginState else { return }
+        marginState = state
+        onMarginStateChanged?()
+    }
+
+    /// Opens or closes the wide margin to write margin notes in.
+    public func setMarginOpen(_ open: Bool) async {
+        debugLog("[InkSession] Margin \(open ? "open" : "closed") requested")
+        guard let engine else { return }
+        do {
+            try await engine.inkSetMargin(hasNotes: hasMarginNotes, open: open)
+        } catch {
+            debugLog("[InkSession] Setting the margin failed: \(error)")
+        }
+    }
+
+    /// Tells the page whether the book has margin notes, when that changes.
+    private func reportMarginNotes() {
+        let has = hasMarginNotes
+        guard has != reportedMarginNotes, let engine else { return }
+        reportedMarginNotes = has
+        let generation = rendererGeneration
+        Task { [weak self] in
+            guard let self, generation == self.rendererGeneration else { return }
+            try? await engine.inkSetMargin(hasNotes: has, open: nil)
+        }
+    }
+
+    public func marginNoteTapped(href: String, noteID: String) {
+        onMarginNoteTapped?(href, noteID)
     }
 
     // MARK: - Repairing ink that lost its words (P5.1)
@@ -561,7 +627,9 @@ public final class InkSession {
                             id: makeID(),
                             anchor: anchor,
                             strokes: [local],
-                            createdAt: stamp
+                            createdAt: stamp,
+                            placement: proposal.placement,
+                            refWidth: proposal.refWidth,
                         ),
                     )
                 )

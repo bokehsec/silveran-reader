@@ -56,6 +56,11 @@ private final class FakeEngine: InkEngineCalling {
     }
 
     func inkPageStartAnchor() async throws -> InkPageAnchor { pageAnchor }
+
+    var marginCalls: [(hasNotes: Bool?, open: Bool?)] = []
+    func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws {
+        marginCalls.append((hasNotes, open))
+    }
 }
 
 @Suite("Ink session model")
@@ -760,6 +765,60 @@ struct InkSessionModelTests {
         #expect(session.undo())
         #expect(session.section("c1").notes.first?.strokes.count == 3)
         await session.flush()
+    }
+
+    // MARK: Margin notes (P5.2)
+
+    @Test("A stroke the page places in the margin becomes a margin note")
+    func marginNoteFromProposal() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine, ids: ["m1"])
+        engine.proposals = [
+            InkProposal(
+                op: .note, section: "c1", anchor: anchor(30), stroke: InkStroke(points: [[1, 2]]),
+                placement: .margin, refWidth: 96)
+        ]
+        await session.finishStroke(InkStrokeInput(points: [[5, 5]]))
+        let note = session.section("c1").notes.first
+        #expect(note?.id == "m1")
+        #expect(note?.placement == .margin)
+        #expect(note?.refWidth == 96)
+        #expect(session.hasMarginNotes)
+        await session.flush()
+        #expect(engine.marginCalls.last?.hasNotes == true, "the page is told the book now has margin notes")
+    }
+
+    @Test("Margin notes survive saving and reopening; notes without a placement stay in the text")
+    func marginNotesRoundTrip() async throws {
+        let marginNote = InkNote(
+            id: "m", anchor: anchor(1), strokes: [InkStroke(points: [[0, 0]])], createdAt: stamp,
+            placement: .margin, refWidth: 80)
+        let book = BookInk(sections: ["c1": SectionInk(notes: [marginNote, note("inline")])])
+        let data = try JSONEncoder().encode(book)
+        let decoded = try JSONDecoder().decode(BookInk.self, from: data)
+        #expect(decoded.sections["c1"]?.notes.first?.placement == .margin)
+        #expect(decoded.sections["c1"]?.notes.first?.refWidth == 80)
+        #expect(decoded.sections["c1"]?.notes.last?.placement == nil)
+        let json = String(decoding: try JSONEncoder().encode(note("inline")), as: UTF8.self)
+        #expect(!json.contains("placement"), "in-text notes are written exactly as before")
+    }
+
+    @Test("Opening and closing the margin reaches the page")
+    func marginOpen() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        await session.setMarginOpen(true)
+        #expect(engine.marginCalls.last?.open == true)
+        var changes = 0
+        session.onMarginStateChanged = { changes += 1 }
+        session.setMarginState(.init(expanded: true, available: true))
+        session.setMarginState(.init(expanded: true, available: true))
+        #expect(changes == 1)
+        #expect(session.marginState.expanded)
     }
 
     // MARK: Migration

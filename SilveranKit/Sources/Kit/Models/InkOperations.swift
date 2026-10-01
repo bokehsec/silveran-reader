@@ -49,8 +49,12 @@ public struct InkProposal: Codable, Sendable, Hashable {
     public var section: String?
     /// For `append`: the note the stroke was added to.
     public var noteId: String?
-    /// For `note`: the words the note goes before.
+    /// For `note`: the words the note goes before (or, in the margin, the line it goes beside).
     public var anchor: TextAnchor?
+    /// For `note`: `.margin` for a note written in the margin; nil in the text flow.
+    public var placement: InkNotePlacement?
+    /// For a margin note: the drawing width it was written in.
+    public var refWidth: Double?
     /// For `note` and `append`: the stroke in the note's own coordinates.
     public var stroke: InkStroke?
     /// For `mark`: what it is and the words it covers.
@@ -71,7 +75,11 @@ public struct InkProposal: Codable, Sendable, Hashable {
         end: TextAnchor? = nil,
         geometry: InkMarkGeometry? = nil,
         reason: String? = nil,
+        placement: InkNotePlacement? = nil,
+        refWidth: Double? = nil,
     ) {
+        self.placement = placement
+        self.refWidth = refWidth
         self.op = op
         self.section = section
         self.noteId = noteId
