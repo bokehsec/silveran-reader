@@ -133,7 +133,8 @@ struct InkWordWritingWebKitTests {
         h, 10), ...arc(x + 10, y0 + h, 10, 8, 0, Math.PI)]);
 
         const [ox, oy] = letters[0].points[0];
-        for (const l of letters) l.points = l.points.map(([px, py, p]) => [ox + (px - ox) * size, oy + (py - oy) * size, p]);
+        for (const l of letters) l.points = l.points.map(([px, py, p]) => [ox + (px - ox) * size, \
+        oy + (py - oy) * size, p]);
         const notes = [];
         const where = [];
         let id = 0;
@@ -141,10 +142,12 @@ struct InkWordWritingWebKitTests {
         const pen = points => ({ tool: "pen", color: "#111111", width: 2.2, points });
         if (grouped) {
           let t = performance.now();
-          const proposals = proposeGroup({ doc: document, href: "ch", strokes: letters.map(l => pen(l.points)), viewportWidth: innerWidth });
+          const proposals = proposeGroup({ doc: document, href: "ch", strokes: letters.map(l => \
+        pen(l.points)), viewportWidth: innerWidth });
           const proposeMs = performance.now() - t;
           const writing = proposals.find(p => p.op === "note" || p.op === "append");
-          if (writing?.op === "note") notes.push({ id: "n" + (++id), anchor: writing.anchor, strokes: writing.strokes, createdAt: id });
+          if (writing?.op === "note") notes.push({ id: "n" + (++id), anchor: writing.anchor, \
+        strokes: writing.strokes, createdAt: id });
           t = performance.now();
           placeNotes(document, notes, { maxHeight: innerHeight });
           void document.body.offsetHeight;
@@ -152,21 +155,26 @@ struct InkWordWritingWebKitTests {
           const handwriting = writing?.strokes?.length === letters.length;
           letters.forEach(({ letter }, i) => {
             where.push(handwriting && writing.op === "note" ? { id: "n1", index: i } : null);
-            reports.push({ letter, op: writing?.op ?? "none", noteId: handwriting ? "n1" : null, proposeMs, layoutMs });
+            reports.push({ letter, op: writing?.op ?? "none", noteId: handwriting ? "n1" : null, \
+        proposeMs, layoutMs });
           });
         } else {
           for (const { letter, points } of letters) {
             let t = performance.now();
-            const p = proposeStroke({ doc: document, href: "ch", stroke: pen(points), viewportWidth: innerWidth });
+            const p = proposeStroke({ doc: document, href: "ch", stroke: pen(points), \
+        viewportWidth: innerWidth });
             const proposeMs = performance.now() - t;
-            if (p.op === "note") { const n = { id: "n" + (++id), anchor: p.anchor, strokes: [p.stroke], createdAt: id }; notes.push(n); where.push({ id: n.id, index: 0 }); }
-            else if (p.op === "append") { const n = notes.find(n => n.id === p.noteId); n.strokes.push(p.stroke); where.push({ id: n.id, index: n.strokes.length - 1 }); }
+            if (p.op === "note") { const n = { id: "n" + (++id), anchor: p.anchor, strokes: \
+        [p.stroke], createdAt: id }; notes.push(n); where.push({ id: n.id, index: 0 }); }
+            else if (p.op === "append") { const n = notes.find(n => n.id === p.noteId); \
+        n.strokes.push(p.stroke); where.push({ id: n.id, index: n.strokes.length - 1 }); }
             else where.push(null);
             t = performance.now();
             placeNotes(document, notes, { maxHeight: innerHeight });
             void document.body.offsetHeight;
             const layoutMs = performance.now() - t;
-            reports.push({ letter, op: p.op, noteId: where[where.length - 1]?.id ?? null, proposeMs, layoutMs });
+            reports.push({ letter, op: p.op, noteId: where[where.length - 1]?.id ?? null, \
+        proposeMs, layoutMs });
           }
         }
         // Where each stroke is drawn now, against where the pen wrote it.
@@ -196,13 +204,14 @@ struct InkWordWritingWebKitTests {
           for (const p of document.querySelectorAll("p")) {
             range.selectNodeContents(p);
             for (const c of range.getClientRects()) {
-              if (c.top >= r.top && c.bottom <= r.bottom && (wrapped === "left" ? c.left >= r.right : c.right <= r.left)) return true;
+              if (c.top >= r.top && c.bottom <= r.bottom && (wrapped === "left" ? c.left >= \
+        r.right : c.right <= r.left)) return true;
             }
           }
           return false;
         })();
-        return JSON.stringify({ wrapped, textBeside: beside, strokes: reports, notes: notes.length, paragraphs: \
-        document.querySelectorAll("p").length });
+        return JSON.stringify({ wrapped, textBeside: beside, strokes: reports, notes: \
+        notes.length, paragraphs: document.querySelectorAll("p").length });
         """
 
     @Test("Placement cost grows with chapter length (diagnostic)")
