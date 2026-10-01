@@ -136,3 +136,5 @@ Annotation sharing remains a projection: portable `InkVisualExport` builds press
 
 
 Margin presentation groups overlapping canvases within each column and reports all member identities through the typed bridge. Explicit focus is ephemeral renderer state; `InkSession` checks ownership/lifecycle before native lasso editing. The native margin viewer preserves individually readable originals and offers a full vector drawing view. Collapsed phone and horizontal scrolling gutters retain reachable icons. Native component verification uses a separate UIKit test host; it never initializes the reader's owners or cloud services and is distinct from simulator UI acceptance.
+
+Active EPUB preparation now fingerprints original bytes with streamed SHA-256 and uses content-keyed derived extractions. Verification completes before the cache is marked reusable (BF-042). The fingerprint is passed through backend-neutral prepared-media contracts. [ADR 011](docs/decisions/011-active-typed-anchors-and-edition-evidence.md) records the remaining active typed-anchor/edition adoption; this foundation alone does not migrate highlight payloads or establish account/mapping provenance.

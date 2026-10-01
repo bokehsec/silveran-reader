@@ -49,6 +49,8 @@ targets:
       - path: SilveranKit/Tests/SilveranTests
         includes:
           - AnnotationBookInspectorTests.swift
+          - AnnotationEditionTests.swift
+          - EbookContentIdentityTests.swift
           - AnnotationPDFExportTests.swift
           - AnnotationImageExportTests.swift
           - InkBridgeTests.swift

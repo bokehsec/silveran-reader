@@ -93,12 +93,14 @@ public actor FilesystemActor {
     private var pendingHistoryWriteTask: Task<Void, Error>?
     private var pendingHistoryWriteId: Int = 0
 
+    private let fingerprintFile: @Sendable (URL) throws -> AnnotationContentFingerprint
     private let fixedApplicationSupportDirectory: URL?
     private let writeHighlights: @Sendable (Data, URL) throws -> Void
     private let removeHighlights: @Sendable (URL) throws -> Void
 
     public init(applicationSupportDirectory: URL? = nil) {
         fixedApplicationSupportDirectory = applicationSupportDirectory
+        fingerprintFile = { try AnnotationContentFingerprint(contentsOf: $0) }
         writeHighlights = { data, url in try data.write(to: url, options: .atomic) }
         removeHighlights = { try FileManager.default.removeItem(at: $0) }
     }
@@ -106,11 +108,15 @@ public actor FilesystemActor {
     init(
         applicationSupportDirectory: URL,
         writeHighlights: @escaping @Sendable (Data, URL) throws -> Void,
+        fingerprintFile: @escaping @Sendable (URL) throws -> AnnotationContentFingerprint = {
+            try AnnotationContentFingerprint(contentsOf: $0)
+        },
         removeHighlights: @escaping @Sendable (URL) throws -> Void = {
             try FileManager.default.removeItem(at: $0)
         }
     ) {
         fixedApplicationSupportDirectory = applicationSupportDirectory
+        self.fingerprintFile = fingerprintFile
         self.writeHighlights = writeHighlights
         self.removeHighlights = removeHighlights
     }
@@ -1202,22 +1208,52 @@ public actor FilesystemActor {
         bookID: String,
         category: LocalMediaCategory,
     ) async throws -> URL {
-        let extractionDir = derivedEpubExtractionDirectory(
+        try await prepareEbookContent(
             epubPath: epubPath,
             sourceID: sourceID,
             bookID: bookID,
-            category: category,
+            category: category
+        ).readerURL
+    }
+
+    public func prepareEbookContent(
+        epubPath: URL,
+        sourceID: BookSourceID,
+        bookID: String,
+        category: LocalMediaCategory
+    ) async throws -> PreparedEbookContent {
+        let fingerprint = try fingerprintFile(epubPath)
+        let extractionDir = derivedEpubExtractionDirectory(
+            fingerprint: fingerprint,
+            sourceID: sourceID,
+            bookID: bookID,
+            category: category
         )
-        return try await extractEpubIfNeeded(
+        let extraction = try await extractEpubIfNeeded(
             epubPath: epubPath,
-            extractedDir: extractionDir,
+            extractedDir: extractionDir
         )
+        guard fingerprint == (try fingerprintFile(epubPath)) else {
+            throw AnnotationPersistenceFailure(
+                message:
+                    "The book changed while opening. Close and reopen it; your annotations are unchanged."
+            )
+        }
+        // Publish completeness only after the original asset is verified again.
+        // A rejected extraction must never be reused under its unverified content identity.
+        if let sizes = extraction.sizes {
+            try sizes.write(
+                to: extraction.url.appendingPathComponent("_sizes.json"),
+                options: .atomic
+            )
+        }
+        return PreparedEbookContent(readerURL: extraction.url, fingerprint: fingerprint)
     }
 
     private func extractEpubIfNeeded(
         epubPath: URL,
         extractedDir: URL,
-    ) async throws -> URL {
+    ) async throws -> (url: URL, sizes: Data?) {
         let fm = FileManager.default
 
         debugLog("[FilesystemActor] Extracting EPUB for reader access...")
@@ -1228,7 +1264,7 @@ public actor FilesystemActor {
                 debugLog(
                     "[FilesystemActor] Extracted directory already exists and complete, reusing: \(extractedDir.path)"
                 )
-                return URL(fileURLWithPath: extractedDir.path, isDirectory: true)
+                return (URL(fileURLWithPath: extractedDir.path, isDirectory: true), nil)
             } else {
                 debugLog(
                     "[FilesystemActor] Extracted directory exists but incomplete, removing: \(extractedDir.path)"
@@ -1278,38 +1314,27 @@ public actor FilesystemActor {
             }
         }
 
-        let sizesURL = extractedDir.appendingPathComponent("_sizes.json")
         let sizesData = try JSONSerialization.data(withJSONObject: fileSizes)
-        try sizesData.write(to: sizesURL)
 
         debugLog(
             "[FilesystemActor] EPUB extracted (skipped \(skippedAudioFiles) audio, \(skippedErrors) errors, wrote \(fileSizes.count) files)"
         )
 
-        return URL(fileURLWithPath: extractedDir.path, isDirectory: true)
+        return (URL(fileURLWithPath: extractedDir.path, isDirectory: true), sizesData)
     }
 
     private func derivedEpubExtractionDirectory(
-        epubPath: URL,
+        fingerprint: AnnotationContentFingerprint,
         sourceID: BookSourceID,
         bookID: String,
         category: LocalMediaCategory,
     ) -> URL {
-        let fingerprint = fileFingerprint(for: epubPath)
         return epubExtractionRootDirectory()
             .appendingPathComponent(sanitizedPathComponent(from: sourceID), isDirectory: true)
             .appendingPathComponent(sanitizedPathComponent(from: bookID), isDirectory: true)
             .appendingPathComponent(category.rawValue, isDirectory: true)
-            .appendingPathComponent(fingerprint, isDirectory: true)
+            .appendingPathComponent("sha256-" + fingerprint.hex, isDirectory: true)
             .appendingPathComponent("extracted", isDirectory: true)
-    }
-
-    private func fileFingerprint(for url: URL) -> String {
-        let attributes = (try? FileManager.default.attributesOfItem(atPath: url.path)) ?? [:]
-        let size = attributes[.size] as? UInt64 ?? 0
-        let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        let modifiedMilliseconds = Int64((modifiedAt * 1000).rounded())
-        return "\(size)-\(modifiedMilliseconds)"
     }
 
     public func extractAudioData(from epubPath: URL, audioPath: String) async throws -> Data {

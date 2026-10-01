@@ -13,6 +13,32 @@ public struct AnnotationContentFingerprint: Codable, Hashable, Sendable {
         byteCount = data.count
     }
 
+    /// Stream the original asset, keeping memory bounded independently of EPUB size.
+    public init(contentsOf url: URL) throws {
+        let resolved = url.resolvingSymlinksInPath()
+        let attributes = try FileManager.default.attributesOfItem(atPath: resolved.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw AnnotationRepositoryFailure("Edition evidence requires a regular local file.")
+        }
+        let file = try FileHandle(forReadingFrom: resolved)
+        defer { try? file.close() }
+        var hasher = SHA256()
+        var count = 0
+        while true {
+            try Task.checkCancellation()
+            guard let chunk = try file.read(upToCount: 1_048_576), !chunk.isEmpty else { break }
+            let (next, overflow) = count.addingReportingOverflow(chunk.count)
+            guard !overflow else {
+                throw AnnotationRepositoryFailure("The local asset is too large.")
+            }
+            count = next
+            hasher.update(data: chunk)
+        }
+        algorithm = "sha256"
+        hex = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        byteCount = count
+    }
+
     public var isValid: Bool {
         algorithm == "sha256" && byteCount >= 0 && hex.utf8.count == 64
             && hex.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }

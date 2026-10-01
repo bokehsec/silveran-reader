@@ -1,0 +1,5 @@
+# Same app targets, separate generated project so validation does not contend with an open IDE.
+include:
+  - path: XCodeApps/project.yml
+    relativePaths: false
+name: SilveranValidation

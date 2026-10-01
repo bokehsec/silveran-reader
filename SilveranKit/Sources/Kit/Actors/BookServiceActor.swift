@@ -1066,7 +1066,7 @@ public actor BookServiceActor {
             throw LocalMediaError.importFailed("Local EPUB media is unavailable.")
         }
 
-        let readerURL = try await FilesystemActor.shared.prepareEpubForReading(
+        let content = try await FilesystemActor.shared.prepareEbookContent(
             epubPath: resolved.url,
             sourceID: resolved.sourceID,
             bookID: resolved.bookID.uuid,
@@ -1077,8 +1077,9 @@ public actor BookServiceActor {
             bookID: resolved.bookID,
             category: resolved.category,
             originalURL: resolved.url,
-            readerURL: readerURL,
+            readerURL: content.readerURL,
             locationKind: resolved.kind,
+            contentFingerprint: content.fingerprint,
         )
     }
 

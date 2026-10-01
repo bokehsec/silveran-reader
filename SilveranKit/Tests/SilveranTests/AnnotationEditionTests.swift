@@ -33,6 +33,46 @@ struct AnnotationEditionTests {
         #expect(value != AnnotationContentFingerprint(data: Data("ABC".utf8)))
     }
 
+    @Test("Streamed file fingerprints agree across chunk boundaries and preserve empty files")
+    func streamedFingerprint() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "Fingerprint-\(UUID().uuidString)"
+        )
+        defer { try? FileManager.default.removeItem(at: file) }
+        for bytes in [Data(), Data("abc".utf8), Data(repeating: 0xA7, count: 2_097_169)] {
+            try bytes.write(to: file)
+            #expect(
+                try AnnotationContentFingerprint(contentsOf: file)
+                    == AnnotationContentFingerprint(data: bytes)
+            )
+        }
+        #expect(throws: (any Error).self) {
+            _ = try AnnotationContentFingerprint(contentsOf: file.appendingPathComponent("missing"))
+        }
+        #expect(throws: (any Error).self) {
+            _ = try AnnotationContentFingerprint(contentsOf: file.deletingLastPathComponent())
+        }
+    }
+
+    @Test("Cancelled asset hashing retains the original and returns cancellation")
+    func cancelledFingerprint() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CancelledHash-\(UUID().uuidString)"
+        )
+        let data = Data("kept original".utf8)
+        try data.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let (gate, continuation) = AsyncStream<Void>.makeStream()
+        let task = Task {
+            for await _ in gate { break }
+            return try AnnotationContentFingerprint(contentsOf: file)
+        }
+        task.cancel()
+        continuation.finish()
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        #expect(try Data(contentsOf: file) == data)
+    }
+
     @Test("A readaloud edition with changed hrefs requires an explicit verified map")
     func changedHrefs() throws {
         let text = "words for annotation"

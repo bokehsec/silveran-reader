@@ -1,0 +1,30 @@
+# ADR 011: Active typed anchors and verified edition evidence
+
+- Date: 2026-10-01
+- Status: Accepted; implementation in progress, acceptance not yet passed
+- Scope: protected per-book owners, portable attachment models and EPUB projections
+- References: [ADR 004](004-edition-anchors-and-creative-conflicts.md), [ADR 010](010-live-icloud-annotation-sync.md), [Phase 5](../PHASE5_EXECUTION_BACKLOG.md)
+
+## Decision and invariants
+
+Activate the shared version-1 UTF-16 quotation/context anchor contract for new typed highlights and explicitly confirmed repairs. Keep legacy CFIs and complete original creative payloads. Legacy records remain readable without inventing edition identity; capture/repair must obtain evidence from a verified local asset and the renderer's normalized section text. Unsupported versions or unknown nested fields protect the complete original file against mutation.
+
+EPUB preparation identifies the original asset by streamed SHA-256, with bounded memory, and keys its derived extraction by that fingerprint. Size/modification time alone cannot establish content identity. Verify the original asset again before returning prepared content; a concurrent replacement fails visibly rather than mixing an old DOM with a new edition identity. Publish the derived-cache completion marker only after this verification; a rejected extraction cannot be reused under an old identity. Book preparation and annotation adapters continue through backend-neutral BookService/Filesystem contracts.
+
+Persist compact per-attachment edition evidence in the existing protected highlight payload, alongside the shared target and explicit repair provenance. Scope is the source/book plus an explicit account ID when available; a legacy nil account does not authorize cross-account mappings. An edition ID is deterministically assigned from the verified asset fingerprint and complete scope, rather than from a title, filename, server UUID or spine position. Section evidence contains its actual href, normalization version and normalized-text fingerprint; it is a partial evidence inventory, not a claim that every book section was inspected. Keep previous targets and evidence when a person confirms changed-edition placement.
+
+Same-asset projection uses the versioned shared selector, including ambiguity checks. A changed asset never silently inherits the attachment. Verified identical normalized sections may supply explicit within-scope mapping evidence; changed text or cross-scope mappings require user confirmation. Unresolved/ambiguous selectors remain recovery items. The JavaScript layer measures and renders; Swift validates scope/identity and commits durable placement through the existing owner. No renderer, view or platform callback adds a second persistence path.
+
+## Alternatives
+
+CFI-only storage loses passage continuity when ebook/readaloud markup changes. Timestamp/size caches can reuse the wrong extraction after a replacement with preserved metadata. A full edition catalog repeated in every highlight duplicates large book inventories; compact evidence preserves what was actually verified. Activating SQLite here would bypass its outstanding revision-growth/compaction gate, so ADR 010's protected owners remain authoritative. Automatic migration from a matching repeated legacy quotation would assert provenance that was never recorded; keep it unverified or require confirmation.
+
+## Migration, replication and rollback
+
+Optional placement fields preserve legacy decoding in the new build. Older protected writers refuse unfamiliar keys rather than stripping evidence; all writing devices must update before the new payload is broadly used. Annotation sync and retained backup carry the complete payload through their existing participants; migration, conflict and restore fixtures must verify that evidence and original targets survive. Missing assets never remove annotations. Derived extraction caches can be rebuilt; existing downloads and annotation originals are retained. A downgrade can read an exported compatible archive, but must not overwrite new fields or roll current edits back to stale originals.
+
+No annotation is sent to Storyteller or any other book server. No cloud authority, account access or storage engine changes. Hashes identify content and accidental changes; they do not authenticate archives or grant cross-account access.
+
+## Validation and limitations
+
+Required: streamed hash vectors/large chunks/cancellation, same-size/same-time replacement regression, changed-during-preparation refusal, Unicode/ambiguity selectors, protected old/future payloads, explicit confirmed mappings, stale review/save failures, ebook/readaloud pairs, sync conflict retention and backup/restore. Native iPad/iPhone component runs establish API/projection behavior; simulator gestures, usability, real Pencil and signed multi-device delivery remain separate gates. Record actual results in the canonical plan as implementation progresses.

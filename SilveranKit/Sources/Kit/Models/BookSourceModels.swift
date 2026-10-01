@@ -147,12 +147,19 @@ public enum EbookFileFormat: String, Sendable, Hashable {
     }
 }
 
+/// Verified original content and its derived renderer directory, supplied by the local owner.
+public struct PreparedEbookContent: Sendable, Hashable {
+    public let readerURL: URL
+    public let fingerprint: AnnotationContentFingerprint
+}
+
 public struct PreparedEbookMedia: Sendable, Hashable {
     public let bookID: BookID
     public let category: LocalMediaCategory
     public let originalURL: URL
     public let readerURL: URL
     public let locationKind: LocalMediaLocationKind
+    public let contentFingerprint: AnnotationContentFingerprint?
 
     public var sourceID: BookSourceID { bookID.sourceID }
 
@@ -162,12 +169,14 @@ public struct PreparedEbookMedia: Sendable, Hashable {
         originalURL: URL,
         readerURL: URL,
         locationKind: LocalMediaLocationKind,
+        contentFingerprint: AnnotationContentFingerprint? = nil,
     ) {
         self.bookID = bookID
         self.category = category
         self.originalURL = originalURL
         self.readerURL = readerURL
         self.locationKind = locationKind
+        self.contentFingerprint = contentFingerprint
     }
 }
 

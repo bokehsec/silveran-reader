@@ -42,6 +42,29 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-042 — Replaced EPUBs could reuse old extracted chapters when metadata matched
+
+- Date: 2026-10-01
+- Status: Fixed; native verification recorded below, device performance pending
+- Platforms: portable local ebook preparation; all reader platforms
+- Components: `FilesystemActor.prepareEpubForReading`, `BookServiceActor`, content fingerprints
+- Related links: [ADR 011](docs/decisions/011-active-typed-anchors-and-edition-evidence.md)
+
+#### Symptom and cause
+
+A different EPUB with the same byte count and modification timestamp selected the same derived extraction directory. The existing sizes manifest made that directory appear complete, so old chapters could be reused. Size/time metadata is an optimization hint, not edition identity. The regression uses two deterministic uncompressed archives with different chapter words but equal size and restored timestamps.
+
+#### Change and validation
+
+Stream SHA-256 with bounded memory, key derived extractions by verified content, return the fingerprint through backend-neutral prepared-media contracts and verify the original again before returning. Concurrent replacement refuses visibly; annotations/downloads/old extractions remain preserved. Completeness is published atomically only after the second fingerprint agrees. A rejected extraction has no completion marker and is rebuilt on retry, preventing changed bytes from poisoning an old content identity.
+
+The equal-size/time regression failed against the previous preparation path (old URL and old chapter); it passes after the change. A second regression actually replaces the fixture between fingerprinting and extraction, restores the original after refusal, and reopens: before delaying the completion marker it failed by returning the replacement chapter, and now it passes with the original. The focused `scripts/test --filter 'EbookContentIdentityTests|AnnotationEditionTests'` passes 10 tests, including streamed empty/large chunks, cancellation, missing/nonregular files and a simulated verification change. Final full-suite/app/component results are recorded in the canonical plan; no Android/Linux runtime or real-device performance acceptance is claimed.
+
+#### Compatibility
+
+No annotation payload migration in this cache change. Existing derived caches are rebuilt under content identities; old caches remain available and may consume additional disk space until ordinary cleanup. Original books/annotations are untouched. Native performance budgets and all platforms remain acceptance gates.
+
+
 ### BF-041 — Margin notes had no accessible in-reader viewing action on iPhone
 
 - Date: 2026-10-01

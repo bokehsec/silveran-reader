@@ -11,7 +11,7 @@ if [[ "${SILVERAN_DISABLE_CODE_SIGNING:-0}" == "1" ]]; then
     XCODEBUILD_OPTIONS=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build)
 fi
 
-xcodebuild -project Silveran.xcodeproj \
+xcodebuild -project "${SILVERAN_XCODE_PROJECT:-Silveran.xcodeproj}" \
     -scheme "Silveran Reader (iOS)" \
     -configuration Debug \
     -destination "${DESTINATION}" \
