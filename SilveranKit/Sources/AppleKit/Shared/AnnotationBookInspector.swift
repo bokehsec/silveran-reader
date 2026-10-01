@@ -9,6 +9,12 @@ final class AnnotationBookInspector {
     struct Chapter: Decodable {
         let href: String
         let index: Int
+        let title: String?
+        var displayName: String {
+            if let title, !title.isEmpty { return "\(index + 1). \(title)" }
+            return
+                "Chapter \(index + 1) · \(URL(fileURLWithPath: href.removingPercentEncoding ?? href).lastPathComponent)"
+        }
     }
     struct Result: Decodable {
         let missing: Bool
@@ -16,6 +22,7 @@ final class AnnotationBookInspector {
         let normalizedText: String?
         let normalizationVersion: Int?
     }
+    private var chapters: [Chapter] = []
     private var annotationScope: AnnotationScope?
     private var assetFingerprint: AnnotationContentFingerprint?
     private let resourceDirectory: URL?
@@ -95,6 +102,7 @@ final class AnnotationBookInspector {
         )
         try Task.checkCancellation()
         let chapters = try JSONDecoder().decode([Chapter].self, from: Data(result.utf8))
+        self.chapters = chapters
         self.annotationScope = annotationScope
         self.assetFingerprint = assetFingerprint
         return chapters
@@ -142,6 +150,7 @@ final class AnnotationBookInspector {
                         continue
                     }
                     if var suggestion = issue.highlight?.suggestion {
+                        suggestion.title = chapters.first(where: { $0.href == href })?.title
                         suggestion.placement = nil
                         if let anchor = suggestion.anchor,
                             suggestion.anchorVersion == AnnotationAnchorResolver.version
@@ -164,6 +173,40 @@ final class AnnotationBookInspector {
             answer.items = issues
         }
         return answer
+    }
+
+    /// An explicit chapter/quotation choice is a read-only proposal, never a legacy mutation.
+    func suggestPlacement(
+        for original: Highlight,
+        in href: String,
+        quotation: String
+    ) async throws -> AnnotationPlacementIssue? {
+        let words = quotation.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty else { return nil }
+        // Drop the old CFI from this ephemeral inspection input. It must not bias a person's
+        // manually chosen destination, even if its old markup position happens to resolve there.
+        let input = Highlight(
+            id: original.id,
+            bookID: original.bookID,
+            locator: BookLocator(
+                href: original.locator.href,
+                type: original.locator.type,
+                title: original.locator.title,
+                locations: nil,
+                text: nil
+            ),
+            text: words,
+            color: original.color ?? .yellow,
+            note: original.note,
+            createdAt: original.createdAt
+        )
+        let answer = try await inspect(href: href, ink: SectionInk(), highlights: [input])
+        guard var issue = answer.items.first(where: { $0.id == original.id.uuidString }),
+            issue.highlight?.suggestion?.placement != nil
+        else { return nil }
+        issue.href = original.locator.href
+        issue.verificationRequired = nil
+        return issue
     }
 
     private func call(_ body: String, arguments: [String: Any] = [:]) async throws -> String {
@@ -217,6 +260,7 @@ final class AnnotationBookInspector {
         for id in Array(pending.keys) { finish(id, result: .failure(CancellationError())) }
         webView?.stopLoading()
         webView = nil
+        chapters = []
         annotationScope = nil
         assetFingerprint = nil
     }

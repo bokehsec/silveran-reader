@@ -36,9 +36,10 @@ private final class StubSettings: ReaderSettingsReading {
     var lockViewToAudio = false
 }
 
-/// Polls until `condition` holds, so tests do not depend on exact sleep timing.
+/// Poll until the condition holds. Parallel fixture setup can occupy the main actor for several
+/// seconds; this deadline bounds the test, not the product's writing-release latency.
 @MainActor
-private func waitUntil(timeout: Duration = .seconds(2), _ condition: () -> Bool) async -> Bool {
+private func waitUntil(timeout: Duration = .seconds(10), _ condition: () -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {
         if condition() { return true }
@@ -201,7 +202,10 @@ struct InkSessionTests {
         #expect(await waitUntil { !session.isWriting })
         try? await Task.sleep(for: .milliseconds(50))
         let lock = js.evaluated.filter { $0.contains("setInkWriting") }
-        #expect(lock.last == "window.foliateManager?.setInkWriting(false)", "the final state JS holds is released")
+        #expect(
+            lock.last == "window.foliateManager?.setInkWriting(false)",
+            "the final state JS holds is released"
+        )
         #expect(bridge.inkSession === session)
     }
 
@@ -216,7 +220,9 @@ struct InkSessionTests {
         #expect(await waitUntil { !session.isWriting })
 
         for source in ["tap", "key", "swipe", "drag"] {
-            bridge.sendSwiftMarginClickNav(MarginClickNavMessage(direction: "right", source: source))
+            bridge.sendSwiftMarginClickNav(
+                MarginClickNavMessage(direction: "right", source: source)
+            )
         }
         #expect(turns == ["key", "swipe", "drag"])
     }
@@ -240,7 +246,9 @@ struct InkSessionTests {
         )
     }
 
-    @Test("Read-aloud holds page turns and sentence jumps while writing, then shows the spoken sentence once")
+    @Test(
+        "Read-aloud holds page turns and sentence jumps while writing, then shows the spoken sentence once"
+    )
     func readAloudWaitsForRelease() async {
         let js = RecordingJS()
         let session = InkSession(releaseDelay: shortDelay)
@@ -256,7 +264,15 @@ struct InkSessionTests {
             )
         }
         let mom = MediaOverlayManager(
-            bookStructure: [SectionInfo(index: 0, id: "ch1.xhtml", label: nil, level: nil, mediaOverlay: entries)],
+            bookStructure: [
+                SectionInfo(
+                    index: 0,
+                    id: "ch1.xhtml",
+                    label: nil,
+                    level: nil,
+                    mediaOverlay: entries
+                )
+            ],
             bookID: BookID(sourceID: "source-1", uuid: "book-1"),
             bridge: bridge,
             settingsVM: StubSettings(),
@@ -264,7 +280,9 @@ struct InkSessionTests {
         )
         mom.isPlaying = true
         let flips = { js.evaluated.filter { $0 == "window.foliateManager.goRight()" }.count }
-        let catchUps = { js.evaluated.filter { $0.contains("highlightFragment(0, 's0', true)") }.count }
+        let catchUps = {
+            js.evaluated.filter { $0.contains("highlightFragment(0, 's0', true)") }.count
+        }
         let offScreen = ElementVisibilityMessage(textId: "s1", visibleRatio: 0, offScreenRatio: 1)
 
         session.penDown()
@@ -272,12 +290,18 @@ struct InkSessionTests {
         mom.handleElementVisibility(offScreen)
         try? await Task.sleep(for: .milliseconds(20))
         #expect(flips() == 0, "no page turn while the Pencil is on the page")
-        #expect(!js.evaluated.contains { $0.contains("highlightFragment") }, "no sentence jump either")
+        #expect(
+            !js.evaluated.contains { $0.contains("highlightFragment") },
+            "no sentence jump either"
+        )
 
         session.penUp()
         #expect(await waitUntil { catchUps() == 1 })
         try? await Task.sleep(for: .milliseconds(50))
         #expect(catchUps() == 1, "the burst of requests becomes one catch-up")
-        #expect(flips() == 0, "the view goes to the spoken sentence instead of turning one page blind")
+        #expect(
+            flips() == 0,
+            "the view goes to the spoken sentence instead of turning one page blind"
+        )
     }
 }

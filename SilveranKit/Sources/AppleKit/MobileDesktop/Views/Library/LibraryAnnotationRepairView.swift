@@ -17,6 +17,7 @@ struct LibraryAnnotationRepairView: View {
     @State private var errorMessage: String?
     @State private var saving: String?
     @State private var generation = 0
+    @State private var manualHighlight: Highlight?
 
     var body: some View {
         NavigationStack {
@@ -103,9 +104,21 @@ struct LibraryAnnotationRepairView: View {
                                         Text(
                                             issue.missingChapter == true
                                                 ? "This chapter isn't in the downloaded edition. The annotation is kept."
-                                                : "No reliable suggestion found. The annotation is kept; open the book to choose a passage manually."
+                                                : issue.kind == "highlight"
+                                                    ? "No reliable suggestion found. Choose a chapter and passage; the original annotation is kept."
+                                                    : "No reliable suggestion found. The annotation is kept; open the book to choose a passage manually."
                                         )
                                         .font(.subheadline).foregroundStyle(.secondary)
+                                    }
+                                    if issue.kind == "highlight",
+                                        let original = review?.highlights.first(where: {
+                                            $0.id.uuidString == issue.id
+                                        })
+                                    {
+                                        Button("Choose a Chapter and Passage…") {
+                                            manualHighlight = original
+                                        }
+                                        .disabled(saving != nil)
                                     }
                                     if saving == issue.id { ProgressView("Saving repair…") }
                                 }.padding(.vertical, 4)
@@ -139,6 +152,13 @@ struct LibraryAnnotationRepairView: View {
                 }
             }
             .task(id: generation) { await check() }
+            .sheet(item: $manualHighlight) { original in
+                AnnotationPassageChoiceView(original: original, category: category) {
+                    issue,
+                    destination in
+                    try await save(issue, confirmingDestinationHref: destination)
+                }
+            }
             .onDisappear {
                 inspector.close()
                 review?.close()
@@ -189,15 +209,22 @@ struct LibraryAnnotationRepairView: View {
     }
 
     private func accept(_ issue: AnnotationPlacementIssue) async {
-        guard let review else { return }
+        do { try await save(issue) } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func save(
+        _ issue: AnnotationPlacementIssue,
+        confirmingDestinationHref: String? = nil
+    ) async throws {
+        guard let review else {
+            throw AnnotationPersistenceFailure(message: "Check placement again before attaching.")
+        }
         saving = issue.id
         defer { saving = nil }
-        do {
-            try await review.accept(issue)
-            issues.removeAll { $0.id == issue.id }
-            errorMessage = nil
-            onReviewed(issues.count)
-        } catch { errorMessage = error.localizedDescription }
+        try await review.accept(issue, confirmingDestinationHref: confirmingDestinationHref)
+        issues.removeAll { $0.id == issue.id }
+        errorMessage = nil
+        onReviewed(issues.count)
     }
 
     private func retrySave() async {

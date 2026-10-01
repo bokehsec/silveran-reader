@@ -110,6 +110,7 @@ public struct HighlightRepairSuggestion: Codable, Sendable, Hashable {
     public var matchedBy: String?
     public var candidates: Int
     public var excerpt: InkRepairExcerpt
+    public var title: String? = nil
     public var anchor: TextAnchor? = nil
     public var anchorVersion: Int? = nil
     /// Native verified proposal; the existing owner appends repair history only on confirmation.
@@ -119,7 +120,8 @@ public struct HighlightRepairSuggestion: Codable, Sendable, Hashable {
         BookLocator(
             href: href ?? original.locator.href,
             type: original.locator.type,
-            title: original.locator.title,
+            title: title
+                ?? (href == nil || href == original.locator.href ? original.locator.title : nil),
             locations: BookLocator.Locations(
                 fragments: [cfi],
                 progression: nil,

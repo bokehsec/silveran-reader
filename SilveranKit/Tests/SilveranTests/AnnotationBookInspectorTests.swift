@@ -74,6 +74,7 @@ struct AnnotationBookInspectorTests {
         defer { inspector.close() }
         let chapters = try await inspector.open(directory: book)
         #expect(chapters.map(\.href) == ["OEBPS/ch10.xhtml", "OEBPS/ch2.xhtml"])
+        #expect(chapters.map(\.displayName) == ["1. Ten", "2. Two"])
         let note = InkNote(
             id: "lost",
             anchor: TextAnchor(offset: 0, exact: "Mara opens the café"),
@@ -151,6 +152,44 @@ struct AnnotationBookInspectorTests {
             directory: book,
             annotationScope: scope,
             assetFingerprint: originalAsset
+        )
+        let missingChapterOriginal = Highlight(
+            bookID: bookID,
+            locator: BookLocator(
+                href: "removed.xhtml",
+                type: "application/xhtml+xml",
+                title: "Old Chapter",
+                locations: nil,
+                text: nil
+            ),
+            text: "Old words",
+            color: .blue,
+            note: "My original note"
+        )
+        let chosen = try #require(
+            try await inspector.suggestPlacement(
+                for: missingChapterOriginal,
+                in: "OEBPS/ch10.xhtml",
+                quotation: "Élodie keeps the ledger."
+            )
+        )
+        #expect(chosen.href == missingChapterOriginal.locator.href)
+        #expect(chosen.highlight?.suggestion?.href == "OEBPS/ch10.xhtml")
+        #expect(chosen.highlight?.suggestion?.placement?.current.target.href == "OEBPS/ch10.xhtml")
+        #expect(chosen.highlight?.suggestion?.placement?.current.target.locator?.title == "Ten")
+        #expect(
+            try await inspector.suggestPlacement(
+                for: missingChapterOriginal,
+                in: "OEBPS/ch10.xhtml",
+                quotation: "unrelated words not present here"
+            ) == nil
+        )
+        #expect(
+            try await inspector.suggestPlacement(
+                for: missingChapterOriginal,
+                in: "not-present.xhtml",
+                quotation: "Élodie"
+            ) == nil
         )
         #expect(
             try await inspector.inspect(

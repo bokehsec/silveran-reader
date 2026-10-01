@@ -94,3 +94,15 @@ test('valid older colored annotations offer explicit verification without silent
   assert.equal(issues[0].highlight.suggestion.anchor.exact, h.text);
   assert.equal(JSON.stringify(h), original);
 });
+
+test('chapter choice uses exact resolved navigation titles, nesting and spine order', () => {
+  const book = {sections: [{id:'ch10.xhtml'}, {id:'ch2.xhtml'}, {id:'ch20.xhtml'}],
+    toc: [{href:'ch2.xhtml#top',label:'  Two  ',subitems:[{href:'ch10.xhtml',label:'Ten'}]},
+      {href:'ch2.xhtml#later',label:'Later heading'}, {href:'ch2',label:'Wrong prefix'}]};
+  const owner = new AnnotationInspection(book);
+  assert.deepEqual(owner.structure(), [
+    {href:'ch10.xhtml',index:0,title:'Ten'},
+    {href:'ch2.xhtml',index:1,title:'Two'},
+    {href:'ch20.xhtml',index:2,title:null},
+  ]);
+});

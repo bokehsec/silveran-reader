@@ -42,6 +42,27 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-047 — Writing-lock tests expired while parallel fixtures occupied the UI actor
+
+- Date: 2026-10-01
+- Status: Fixed; full regression run passes
+- Platforms: shared Swift test harness on Mac; production behavior unchanged
+- Components: InkSessionTests.waitUntil
+- Related links: [OD-012](docs/OBSERVED_ODDITIES.md)
+
+#### Symptom and root cause
+
+Parallel full-suite runs intermittently reported 12 writing-lock issues during app/component compilation, while the isolated 12-test suite passed in 0.147 seconds. The condition-based helper's two-second absolute deadline could expire while other fixture setup occupied the same main actor. Release tasks still needed their configured 40 ms after being scheduled; the poll could return immediately when execution resumed before those releases ran. This reproduced in the 425-test run while compiling the new repair sheet.
+
+#### Change and validation
+
+Keep condition polling and its final condition check, increasing only the test deadline to ten seconds. The bounded wait remains a failure when no release occurs; the production Pencil-up delay and transition expectations are untouched. Before: 12 issues in the full 425/47 run; after: scripts/test passes all 425/47, including the release/deferred navigation/notification cases. Subsequent final validation is recorded in the canonical plan. This test timeout is not a real-device latency budget or a product performance result.
+
+#### Compatibility
+
+No app, data, migration or release behavior change. None known.
+
+
 ### BF-046 — EPUB extraction could acknowledge damaged or partial content
 
 - Date: 2026-10-01

@@ -70,7 +70,21 @@ export const inspectChapter = (doc, { href, cfi }, section, highlights) => {
 export class AnnotationInspection {
   #book;
   constructor(book) { this.#book = book; }
-  structure() { return this.#book.sections.map((s, index) => ({ href: s.id, index })); }
+  structure() {
+    const titles = new Map();
+    const visit = entries => {
+      for (const entry of entries ?? []) {
+        let index = null;
+        try { index = this.#book.resolveHref?.(entry.href)?.index; } catch { /* keep exact fallback only */ }
+        const href = Number.isInteger(index) ? this.#book.sections[index]?.id : entry.href?.split("#")[0];
+        const title = typeof entry.label === "string" ? entry.label.trim() : "";
+        if (href && title && !titles.has(href)) titles.set(href, title);
+        visit(entry.subitems);
+      }
+    };
+    visit(this.#book.toc);
+    return this.#book.sections.map((s, index) => ({ href: s.id, index, title: titles.get(s.id) ?? null }));
+  }
   async chapter(href, payload) {
     const index = this.#book.sections.findIndex(s => s.id === href);
     if (index < 0) return { missing: true, items: [] };

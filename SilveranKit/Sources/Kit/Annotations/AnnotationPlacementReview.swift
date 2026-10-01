@@ -100,12 +100,19 @@ public final class AnnotationPlacementReview {
     }
 
     /// Returns only after the existing writer confirms local persistence. Stale reviews refuse.
-    public func accept(_ issue: AnnotationPlacementIssue) async throws {
+    public func accept(
+        _ issue: AnnotationPlacementIssue,
+        confirmingDestinationHref: String? = nil
+    ) async throws {
         if issue.kind == "highlight" {
             guard let id = UUID(uuidString: issue.id), let suggestion = issue.highlight?.suggestion,
                 let original = highlights.first(where: { $0.id == id }),
-                original.locator.href == issue.href,
-                suggestion.href == nil || suggestion.href == issue.href
+                original.locator.href == issue.href
+            else { throw changed() }
+            let destination = suggestion.href ?? issue.href
+            guard
+                destination == issue.href
+                    || (confirmingDestinationHref == destination && suggestion.placement != nil)
             else { throw changed() }
             let locator = suggestion.replacementLocator(for: original)
             let placement: HighlightPlacement?

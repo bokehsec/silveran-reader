@@ -160,6 +160,56 @@ struct AnnotationPlacementReviewTests {
     }
 
     @Test(
+        "A renamed-chapter repair requires the exact explicit destination and keeps the old target"
+    )
+    func chosenChapter() async throws {
+        let root = directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fs = FilesystemActor(applicationSupportDirectory: root)
+        let original = typed()
+        try await fs.saveHighlights(bookID: book, highlights: [original])
+        let review = AnnotationPlacementReview(
+            bookID: book,
+            session: InkSession(store: InkActor(directory: root.appendingPathComponent("ink"))),
+            filesystem: fs,
+            verifyPlacement: { _, _, _ in }
+        )
+        try await review.prepare()
+        var issue = typedIssue(original)
+        var suggestion = try #require(issue.highlight?.suggestion)
+        suggestion.href = "renamed.xhtml"
+        suggestion.placement = try HighlightPlacement.capture(
+            scope: AnnotationScope(bookID: book, accountID: "fixture"),
+            asset: AnnotationContentFingerprint(data: Data("replacement".utf8)),
+            locator: suggestion.replacementLocator(for: original),
+            selection: AnnotationSelectionEvidence(
+                anchor: TextAnchor(offset: 0, exact: suggestion.text),
+                normalizedText: suggestion.text
+            )
+        )
+        issue.highlight?.suggestion = suggestion
+        await #expect(throws: AnnotationPersistenceFailure.self) { try await review.accept(issue) }
+        await #expect(throws: AnnotationPersistenceFailure.self) {
+            try await review.accept(issue, confirmingDestinationHref: "another.xhtml")
+        }
+        #expect(try await fs.loadHighlights(bookID: book) == [original])
+        var unsupported = issue
+        unsupported.highlight?.suggestion?.placement = nil
+        await #expect(throws: AnnotationPersistenceFailure.self) {
+            try await review.accept(unsupported, confirmingDestinationHref: "renamed.xhtml")
+        }
+        try await review.accept(issue, confirmingDestinationHref: "renamed.xhtml")
+        let saved = try #require(try await fs.loadHighlights(bookID: book)?.first)
+        #expect(saved.id == original.id)
+        #expect(saved.locator.href == "renamed.xhtml")
+        #expect(saved.locator.title == nil, "The old chapter title cannot label a new chapter")
+        #expect(saved.note == original.note)
+        #expect(saved.color == original.color)
+        #expect(saved.placement?.previous.first?.target.href == original.locator.href)
+        #expect(saved.placement?.previous.first?.originalQuotation == original.text)
+    }
+
+    @Test(
         "Typed repair preserves creative fields, and concurrent edit or deletion refuses stale review"
     )
     func typedStaleReview() async throws {
