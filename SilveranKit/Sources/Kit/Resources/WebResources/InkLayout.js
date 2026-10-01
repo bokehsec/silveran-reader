@@ -16,6 +16,7 @@ const STYLE_ID = "silveran-ink-style";
 const INK_CSS = `
 ${INK_TAG} { display:block !important; position:relative !important; margin:0 !important;
   padding:0 !important; border:0 !important; text-indent:0 !important; float:none !important;
+  clear:both !important;
   break-inside:avoid !important; -webkit-column-break-inside:avoid !important;
   background:var(--silveran-ink-note-tint, rgba(255, 196, 0, 0.08)) !important;
   border-radius:6px; pointer-events:none !important; }
@@ -81,7 +82,39 @@ export const removeElement = el => {
   parent.normalize();
 };
 
+/** Text wrapping beside short notes (owner decision 2026-10-01): only in columns at least this wide... */
+export const WRAP_MIN_COLUMN = 400;
+/** ...when the text beside the note keeps at least this many points and this share of the column. */
+export const WRAP_MIN_TEXT = 200;
+export const WRAP_MIN_TEXT_SHARE = 0.45;
+/** Space between the handwriting and the text flowing beside it. */
+export const WRAP_PAD = 14;
+
 /**
+ * Whether a note's handwriting leaves room for the text to flow beside it, decided from where the
+ * ink is: `{ side: "left" | "right", width, originX }` or null for a full-width note. `box` is the
+ * ink's bounds in note coordinates, `full` the column's width. Ink on the left makes a box from the
+ * column's left edge to the ink's right; ink on the right a box from the ink's left to the column's
+ * right edge, whose left edge is `originX` from where the note's coordinates start.
+ */
+export const wrapSide = (box, scale, full) => {
+  if (!Number.isFinite(box.left) || full < WRAP_MIN_COLUMN) return null;
+  const minText = Math.max(WRAP_MIN_TEXT, WRAP_MIN_TEXT_SHARE * full);
+  const leftWidth = Math.ceil(box.right * scale + WRAP_PAD);
+  if (full - leftWidth - WRAP_PAD >= minText) return { side: "left", width: leftWidth, originX: 0 };
+  const originX = Math.floor(Math.max(0, box.left * scale - WRAP_PAD));
+  if (originX - WRAP_PAD >= minText) return { side: "right", width: Math.ceil(full - originX), originX };
+  return null;
+};
+
+/** Where a drawn note's coordinates start on the page, and its scale (a right-side box starts later). */
+export const noteOrigin = el => {
+  const r = el.getBoundingClientRect();
+  return { left: r.left - (parseFloat(el.dataset.originX) || 0), top: r.top, scale: parseFloat(el.dataset.scale) || 1 };
+};
+
+/**
+ * Sizes a note, and lets the text flow beside it when its handwriting is short (`wrapSide`).
  * Scales a note down only when it would not fit a page; handwriting keeps its size otherwise.
  * `maxHeight` is measured against the reader window, not the section frame: foliate lays
  * sections out while their frame is hidden, when the frame's own height reads as 0.
@@ -92,12 +125,26 @@ export const sizeNote = (el, note, maxHeight) => {
   const limit = maxHeight * 0.85;
   const scale = box.bottom > limit ? limit / box.bottom : 1;
   const height = Math.ceil(box.bottom * scale + 8);
+  for (const name of ["float", "width", "margin-left", "margin-right"]) el.style.removeProperty(name);
   el.style.setProperty("height", `${height}px`, "important");
   el.dataset.scale = String(scale);
+  const wrap = all.length ? wrapSide(box, scale, el.getBoundingClientRect().width) : null;
+  el.dataset.originX = String(wrap?.originX ?? 0);
+  if (wrap) {
+    el.dataset.wrap = wrap.side;
+    el.style.setProperty("float", wrap.side, "important");
+    el.style.setProperty("width", `${wrap.width}px`, "important");
+    el.style.setProperty(wrap.side === "left" ? "margin-right" : "margin-left", `${WRAP_PAD}px`, "important");
+  } else {
+    delete el.dataset.wrap;
+  }
   const svg = el.firstChild;
   svg.setAttribute("width", String(Math.max(1, Math.round(el.getBoundingClientRect().width))));
   svg.setAttribute("height", String(height));
-  if (scale !== 1) svg.firstChild.setAttribute("transform", `scale(${scale})`);
+  const transform = [wrap?.originX ? `translate(${-wrap.originX} 0)` : "", scale !== 1 ? `scale(${scale})` : ""]
+    .filter(Boolean).join(" ");
+  if (transform) svg.firstChild.setAttribute("transform", transform);
+  else svg.firstChild.removeAttribute("transform");
 };
 
 export const clearNotes = doc => {

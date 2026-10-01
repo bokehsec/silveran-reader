@@ -1,6 +1,6 @@
 import { INK_TAG, isInkElement, buildTextIndex, anchorForBoundary, makeMarkAnchors } from "./InkAnchoring.js";
 import { inkAncestor } from "./InkFilters.js";
-import { bbox, insertAt, removeElement, noteElement, round1 } from "./InkLayout.js";
+import { bbox, insertAt, removeElement, noteElement, round1, noteOrigin } from "./InkLayout.js";
 import { mergeLines, classifyPenStroke, classifyHighlightStroke, distanceToSegment } from "./InkClassify.js";
 
 /**
@@ -135,10 +135,10 @@ export const proposeStroke = ({ doc, href, stroke, viewportWidth }) => {
   const local = (origin, scale) => pts.map(([x, y, ...rest]) =>
     [round1((x - origin.left) / scale), round1((y - origin.top) / scale), ...rest]);
   const append = el => {
-    const r = el.getBoundingClientRect();
+    const origin = noteOrigin(el);
     return {
       op: "append", section: href, noteId: el.dataset.id,
-      stroke: { tool, color, width, points: local(r, parseFloat(el.dataset.scale) || 1) },
+      stroke: { tool, color, width, points: local(origin, origin.scale) },
     };
   };
 
@@ -270,8 +270,8 @@ const writingProposal = ({ doc, href, strokes, allLines, index }) => {
     return bb.top >= r.top - 0.3 * lineHeight && bb.top < r.bottom + 1.2 * lineHeight;
   });
   if (into) {
-    const r = into.getBoundingClientRect();
-    return { op: "append", section: href, noteId: into.dataset.id, strokes: localStrokes(r, parseFloat(into.dataset.scale) || 1) };
+    const origin = noteOrigin(into);
+    return { op: "append", section: href, noteId: into.dataset.id, strokes: localStrokes(origin, origin.scale) };
   }
   const next = lines.find(L => L.bottom > bb.top + 2);
   let anchorRange = next ? caret(doc, next.left + 1, (next.top + next.bottom) / 2) : null;
@@ -305,8 +305,8 @@ export const hitTestNotes = ({ doc, notes, points, radius = 10, markLayer = null
   for (const el of doc.querySelectorAll(INK_TAG)) {
     const note = notes.find(n => n.id === el.dataset.id);
     if (!note) continue;
-    const r = el.getBoundingClientRect();
-    const scale = parseFloat(el.dataset.scale) || 1;
+    const r = noteOrigin(el);
+    const scale = r.scale;
     note.strokes.forEach((stroke, index) => {
       const reach = radius + (stroke.width * scale) / 2;
       const pts = stroke.points.map(([x, y]) => [r.left + x * scale, r.top + y * scale]);

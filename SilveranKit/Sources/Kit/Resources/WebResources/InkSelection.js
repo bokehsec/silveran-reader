@@ -1,5 +1,6 @@
 import { INK_TAG } from "./InkAnchoring.js";
 import { toDoc } from "./InkGeometry.js";
+import { noteOrigin } from "./InkLayout.js";
 
 /**
  * Lasso selection and the move/resize arithmetic for handwritten notes (P5.3). Like the rest of
@@ -61,7 +62,7 @@ export const selectInLasso = ({ doc, notes, lasso, marginLayer = null }) => {
     const el = [...doc.querySelectorAll(INK_TAG)].find(el => el.dataset.id === note.id);
     const margin = note.placement === "margin" ? marginLayer?.placement(note.id) : null;
     if (!el && !margin) continue;
-    const r = margin ?? el.getBoundingClientRect();
+    const r = margin ?? noteOrigin(el);
     const scale = margin?.scale ?? (parseFloat(el.dataset.scale) || 1);
     const indexes = [];
     const covered = [];

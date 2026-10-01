@@ -27,11 +27,19 @@ struct InkWordWritingWebKitTests {
         let strokes: [StrokeReport]
         let notes: Int
         let paragraphs: Int
+        let wrapped: String
+        let textBeside: Bool
     }
 
     /// `grouped`: the strokes are placed together once the Pencil pauses (current behavior);
     /// otherwise one at a time after each redraw (the behavior OD-021 reported).
-    func run(paragraphs: Int, y0: Double = 560, grouped: Bool = true) async throws -> Report {
+    func run(
+        paragraphs: Int,
+        y0: Double = 560,
+        x0: Double = 120,
+        size: Double = 1,
+        grouped: Bool = true
+    ) async throws -> Report {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "InkWord-\(UUID().uuidString)"
         )
@@ -85,7 +93,7 @@ struct InkWordWritingWebKitTests {
         try #require(ready)
         let answer = try await view.callAsyncJavaScript(
             Self.writeWord,
-            arguments: ["y0": y0, "grouped": grouped],
+            arguments: ["y0": y0, "x0": x0, "size": size, "grouped": grouped],
             in: nil,
             contentWorld: .page
         )
@@ -98,7 +106,7 @@ struct InkWordWritingWebKitTests {
     /// an iPad, each stroke processed only after the previous one has been laid out.
     static let writeWord = """
         const { proposeStroke, proposeGroup, placeNotes, INK_TAG } = window.inkModules;
-        const x0 = 120, h = 40;
+        const h = 40;
         const line = (ax, ay, bx, by, n = 14) => Array.from({ length: n }, (_, i) => {
           const t = i / (n - 1); return [ax + (bx - ax) * t, ay + (by - ay) * t, 0.5];
         });
@@ -124,6 +132,8 @@ struct InkWordWritingWebKitTests {
         add("g", [...arc(x + 10, y0 + 6, 10, 10, 0, Math.PI * 2), ...line(x + 20, y0, x + 20, y0 + \
         h, 10), ...arc(x + 10, y0 + h, 10, 8, 0, Math.PI)]);
 
+        const [ox, oy] = letters[0].points[0];
+        for (const l of letters) l.points = l.points.map(([px, py, p]) => [ox + (px - ox) * size, oy + (py - oy) * size, p]);
         const notes = [];
         const where = [];
         let id = 0;
@@ -168,7 +178,8 @@ struct InkWordWritingWebKitTests {
           if (!w) { Object.assign(reports[i], { dx: null, dy: null, visible: false }); return; }
           const el = document.querySelector(`${INK_TAG}[data-id="${w.id}"]`);
           if (!el) { Object.assign(reports[i], { dx: null, dy: null, visible: false }); return; }
-          const r = el.getBoundingClientRect();
+          const r0 = el.getBoundingClientRect();
+          const r = { left: r0.left - (parseFloat(el.dataset.originX) || 0), top: r0.top };
           const s = parseFloat(el.dataset.scale) || 1;
           const local = notes.find(n => n.id === w.id).strokes[w.index].points;
           const placed = box(local.map(([lx, ly]) => [r.left + lx * s, r.top + ly * s]));
@@ -176,7 +187,21 @@ struct InkWordWritingWebKitTests {
         innerHeight;
           Object.assign(reports[i], { dx: placed.l - drawn.l, dy: placed.t - drawn.t, visible });
         });
-        return JSON.stringify({ strokes: reports, notes: notes.length, paragraphs: \
+        const wrapped = document.querySelector(INK_TAG)?.dataset.wrap ?? "none";
+        const firstNote = document.querySelector(INK_TAG);
+        const beside = (() => {
+          if (!firstNote || wrapped === "none") return false;
+          const r = firstNote.getBoundingClientRect();
+          const range = document.createRange();
+          for (const p of document.querySelectorAll("p")) {
+            range.selectNodeContents(p);
+            for (const c of range.getClientRects()) {
+              if (c.top >= r.top && c.bottom <= r.bottom && (wrapped === "left" ? c.left >= r.right : c.right <= r.left)) return true;
+            }
+          }
+          return false;
+        })();
+        return JSON.stringify({ wrapped, textBeside: beside, strokes: reports, notes: notes.length, paragraphs: \
         document.querySelectorAll("p").length });
         """
 
@@ -205,6 +230,21 @@ struct InkWordWritingWebKitTests {
             #expect((-1...20).contains(s.dy ?? .infinity), "\(s.letter) moves at most a gap down")
         }
         #expect(shifts.count == 1, "the word moves together, if at all: \(shifts)")
+    }
+
+    @Test(
+        "A short word wraps the text beside it on its side; ink stays where written",
+        arguments: [(120.0, "left"), (560.0, "right"), (330.0, "none")]
+    )
+    func shortWordWraps(x0: Double, side: String) async throws {
+        let report = try await run(paragraphs: 40, y0: 590, x0: x0, size: 0.8)
+        #expect(report.notes == 1)
+        #expect(report.wrapped == side)
+        #expect(report.textBeside == (side != "none"), "text flows beside a wrapped note")
+        for s in report.strokes {
+            #expect(s.visible)
+            #expect(abs(s.dx ?? .infinity) <= 1, "\(s.letter) stays where it was written across")
+        }
     }
 
     @Test("Placing strokes one at a time splits the word (the OD-021 behavior, for comparison)")
