@@ -42,6 +42,31 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-046 — EPUB extraction could acknowledge damaged or partial content
+
+- Date: 2026-10-01
+- Status: Fixed; full regression/native component verification passes, interaction acceptance pending
+- Platforms: portable EPUB preparation; Apple reader and library inspection
+- Components: FilesystemActor.extractEpubIfNeeded/prepareEbookContent, derived cache completion
+- Related links: [ADR 011](docs/decisions/011-active-typed-anchors-and-edition-evidence.md), [ZIPFoundation extraction contract](https://github.com/weichsel/zipfoundation/blob/development/_autodocs/api-reference/archive.md)
+
+#### Symptom and root cause
+
+A readable ZIP with damaged chapter bytes could open under a verified asset fingerprint even though its entry checksum disagreed. Entry write/decompression failures were logged and skipped, then the sizes manifest marked the partial directory complete. The manual entry loop discarded Archive.extract's returned CRC32 instead of comparing Entry.checksum (the maintained unzip helper performs that check), and omitted its path containment validation. Hashing original ZIP bytes establishes identity, not extraction integrity.
+
+#### Change
+
+Validate every included entry's returned checksum and normalized destination containment, keeping symlinks within the extraction. Refuse a failed entry with a visible recovery message; preserve source bytes and annotations. Cancellation propagates to the maintained extractor's Progress and cannot publish completion. Intentional read-along audio exclusion is unchanged: audio is read separately rather than duplicated into the chapter cache. Retain the sizes manifest used by the renderer, but require a separate versioned completion marker published only after all included entries and original bytes verify. Old size-only/incomplete caches are rebuilt from the original; failure to remove a derived partial cache now surfaces rather than being ignored.
+
+#### Validation
+
+Before: damaged-entry preparation incorrectly succeeded both initially and after owner restart, and a size-only partial cache reopened without its chapter (two tests, three issues). After: scripts/test --filter EbookContentIdentityTests passes nine tests, with three path-containment variants. Tests cover actual CRC damage, per-entry write failure, size-only cache rebuilding, cancellation/no completion then successful retry, audio exclusion/reuse, unchanged original bytes, fresh repaired download, equal-metadata replacement and changed-during-extraction refusal. Current pinned ZIPFoundation source and Context7 primary docs verify the checksum/containment/progress contract; no dependency upgrade. Full/app/component results are in the canonical plan. Android/Linux runtime, large real-device archives and user-facing error/retry interactions remain unverified.
+
+#### Compatibility
+
+Only derived cache completion changes; original downloads and durable annotations are untouched. Previously tolerated malformed archives now fail visibly instead of yielding missing or corrupt chapter content. A fresh download/import may be needed. Audio CRC/integrity is outside this reading extraction and still needs its separate playback checks.
+
+
 ### BF-045 — Margin badges and ink captions entered book-text projections
 
 - Date: 2026-10-01

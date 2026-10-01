@@ -1228,16 +1228,23 @@ public actor FilesystemActor {
                     "The book changed while opening. Close and reopen it; your annotations are unchanged."
             )
         }
-        // Publish completeness only after the original asset is verified again.
+        try Task.checkCancellation()
+        // Publish completeness only after every included entry and the original asset verify.
         // A rejected extraction must never be reused under its unverified content identity.
         if let sizes = extraction.sizes {
             try sizes.write(
                 to: extraction.url.appendingPathComponent("_sizes.json"),
                 options: .atomic
             )
+            try Self.epubExtractionCompletion.write(
+                to: extraction.url.appendingPathComponent("_silveran-extraction-complete"),
+                options: .atomic
+            )
         }
         return PreparedEbookContent(readerURL: extraction.url, fingerprint: fingerprint)
     }
+
+    private static let epubExtractionCompletion = Data("silveran-epub-extraction-v1".utf8)
 
     private func extractEpubIfNeeded(
         epubPath: URL,
@@ -1249,7 +1256,11 @@ public actor FilesystemActor {
 
         let sizesFile = extractedDir.appendingPathComponent("_sizes.json")
         if fm.fileExists(atPath: extractedDir.path) {
-            if fm.fileExists(atPath: sizesFile.path) {
+            if fm.fileExists(atPath: sizesFile.path),
+                (try? Data(
+                    contentsOf: extractedDir.appendingPathComponent("_silveran-extraction-complete")
+                )) == Self.epubExtractionCompletion
+            {
                 debugLog(
                     "[FilesystemActor] Extracted directory already exists and complete, reusing: \(extractedDir.path)"
                 )
@@ -1258,7 +1269,7 @@ public actor FilesystemActor {
                 debugLog(
                     "[FilesystemActor] Extracted directory exists but incomplete, removing: \(extractedDir.path)"
                 )
-                try? fm.removeItem(at: extractedDir)
+                try fm.removeItem(at: extractedDir)
             }
         }
 
@@ -1281,10 +1292,11 @@ public actor FilesystemActor {
         }
 
         var skippedAudioFiles = 0
-        var skippedErrors = 0
         var fileSizes: [String: UInt64] = [:]
 
+        let extractionRoot = extractedDir.standardizedFileURL.resolvingSymlinksInPath().path + "/"
         for entry in archive {
+            try Task.checkCancellation()
             let ext = URL(fileURLWithPath: entry.path).pathExtension.lowercased()
             if Self.audioExtensions.contains(ext) {
                 skippedAudioFiles += 1
@@ -1293,20 +1305,43 @@ public actor FilesystemActor {
 
             let destinationURL = extractedDir.appendingPathComponent(entry.path)
             do {
-                _ = try archive.extract(entry, to: destinationURL)
+                // Match the maintained unzip helper's path normalization before POSIX writes.
+                let sanitizedDestination = URL(
+                    fileURLWithPath: destinationURL.path.replacingOccurrences(of: "//", with: "/")
+                )
+                guard !entry.path.hasPrefix("/"),
+                    sanitizedDestination.standardizedFileURL.resolvingSymlinksInPath().path
+                        .hasPrefix(
+                            extractionRoot
+                        )
+                else { throw CocoaError(.fileReadInvalidFileName) }
+                let progress = Progress(totalUnitCount: 0)
+                let checksum = try await withTaskCancellationHandler {
+                    try archive.extract(
+                        entry,
+                        to: destinationURL,
+                        symlinksValidWithin: extractedDir,
+                        progress: progress
+                    )
+                } onCancel: {
+                    progress.cancel()
+                }
+                try Task.checkCancellation()
+                guard checksum == entry.checksum else { throw Archive.ArchiveError.invalidCRC32 }
                 fileSizes[entry.path] = entry.uncompressedSize
             } catch {
-                debugLog(
-                    "[FilesystemActor] Skipping file due to extraction error: \(entry.path) - \(error.localizedDescription)"
+                if Task.isCancelled { throw CancellationError() }
+                throw AnnotationPersistenceFailure(
+                    message:
+                        "The EPUB could not be prepared because a file failed validation (\(entry.path)). The original book and annotations are kept. Download or import a fresh copy and try again. \(error.localizedDescription)"
                 )
-                skippedErrors += 1
             }
         }
 
         let sizesData = try JSONSerialization.data(withJSONObject: fileSizes)
 
         debugLog(
-            "[FilesystemActor] EPUB extracted (skipped \(skippedAudioFiles) audio, \(skippedErrors) errors, wrote \(fileSizes.count) files)"
+            "[FilesystemActor] EPUB extracted (skipped \(skippedAudioFiles) audio, wrote \(fileSizes.count) files)"
         )
 
         return (URL(fileURLWithPath: extractedDir.path, isDirectory: true), sizesData)
