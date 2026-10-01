@@ -54,6 +54,11 @@ Design and spike record: [`PENCIL_INK_PLAN.md`](PENCIL_INK_PLAN.md). This plan s
 | Pencil highlighter vs. Highlights list | Stays ink; listed under "Handwriting" in the sidebar, not in Highlights |
 | Typed highlights in both editions | Yes, as a separate follow-up (M6) reusing the new anchors |
 | Earlier decisions | Underlines are ink, writing doesn't pause read-aloud, no finger writing, no export in v1, on-device storage (iCloud device backup) |
+| When writing becomes ink (owner, 2026-10-01; BF-051) | Ink stays exactly where it is written while writing; nothing on the page moves mid-word. When the Pencil pauses (the ~1 s writing lock releases) everything written since the last pause becomes one note (or joins the note it is in or just under) as one undo step, and the text below moves once. A mark drawn on its own appears after the pause. |
+| Letters vs. marks while writing (BF-051) | In writing of several strokes, only strokes spanning about 2.5 lines or more (and highlighter strokes) can be underline/strike/circle/bracket marks; shorter strokes are letters. A single stroke is classified as before. |
+| Margin writing leeway (owner, 2026-10-01) | With the wide margin open, writing is a margin note when more than half its ink is right of the text and it reaches at most 30% of the text width into the text; that part is drawn where written, over the text. Text writing that drifts into the margin stays in the text. Decided once per group, so a word never splits. |
+| Margin width (owner, 2026-10-01) | Opening the margin moves the text left within each page (28% of the column kept free on the right; page gap 8%) so the margin runs to the page edge, about 214 pt on an iPad in portrait. Closing it restores full width; margin notes become icons beside their lines. |
+| Half-width writing boxes (open, 2026-10-01) | Prototype only (not in the app): a note covering less than about half the line on the left becomes a narrow box with the book text wrapping beside it. Waiting on the owner: automatic or per-note toggle; whether existing notes wrap; left only or both sides. |
 
 ## 2. Architecture
 
@@ -72,14 +77,19 @@ The rule: **Kit decides, JS measures and draws.** This fixes the spike's inversi
 ### 2.2 Stroke pipeline
 
 ```
-Pencil down ──► InkInputController ──► InkSession.beginStroke()        (writing lock ON)
-Pencil up   ──► InkSession.finishStroke(points, tool)
-                  └─ serial queue ─► JS InkEngine.propose(stroke, tool)  → proposed op + anchors
-                                     InkSession.apply(op)                → model, undo, InkActor.save
+Pencil down ──► InkInputController ──► InkSession.penDown()            (writing lock ON)
+Pencil up   ──► InkSession.finishStroke(stroke)  → held; live stroke stays on screen
+              … more strokes while writing are held the same way …
+~1 s after the last Pencil up (lock releasing):
+              InkSession.commitWrittenStrokes()
+                  └─ serial queue ─► JS InkEngine.proposeGroup(strokes)  → proposals (one note/append, long marks)
+                                     InkSession.apply([ops])             → model, ONE undo step, InkActor.save
                                      JS InkEngine.render(href, sectionInk)
-                                     remove live stroke
-              ──► ~1 s after last Pencil up                              (writing lock OFF)
+                                     remove the live strokes
+              ──► then the lock is released                              (writing lock OFF)
 ```
+
+The page is measured once per group, against the layout the person saw while writing (as built 2026-10-01, BF-051; earlier each stroke was placed and drawn on its own, which split words). Erasing, lasso selection, undo/redo, saving and closing commit held strokes first. If the page cannot answer for a group, strokes are placed one at a time. With the wide margin open, `proposeGroup` first applies the margin rule above (`InkMargin.proposeMarginGroup`).
 
 Erase is the same path with `InkEngine.hitTest(path)` → ids → `InkSession.apply(.erase(ids))`. Undo/redo call `apply` with the inverse operation and re-render only the affected section.
 
