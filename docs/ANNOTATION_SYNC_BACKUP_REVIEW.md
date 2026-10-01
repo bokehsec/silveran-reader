@@ -4,6 +4,12 @@ Date: 2026-09-30. Status: architecture review and recommended roadmap; no runtim
 
 Execution details: [phased implementation plan](ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md). The plan expands this review's delivery sequence into work packages, dependencies, migration/rollback requirements and release gates.
 
+## Current decisions and historical scope
+
+This review records the initial inspection, before the implementations listed in the [current plan](ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md). Its foundation/gap tables and findings below are historical, not a fresh audit of the current code. BF-017 onward and the plan record subsequent fixes and implementation evidence.
+
+Accepted decisions supersede the original roadmap: annotations sync only between the person's own devices through iCloud and are never sent to a book server ([ADR 010](decisions/010-live-icloud-annotation-sync.md)); server sync covers books and reading state. Live annotation sync and retained backup are separate implemented adapters awaiting signed-device acceptance. Protected per-book owners remain active; SQLite reader cutover is deferred. New backends must follow [Book sources](../ARCHITECTURE.md#book-sources).
+
 ## Feasibility and scope
 
 The goals are feasible, but completing them is a substantial product and data-lifecycle effort, not a drawing overlay plus cloud upload. Keep the portable Swift core and current reader integration. Establish reliable local persistence, identity, and recovery before expanding replication or claiming complete backup.
@@ -23,7 +29,7 @@ Automatic backup means that, once enabled and provisioned, local changes are cap
 | Handwriting | `InkSession` owns operations, writing lock, undo/redo; `InkActor` writes JSON; `InkEngine` measures and renders | Durability, richer editing, margin notes, complete annotation browser and recovery UI |
 | Pencil tools | Native `PKToolPicker`; custom capture and pressure geometry; pen/highlighter/stroke eraser | Real-device acceptance, intentional gesture rules, selection/move/resize and tool fidelity |
 | Anchors | Ink has normalized-text offsets/quotes/context; highlights have CFI/DOM locators; ink overlays are filtered from CFIs | One versioned anchor contract, edition identity, ambiguity detection and manual repair |
-| Storyteller | Catalog/assets, progress, statuses, metadata, ratings and collection APIs; separate progress and book-edit queues | Version/permission capability matrix, contract tests, future annotation adapter only where supported |
+| Storyteller | Catalog/assets, progress, statuses, metadata, ratings and collection APIs; separate progress and book-edit queues | Version/permission capability matrix and contract tests for books and reading state; never annotation sync |
 | iCloud configuration | In-progress allowlisted KVS coordinator with offline outbox, account handling, device-class preferences and local pre-import copy | Complete configuration inventory and historical cloud backup/restore |
 | Backup | No complete annotation/configuration snapshot and restore service found in the reviewed paths | Recoverable generations, asset manifests, retention, remote completion evidence, restore UX |
 
@@ -50,7 +56,8 @@ flowchart TD
     Repo --> ReadModel[Reader projections and annotation queries]
     ReadModel --> Renderer[Foliate and ink geometry/rendering]
     Repo --> Outbox[Durable provider delivery intent]
-    Outbox --> Story[Storyteller capability adapter]
+    Outbox --> Devices[Private iCloud annotation sync]
+    Books[Book source adapters] --> Servers[Server books and reading state only]
     Repo --> Snapshots[Consistent snapshots and restore service]
     Snapshots --> Cloud[Apple iCloud backup adapter]
     Settings[Configuration owners and registry] --> Snapshots
@@ -58,7 +65,7 @@ flowchart TD
     Restore --> Repo
 ```
 
-This describes intended responsibilities; the repository, snapshot service and backup adapter are proposals. Live iCloud annotation sync is an optional subsequent capability, not a prerequisite for the user's backup goal. If added, it consumes the repository/outbox and must remain separate from retained recovery history.
+This diagram records the original proposed repository boundary, updated to remove server annotation delivery. ADR 010 supersedes its repository prerequisite: live iCloud annotation sync uses the protected per-book owners. ADR 009 implements retained backup separately. The plan owns current completion and acceptance status.
 
 ### Domain and persistence
 
@@ -113,13 +120,13 @@ Public 2.x documentation still describes notes/highlights/bookmarks sync as fort
 | --- | --- |
 | Reading/listening position | Preserve existing locator and queue handling; test ebook/readaloud mapping and concurrent progress policy |
 | Reading status, metadata, ratings, collections | Use supported endpoints and user permissions; distinguish shared catalog edits from private user state |
-| Highlights, bookmarks, typed notes | No supported round trip established by this review; enable only against a verified server contract/version |
+| Highlights, bookmarks, typed notes | Never sent to a book server; sync only through the person's iCloud (ADR 010) |
 | Handwritten ink, margin layout and Silveran tool state | No verified server contract; keep full-fidelity local data and iCloud backup |
 | Source and shelf configuration | Back up local definitions; map to server features only with explicit semantics and stable identities |
 
 Maintain a tested capability matrix by server version, user permission and data type; do not invent a capability-discovery endpoint if none exists. Probe only through safe supported requests. Distinguish unsupported, unauthorized and temporarily unavailable. Keep provider IDs, revisions and cursors separate from domain IDs, and preserve data the provider cannot represent.
 
-For a future annotation adapter, specify create/update/delete, pagination, concurrency, retry/idempotency and lossless field mapping. Importing a provider event must not echo it back as a new edit. If Storyteller and iCloud ever both replicate annotations, converge through the same local revisions and provider mapping; never run two unrelated last-writer-wins pipelines. Retain both creative revisions on unresolved conflicts. Delete-versus-edit needs an explicit recovery policy. Old backup outboxes must never replay destructive remote commands automatically.
+No server annotation adapter is planned or permitted. ADR 010 owns live iCloud annotation conflict handling; ADR 009 owns retained backup and restore. Neither may replay stale destructive server commands.
 
 ## Automatic iCloud backup and restore
 
@@ -166,7 +173,7 @@ This cannot guarantee recovery of changes that never left a lost device, indefin
 | 2. Durable annotation core | Error-aware repository, protected decoding, migrations, revision/tombstone model and lossless local archive/restore | Failure injection, restart, malformed/future data and migration/rollback tests pass without losing originals |
 | 3. Automatic iCloud recovery | Chosen adapter, complete snapshots, retention, account isolation and restore UI | Signed Mac/iPad/iPhone tests, offline/quota/interrupted uploads, fresh-install and populated-store restores |
 | 4. Complete EPUB experience | Shared anchors, annotation browser, margin notes, richer editing and accessible export | Real Pencil and reflow corpus acceptance; repeated-text ambiguity and cross-edition repair tests |
-| 5. Verified interoperability | Versioned Storyteller contracts; existing sync hardening; annotation sync only if supported | Contract tests against supported server versions, concurrent edits, retries, deletion and source/account isolation |
+| 5. Verified interoperability | Versioned Storyteller contracts; existing books/reading-state sync hardening; annotations never sent to a server | Contract tests against supported server versions, concurrent edits, retries, deletion and source/account isolation |
 | 6. Broader parity | Fixed-layout/PDF, notebooks, recognition and optional AI; additional authoring platforms | Separate feature/platform acceptance, performance and privacy criteria |
 
 Stages 3–5 can overlap after the contracts and durability work settle; backup need not wait for richer drawing tools or upstream annotation APIs. Avoid a large rewrite: wrap current stores first, migrate one domain at a time, and keep shipped behavior usable. Treat this as a multi-milestone effort over months, not the earlier ink MVP's 4–5 week estimate; credible staffing estimates require the storage and native-canvas prototypes plus real-device results.

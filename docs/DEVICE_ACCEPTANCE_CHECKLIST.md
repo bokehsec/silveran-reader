@@ -95,3 +95,19 @@ Setup: as for iCloud backup (items 22–30), plus enable Push Notifications for 
 | 45 | Use a kept version | It becomes current on both devices; the replaced one is kept |
 | 46 | Sign in to a different Apple ID on one device | Nothing from the old account appears; that device's annotations upload to the new account |
 | 47 | Change reader settings on one device | They apply on the other (settings sync, unchanged) |
+
+## Phase 5 PDF and browser acceptance increment
+
+These checks expand the earlier browser checklist. None is marked passed by code or unit tests. Use isolated synthetic data; record final build/device/OS and results in the plan. The management-handoff first iPad pass only verified the pre-preview browser and initial native-picker presentation; final interactions were blocked by Mac lock.
+
+| # | Check | Pass when |
+| --- | --- | --- |
+| 48 | Search a book title with a blue highlight-color filter; then add a quote/note search term | Title matches respect all filters; accents/case and combined terms behave consistently |
+| 49 | Choose a chapter from a specific book, including two sources with the same chapter href | Only that book's selected chapter appears; active chapter and color are visible; Reset restores all types/colors/chapters |
+| 50 | Exclude all types or enter a nonmatching search; use Show All; search with kept versions present | Empty state explains recovery, Show All clears search/filters, kept-version navigation stays reachable |
+| 51 | Keyboard/VoiceOver navigation and large text on iPhone/iPad/Mac | Rows are reachable actions; search, clear, filter, reset, export and recovery labels are understandable without clipped controls |
+| 52 | Export a mixed annotated book as PDF | Native preview shows quotes, typed notes, bookmarks and colored ink; text is selectable and handwriting remains readable when zoomed |
+| 53 | Cancel a large PDF preparation or leave the browser; PDF preview Done; preview again, Save PDF; cancel picker; repeat and save locally | Cancellation does not open a late preview; each dismissal returns to a usable browser; cancellation does not show an error or write annotations; repeated saves have the correct PDF extension |
+| 54 | Reopen exported PDF in Files/Preview; export long notes and large ink | Every annotation/end marker appears, multi-page text stays above footers, no cropped strokes, chapter/author/provenance present |
+| 55 | iPhone portrait/landscape and iPad narrow split-screen, light/dark | Search/filter/reset remain discoverable, preview fits the page and zooms, native picker is usable, no unintended reader navigation |
+| 56 | Reopen a synthetic book containing saved ink; tap ink in both page-edge zones before writing, then after rotation/reflow | Inline marks/notes and margin drawings respond without turning the page; repeat after the first stroke to distinguish hit testing from Pencil-mode suppression (OD-015) |

@@ -2,14 +2,14 @@
 
 Long-term direction: [annotation, sync and backup review](ANNOTATION_SYNC_BACKUP_REVIEW.md). The milestones below record the current ink implementation, not completion of Scribe parity. Historical references to tolerant decoding and iCloud device backup do not satisfy the current requirements: unsupported/corrupt originals must be preserved, and app-managed backup needs retained recovery points and tested restore. Follow [AGENTS.md](../AGENTS.md) for new work.
 
-Status: In progress — M0–M4 implemented, device acceptance pending · Platform: iPadOS · Date: 2026-09-30
+Status: Historical M0–M4 implementation record, device acceptance pending · Platform: iPadOS · Date: 2026-09-30. Current work and completion evidence are managed in the [canonical phased plan](ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md) and [Phase 5 execution backlog](PHASE5_EXECUTION_BACKLOG.md); later repair, margin and export increments supersede the milestone status below where applicable.
 Design and spike record: [`PENCIL_INK_PLAN.md`](PENCIL_INK_PLAN.md). This plan supersedes its sections 4–5 where they differ (model ownership, anchoring, tools, phases).
 
 ## Progress
 
 | Milestone | State | Notes |
 |---|---|---|
-| M0 Isolate the spike | Done, except commits | Work is on branch `pencil-ink`; the spike and later work are **not committed** (the tree also holds unrelated changes; splitting them into commits is left to the owner). DEBUG hooks moved to `InkDebug.js`. |
+| M0 Isolate the spike | Implemented and committed | Initial M0–M4 implementation is in `fc4bb9d`; DEBUG hooks moved to `InkDebug.js`. The earlier handoff's “not committed” statement is superseded by repository history. |
 | M1 Page never turns while writing | Implemented; **device acceptance pending** | `BUGFIX_LOG.md` BF-013. |
 | M2 Model ownership and word anchors | Implemented; simulator-verified | See below. |
 | M3 Writing tools | Implemented; simulator-verified except Pencil input | PencilKit palette, pressure pen, marks, stroke eraser, undo. See below. |

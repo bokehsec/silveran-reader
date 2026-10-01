@@ -97,16 +97,22 @@ public enum AnnotationLibrary {
         _ entries: [AnnotationEntry],
         query: String,
         kinds: Set<AnnotationEntry.Kind> = Set(AnnotationEntry.Kind.allCases),
-        colors: Set<HighlightColor>? = nil
+        colors: Set<HighlightColor>? = nil,
+        chapters: Set<String>? = nil,
+        bookTitle: String? = nil
     ) -> [AnnotationEntry] {
         let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
         return entries.filter { entry in
             guard kinds.contains(entry.kind) else { return false }
+            if let chapters, !chapters.contains(entry.href) { return false }
             if let colors, entry.kind == .highlight {
                 guard let color = entry.color, colors.contains(color) else { return false }
             }
+            let searchableText = [bookTitle, entry.searchableText].compactMap { $0 }.joined(
+                separator: "\n"
+            )
             return terms.allSatisfy {
-                entry.searchableText.range(
+                searchableText.range(
                     of: $0,
                     options: [.caseInsensitive, .diacriticInsensitive]
                 ) != nil
@@ -269,10 +275,11 @@ public enum AnnotationLibrary {
             """
     }
 
-    /// Entries grouped by chapter in reading order, each chapter titled by any of its entries
+    /// Entries grouped by chapter in the projection's href order (spine metadata is unavailable),
+    /// each chapter titled by any of its entries
     /// that knows the title (handwriting doesn't), else by the chapter file name.
-    static func chapters(_ entries: [AnnotationEntry]) -> [(
-        title: String, entries: [AnnotationEntry]
+    public static func chapters(_ entries: [AnnotationEntry]) -> [(
+        href: String, title: String, entries: [AnnotationEntry]
     )] {
         var order: [String] = []
         var grouped: [String: [AnnotationEntry]] = [:]
@@ -285,7 +292,7 @@ public enum AnnotationLibrary {
             let title =
                 items.lazy.compactMap(\.chapterTitle).first { !$0.isEmpty }
                 ?? ((href as NSString).lastPathComponent as NSString).deletingPathExtension
-            return (title, items)
+            return (href, title, items)
         }
     }
 

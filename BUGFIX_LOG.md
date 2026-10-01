@@ -42,6 +42,34 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-030 — Annotation title search bypassed filters and hid recovery navigation
+
+- Date: 2026-09-30
+- Status: Needs validation
+- Platforms: iOS/iPadOS and macOS UI; shared filtering
+- Components: `AnnotationsBrowserView.swift`, `AnnotationLibrary.swift`, `AnnotationLibraryTests.swift`
+- Related links: [Phase 5 execution backlog](docs/PHASE5_EXECUTION_BACKLOG.md)
+
+#### Symptom
+
+Choose a highlight color and search for its book title: highlights of other colors reappear. A search/filter with no matches also removes access to the kept-versions link. The empty-state message offers no direct way to clear filters, and annotation rows use tap gestures without semantic button actions for keyboard/assistive navigation.
+
+#### Root cause
+
+The view replaces filtered results with all type-matching entries when the book title matches, skipping the color predicate and the shared accent-insensitive search. The entire list, including kept versions, is conditional on visible annotations. Row activation is implemented as `onTapGesture` rather than a SwiftUI Button.
+
+#### Change
+
+Apply title/text matching and type/color/chapter predicates together in the portable read projection. Add source/book-scoped chapter selection, visible filter status/reset and a direct Show All action. Keep recovery navigation independent of ordinary search results, including when only kept versions exist. Use semantic row buttons with a navigation hint. Existing color policy remains: color limits highlights only; bookmarks and handwriting can still appear unless excluded by the type filter. Export continues to include the whole book, with an explicit menu explanation.
+
+#### Validation
+
+Regression tests cover title+color/type/chapter intersections, mixed title/quote terms, accents, wrong chapter and empty type selection. `scripts/test --filter 'AnnotationPDFExport|AnnotationLibrary'` passed 9 tests; final full `scripts/test` passed 370 tests in 35 suites. `npm test` in WebHarness passed 145 tests. Unsigned `SILVERAN_DISABLE_CODE_SIGNING=1 scripts/macbuild` and `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=394B000D-8F9F-4726-AF3A-DC7E6754FF0E' scripts/iosbuild` passed. First synthetic iPad A16/iOS 18.6 simulator pass confirmed row buttons/hints, four retained missing-book entries and readable typed-note lines. Final combined-filter/reset/keyboard/iPhone checks remain pending: the Mac locked during testing. Final inline-control polish is not simulator-accepted yet. One full run during a build reproduced OD-012's 12 deadline issues; standalone rerun passed. No Android/Linux UI or real-device VoiceOver acceptance is claimed.
+
+#### Compatibility and follow-up
+
+No persisted schema or migration change. Annotation writes, identities, cloud authority and reading positions are unchanged. Real VoiceOver and keyboard usability remain on the device gate.
+
 ### BF-029 — Watch builds for real devices failed on a 64-bit integer literal
 
 - Date: 2026-09-30
@@ -580,13 +608,14 @@ Whether WebKit reports `touchType === "stylus"` on every event path is not confi
 
 One writing lock, held by `InkSession` (one per open book, owned by `ReaderCommsBridge`), taken at Pencil-down and released 1 s after Pencil-up. `InkInputController` drives it from its Pencil-only recognizer. The lock is enforced at every trigger:
 
-- **Web (`InkTouchGuard.js`):** the first capture-phase listeners on the reader window and on each section window (registered before the swipe interceptors and the paginator). It drops all touch events of `stylus` touches and `click`/`dblclick` from `pointerType === "pen"`. While Swift reports the lock (`setInkWriting`), it also drops touches that start during it and clicks. A touch that began before the lock keeps its start and end paired. It lifts by itself after 10 s if Swift never releases (Swift re-asserts on every Pencil-down). It does nothing unless the iPad sets `window.__silveranInkEnabled`, and steps aside in Scrolling Mode.
-- **Swift:** `ReaderCommsBridge.sendSwiftMarginClickNav` refuses taps, swipes and arrow keys while writing (native `"drag"` curls that already began are allowed to finish). `PageCurlAnimator.canStartDrag` refuses new drag-curls. `MediaOverlayManager.flipPageIfNotDebounced` holds the read-aloud flip until release, then performs one flip however many were requested; audio keeps playing.
+- **Web (`InkTouchGuard.js`):** the first capture-phase listeners on the reader window and on each section window (registered before the swipe interceptors and the paginator). It drops all touch events of `stylus` touches, `click`/`dblclick` from `pointerType === "pen"`, and unlabelled clicks within 700 ms of a stylus touch (WebKit can omit the pointer type, and a quick tap can beat the Swift lock message). While Swift reports the lock (`setInkWriting`), it also drops touches that start during it and clicks. A touch that began before the lock keeps its start and end paired, but subsequent moves are suppressed and its end is marked interrupted so it cannot become a swipe. It lifts by itself after 10 s if Swift never releases; Swift re-asserts on every Pencil-down and at two-second intervals during stroke movement. It does nothing unless the iPad sets `window.__silveranInkEnabled`, and steps aside in Scrolling Mode.
+- **Swift:** `ReaderCommsBridge.sendSwiftMarginClickNav` refuses taps, swipes and arrow keys while writing (native `"drag"` curls that already began are allowed to finish). `PageCurlAnimator.canStartDrag` refuses new drag-curls. Lock/mode updates are serialized by `ReaderCommsBridge.inkStateTail` so a late start cannot arrive after release and leave fingers blocked until timeout. `MediaOverlayManager.holdForInk` holds both read-aloud flips and sentence seeks; on release it coalesces them into one catch-up to the currently spoken sentence rather than a blind page flip. Audio keeps playing.
+- **Session lifetime:** `ReadingSessionStore` owns the open book's `InkSession`; rebuilding its web view reuses the session and undo history. Pencil mode is re-sent to the rebuilt view. After the first stroke, page-margin taps toggle controls rather than navigating; deliberate swipes and arrow keys still work. This guard does not prove that tapping saved ink before writing works; that separate historical simulator issue is tracked as OD-015.
 - **Scrolling Mode:** the recognizer refuses to begin (`ReaderCommsBridge.isScrollingMode`), so the Pencil scrolls like a finger.
 
 The Phase 0 DEBUG hooks moved from `FoliateManager.js` into `InkDebug.js`. No behavior change for other devices.
 
-Intentionally unchanged: finger taps, swipes, drag-curl, and text selection when the Pencil is not writing; page turns from the toolbar and table of contents (they are not user navigation from the page). A JS-only paginator drag begun by a finger before the lock (non-curl page-turn styles) is not interrupted.
+Intentionally unchanged: finger navigation and text selection outside writing, except for the explicit Pencil-mode margin-tap rule; page turns from the toolbar and table of contents (they are not user navigation from the page). Native drag-curls begun before the lock can finish; pre-existing web touch gestures retain their end event to settle without becoming a new swipe.
 
 #### Validation
 
@@ -594,6 +623,7 @@ Intentionally unchanged: finger taps, swipes, drag-curl, and text selection when
 - `node --test SilveranKit/Tests/WebHarness/*.test.mjs`: 12 tests pass (Pencil touch sequences never reach handlers registered after the guard; fingers unaffected; pen clicks dropped; lock drops new touches and keeps in-flight ones paired; timeout; disabled and suspended modes).
 - `./scripts/iosbuild` (iPhone and iPad Pro 11-inch (M5) simulator destinations) and `./scripts/macbuild` succeed. The iPad simulator run with `-SilveranInkSelfTest YES` still logs `[InkSelfTest] PASS 256 checks`.
 - **Not validated:** the device acceptance checklist in the plan (fast horizontal handwriting, Pencil taps in both margins, resting palm, writing during read-aloud, then the finger behaviours). It needs an iPad with a Pencil. Record results here when run.
+- **2026-09-30 handoff reconciliation:** Claude session `c9279f69-7a1b-472f-993f-65c23bccaa30` reported the six follow-up mechanisms above at 11:00:17 UTC but had not updated this entry. Verified them against current code and reran `scripts/test --filter InkSessionTests` (**12 passed**) and `node --test SilveranKit/Tests/WebHarness/inkTouchGuard.test.mjs` (**15 passed**). These runs cover ordering, heartbeat, deferred catch-up and touch interruption, not real Pencil input or the saved-ink edge-tap coordinate path. Current simulator interaction is blocked by Mac lock; OD-015/checklist 56 must be investigated independently.
 
 #### Compatibility and follow-up
 

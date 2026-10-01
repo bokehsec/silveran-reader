@@ -19,6 +19,22 @@ struct AnnotationsBrowserView: View {
     @State private var colors: Set<HighlightColor>? = nil
     @State private var export: NotesExportDocument?
     @State private var exportName = ""
+    @State private var preparingPDF = false
+    @State private var pdfTask: Task<Void, Never>?
+    @State private var pdfPreview: PreparedPDF?
+    @State private var pdfToSave: PreparedPDF?
+    @State private var chapter: ChapterChoice?
+
+    private struct ChapterChoice: Hashable {
+        let bookID: BookID
+        let href: String
+        let title: String
+    }
+    private struct PreparedPDF: Identifiable {
+        let id = UUID()
+        let data: Data
+        let filename: String
+    }
     @State private var message: String?
     @State private var settings = SettingsViewModel()
     @State private var keptCount = 0
@@ -26,12 +42,26 @@ struct AnnotationsBrowserView: View {
     var body: some View {
         content
             .navigationTitle("Annotations")
-            #if os(iOS)
-        .searchable(text: $query, prompt: "Search quotes and notes")
-            #endif
-            .toolbar { ToolbarItem { filterMenu } }
             .task { await reload() }
             .refreshable { await reload() }
+            .onDisappear { pdfTask?.cancel() }
+            .sheet(item: $pdfPreview, onDismiss: savePreparedPDF) { prepared in
+                NavigationStack {
+                    AnnotationPDFPreview(data: prepared.data)
+                        .navigationTitle("Notes PDF")
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Done") { pdfPreview = nil }
+                            }
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Save PDF") {
+                                    pdfToSave = prepared
+                                    pdfPreview = nil
+                                }
+                            }
+                        }
+                }
+            }
             .fileExporter(
                 isPresented: Binding(get: { export != nil }, set: { if !$0 { export = nil } }),
                 document: export,
@@ -54,7 +84,7 @@ struct AnnotationsBrowserView: View {
     @ViewBuilder private var content: some View {
         if loading {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if books.isEmpty {
+        } else if books.isEmpty && keptCount == 0 {
             ContentUnavailableView(
                 "No Annotations Yet",
                 systemImage: "highlighter",
@@ -65,45 +95,87 @@ struct AnnotationsBrowserView: View {
         } else {
             let visible = filteredBooks
             VStack(spacing: 0) {
-                #if os(macOS)
-                TextField("Search quotes and notes", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .padding()
-                #endif
-                if visible.isEmpty {
-                    ContentUnavailableView.search(text: query)
-                } else {
-                    List {
-                        if keptCount > 0 {
-                            Section {
-                                NavigationLink {
-                                    KeptVersionsView(title: title(for:)) { await reload() }
-                                } label: {
-                                    Label(
-                                        "\(keptCount) version(s) kept by iCloud sync",
-                                        systemImage: "clock.arrow.circlepath"
-                                    )
-                                }
-                            } footer: {
-                                Text(
-                                    "When an annotation was changed on two devices, the latest change was used and the other kept here."
+                HStack(spacing: 12) {
+                    TextField("Search books, quotes and notes", text: $query)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Search annotations")
+                    if !query.isEmpty {
+                        Button {
+                            query = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }.accessibilityLabel("Clear search")
+                    }
+                    filterMenu
+                }
+                .padding(.horizontal).padding(.vertical, 10)
+                if preparingPDF {
+                    HStack {
+                        ProgressView("Preparing PDF…")
+                        Spacer()
+                        Button("Cancel") { pdfTask?.cancel() }
+                            .accessibilityLabel("Cancel PDF preparation")
+                    }.padding(.horizontal).padding(.vertical, 8)
+                }
+                if hasFilters {
+                    HStack {
+                        Text(filterDescription)
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Reset Filters") { resetFilters() }
+                    }.padding(.horizontal).padding(.vertical, 8)
+                }
+                List {
+                    if keptCount > 0 {
+                        Section {
+                            NavigationLink {
+                                KeptVersionsView(title: title(for:)) { await reload() }
+                            } label: {
+                                Label(
+                                    "\(keptCount) version(s) kept by iCloud sync",
+                                    systemImage: "clock.arrow.circlepath"
                                 )
                             }
+                        } footer: {
+                            Text(
+                                "When an annotation was changed on two devices, the latest change was used and the other kept here."
+                            )
                         }
-                        ForEach(visible, id: \.book.id) { item in
-                            Section {
-                                ForEach(item.entries) { entry in
-                                    AnnotationRow(entry: entry, colorHex: hex(for:))
-                                        .contentShape(Rectangle())
-                                        .onTapGesture { show(entry) }
-                                        .contextMenu {
-                                            Button("Show in Book") { show(entry) }
-                                                .disabled(metadata(for: entry.bookID) == nil)
-                                        }
-                                }
-                            } header: {
-                                header(item.book)
+                    }
+                    if visible.isEmpty {
+                        ContentUnavailableView {
+                            Label(
+                                "No Matching Annotations",
+                                systemImage: "line.3.horizontal.decrease.circle"
+                            )
+                        } description: {
+                            Text("Try another search or reset your filters.")
+                        } actions: {
+                            Button("Show All Annotations") {
+                                query = ""
+                                resetFilters()
                             }
+                        }
+                    }
+                    ForEach(visible, id: \.book.id) { item in
+                        Section {
+                            ForEach(item.entries) { entry in
+                                Button {
+                                    show(entry)
+                                } label: {
+                                    AnnotationRow(entry: entry, colorHex: hex(for:))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityHint("Show this annotation in its book")
+                                .contextMenu {
+                                    Button("Show in Book") { show(entry) }
+                                        .disabled(metadata(for: entry.bookID) == nil)
+                                }
+                            }
+                        } header: {
+                            header(item.book)
                         }
                     }
                 }
@@ -111,19 +183,44 @@ struct AnnotationsBrowserView: View {
         }
     }
 
+    private var hasFilters: Bool {
+        kinds != Set(AnnotationEntry.Kind.allCases) || colors != nil || chapter != nil
+    }
+
+    private var filterDescription: String {
+        var parts: [String] = []
+        if let colors {
+            parts.append(
+                "Highlight color: "
+                    + colors.map { $0.rawValue.capitalized }.sorted().joined(separator: ", ")
+            )
+        }
+        if let chapter { parts.append("Chapter: \(chapter.title)") }
+        if kinds != Set(AnnotationEntry.Kind.allCases) {
+            parts.append("\(kinds.count) annotation types selected")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func resetFilters() {
+        kinds = Set(AnnotationEntry.Kind.allCases)
+        colors = nil
+        chapter = nil
+    }
+
     private var filteredBooks: [(book: AnnotationBookSummary, entries: [AnnotationEntry])] {
         books.compactMap { book in
+            if let chapter, chapter.bookID != book.bookID { return nil }
             let entries = AnnotationLibrary.filter(
                 book.entries,
                 query: query,
                 kinds: kinds,
-                colors: colors
+                colors: colors,
+                chapters: chapter.map { Set([$0.href]) },
+                bookTitle: title(for: book.bookID)
             )
-            let titleMatches =
-                !query.isEmpty
-                && title(for: book.bookID).range(of: query, options: [.caseInsensitive]) != nil
-            let shown = titleMatches ? book.entries.filter { kinds.contains($0.kind) } : entries
-            return shown.isEmpty && !(book.needsRecovery && query.isEmpty) ? nil : (book, shown)
+            return entries.isEmpty && !(book.needsRecovery && query.isEmpty && !hasFilters)
+                ? nil : (book, entries)
         }
     }
 
@@ -145,8 +242,11 @@ struct AnnotationsBrowserView: View {
             }
             Spacer()
             Menu {
+                Button("PDF (with handwriting)") { exportPDF(book) }
+                    .disabled(preparingPDF)
                 Button("Web Page (with handwriting)") { exportNotes(book, asHTML: true) }
                 Button("Markdown Text") { exportNotes(book, asHTML: false) }
+                Text("Exports all notes in this book. Use a backup to keep editable data.")
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
@@ -155,6 +255,7 @@ struct AnnotationsBrowserView: View {
             .fixedSize()
             .accessibilityLabel("Export notes for \(title(for: book.bookID))")
         }
+        .textCase(nil)
     }
 
     private var filterMenu: some View {
@@ -172,6 +273,32 @@ struct AnnotationsBrowserView: View {
                     )
                 }
             }
+            Section("Chapter") {
+                Button("Any Chapter") { chapter = nil }
+                ForEach(books) { book in
+                    Menu(title(for: book.bookID)) {
+                        ForEach(AnnotationLibrary.chapters(book.entries), id: \.href) { group in
+                            let choice = ChapterChoice(
+                                bookID: book.bookID,
+                                href: group.href,
+                                title: group.title
+                            )
+                            Button {
+                                chapter = choice
+                            } label: {
+                                if chapter == choice {
+                                    Label(group.title, systemImage: "checkmark")
+                                } else {
+                                    Text(group.title)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if hasFilters {
+                Button("Reset Filters") { resetFilters() }
+            }
             Section("Highlight Color") {
                 Button("Any Color") { colors = nil }
                 ForEach(HighlightColor.allCases, id: \.self) { color in
@@ -187,7 +314,11 @@ struct AnnotationsBrowserView: View {
                 }
             }
         } label: {
-            Label("Filter", systemImage: "line.3.horizontal.decrease.circle")
+            Label(
+                "Filter",
+                systemImage: hasFilters
+                    ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle"
+            )
         }
     }
 
@@ -228,6 +359,45 @@ struct AnnotationsBrowserView: View {
         #else
         openWindow(id: "EbookPlayer", value: data)
         #endif
+    }
+
+    private func exportPDF(_ book: AnnotationBookSummary) {
+        guard !preparingPDF else { return }
+        preparingPDF = true
+        let title = title(for: book.bookID)
+        let author = metadata(for: book.bookID)?.authors?.first?.name
+        pdfTask = Task {
+            do {
+                let generator = Task.detached(priority: .userInitiated) {
+                    try AnnotationPDFExport.data(
+                        title: title,
+                        author: author,
+                        entries: book.entries
+                    )
+                }
+                let data = try await withTaskCancellationHandler {
+                    try await generator.value
+                } onCancel: {
+                    generator.cancel()
+                }
+                try Task.checkCancellation()
+                pdfPreview = PreparedPDF(data: data, filename: "\(title) — Notes.pdf")
+            } catch {
+                if !Task.isCancelled {
+                    message = "The PDF couldn't be prepared. \(error.localizedDescription)"
+                }
+            }
+            preparingPDF = false
+            pdfTask = nil
+        }
+    }
+
+    // Present the system picker only after the preview sheet has finished dismissing.
+    private func savePreparedPDF() {
+        guard let prepared = pdfToSave else { return }
+        pdfToSave = nil
+        exportName = prepared.filename
+        export = NotesExportDocument(data: prepared.data, contentType: .pdf)
     }
 
     private func exportNotes(_ book: AnnotationBookSummary, asHTML: Bool) {
@@ -441,22 +611,25 @@ struct StrokeThumbnail: View {
 }
 
 struct NotesExportDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.markdown, .html, .plainText] }
-    let text: String
+    static var readableContentTypes: [UTType] { [.markdown, .html, .plainText, .pdf] }
+    let data: Data
     let contentType: UTType
     init(text: String, contentType: UTType) {
-        self.text = text
+        self.init(data: Data(text.utf8), contentType: contentType)
+    }
+    init(data: Data, contentType: UTType) {
+        self.data = data
         self.contentType = contentType
     }
     init(configuration: ReadConfiguration) throws {
         guard let data = configuration.file.regularFileContents else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        text = String(decoding: data, as: UTF8.self)
+        self.data = data
         contentType = configuration.contentType
     }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: Data(text.utf8))
+        FileWrapper(regularFileWithContents: data)
     }
 }
 

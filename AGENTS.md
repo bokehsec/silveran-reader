@@ -22,6 +22,14 @@ Follow the [phased implementation plan](docs/ANNOTATION_SYNC_BACKUP_IMPLEMENTATI
 - Require an architecture decision record for changes to storage engines, annotation identity/anchors, cloud authority, conflict policy, or third-party drawing/reader engines. Include alternatives, invariants, migration/rollback, platform scope, failure cases, and validation. This is documentation within the authorized work, not a separate permission gate.
 - Validate durability and recovery with failure injection and migration fixtures, plus real-device Pencil/reflow and signed multi-device iCloud acceptance where applicable. Unit tests or simulator success alone do not establish device interaction quality or cloud delivery.
 
+## Project management and usability acceptance
+
+- The [phased implementation plan](docs/ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md) is the canonical backlog and completion record. Keep its opening status, status table, detailed work packages and progress evidence consistent. The [Phase 5 execution backlog](docs/PHASE5_EXECUTION_BACKLOG.md) expands the remaining EPUB work; do not silently drop requirements from the original phase scope.
+- Mark code implemented, automated verification, simulator usability acceptance and real-device/signed-cloud acceptance separately. Historical architecture reviews are supporting rationale, not current implementation status; accepted product decisions and later ADRs take precedence.
+- Usability is a release requirement. For each visible change, exercise the actual workflow in the iPad and relevant iPhone simulator, inspect the rendered result, and record device/OS/build, fixture, actions, results and limitations. Check discoverability, readable labels, empty/error states, cancellation, narrow layouts, navigation and accessibility semantics. Fix observed usability failures before claiming the increment accepted.
+- Use isolated, synthetic fixtures for destructive or annotation-editing tests. Preserve existing user annotations, source credentials, reading positions and simulator data. Simulator success does not establish Pencil/palm quality or signed iCloud delivery; keep those hardware gates open.
+- Continue implementation through reviewable, verified increments. Keep unexpected findings in OBSERVED_ODDITIES.md and implemented bugfix rationale in BUGFIX_LOG.md. Do not mark a whole phase complete because its headline features exist.
+
 ## Observed oddities
 
 Record anything that looks wrong, surprising or fragile but isn't investigated right away in [docs/OBSERVED_ODDITIES.md](docs/OBSERVED_ODDITIES.md): where it was seen, what happened, what's known and a suggested next step. Don't let such observations live only in chat or commit messages. Move an entry to "Resolved" when it's investigated, and put confirmed, fixed bugs in `BUGFIX_LOG.md`.

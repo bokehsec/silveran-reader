@@ -94,6 +94,49 @@ struct AnnotationLibraryTests {
         #expect(AnnotationLibrary.filter(entries, query: "", colors: [.blue]).count == 2)
     }
 
+    @Test("Book-title search cannot bypass color, type or chapter filters")
+    func titleAndFilters() {
+        let yellow = AnnotationLibrary.entry(highlight("Café", color: .yellow))
+        let blue = AnnotationLibrary.entry(highlight("Sea", color: .blue))
+        let bookmark = AnnotationLibrary.entry(highlight("", color: nil))
+        let entries = [yellow, blue, bookmark]
+        #expect(
+            AnnotationLibrary.filter(
+                entries,
+                query: "MOBY",
+                colors: [.blue],
+                bookTitle: "Moby-Dick"
+            ) == [blue, bookmark]
+        )
+        #expect(
+            AnnotationLibrary.filter(entries, query: "moby cafe", bookTitle: "Moby-Dick") == [
+                yellow
+            ]
+        )
+        #expect(
+            AnnotationLibrary.filter(entries, query: "CAFE", bookTitle: "Café Society").count == 3
+        )
+        #expect(
+            AnnotationLibrary.filter(
+                entries,
+                query: "moby",
+                kinds: [.highlight],
+                colors: [.blue],
+                bookTitle: "Moby-Dick"
+            ) == [blue]
+        )
+        #expect(AnnotationLibrary.filter(entries, query: "", chapters: ["ch2.xhtml"]).count == 3)
+        #expect(
+            AnnotationLibrary.filter(
+                entries,
+                query: "moby",
+                chapters: ["ch1.xhtml"],
+                bookTitle: "Moby-Dick"
+            ).isEmpty
+        )
+        #expect(AnnotationLibrary.filter(entries, query: "", kinds: []).isEmpty)
+    }
+
     @Test("Markdown export groups by chapter and keeps notes")
     func markdown() {
         let entries = [

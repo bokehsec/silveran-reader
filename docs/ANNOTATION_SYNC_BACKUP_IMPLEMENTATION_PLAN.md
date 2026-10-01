@@ -1,6 +1,6 @@
 # Phased implementation plan: annotations, iCloud backup and Storyteller book sync
 
-Date: 2026-09-30. Status: Phases 1, 3 and 4 are implemented in code and awaiting device/signed-account acceptance; Phase 2 foundations exist but the reader has not been cut over; Phases 5–7 not started. No exit gate is marked passed until its device evidence exists. See the status summary and progress record below.
+Date: 2026-09-30. Status: Phases 1, 3, 4 and 4S have code implementations awaiting device/signed-account acceptance; Phase 2 remains inactive and blocked by revision growth; Phase 5 is in progress; Phase 6 has baseline evidence and still needs contract validation; Phase 7 is not started. No exit gate is marked passed until its device evidence exists. See the status summary and progress record below.
 
 **Scope decisions (product owner, 2026-09-30):** annotations are never synchronized with Storyteller or any other book server, even if a server later adds annotation support; server synchronization covers books, reading position, reading status, ratings, metadata and collections only. Annotations **must** sync, together with application settings, between the person's own devices through iCloud ([ADR 010](decisions/010-live-icloud-annotation-sync.md)), and are protected by iCloud backup.
 
@@ -17,9 +17,9 @@ Initial delivery targets iPad/Pencil authoring and Mac/iPhone annotation viewing
 | 0 | Agreed contracts, inventories, prototype evidence and fixtures | None | Planning and baseline evidence |
 | 1 | Existing annotations cannot silently fail to save or overwrite unreadable originals | Relevant Phase 0 contracts | Reliability release |
 | 2 | One durable annotation repository with safe migration and edition identity | Phases 0–1 | Migrated local data foundation |
-| 3 | Complete portable annotation/configuration archive and safe local restore | Phase 2 | Local recovery release |
+| 3 | Complete portable annotation/configuration archive and safe local restore | Protected owners and archive contracts (ADR 009); inactive Phase 2 snapshot foundation | Local recovery release |
 | 4 | Automatic retained iCloud backups with tested restoration | Phase 3 | Cloud protection release |
-| 5 | Complete reflowable EPUB annotation experience | Phase 2; Phase 4 for broad authoring rollout | EPUB annotation release |
+| 5 | Complete reflowable EPUB annotation experience | Phase 1 protected owners (ADR 010); Phase 2 cutover deferred; Phase 4 for broad authoring rollout | EPUB annotation release |
 | 6 | Verified Storyteller sync of books, reading position, status, ratings and metadata (no annotations) | Phase 0 baseline | Interoperability release |
 | 4S | Live iCloud sync of annotations and settings between the person's devices (ADR 010) | Phase 1; Phase 4 build switch | Device sync release |
 | 7 | Broader Scribe parity and additional platform capabilities | Relevant earlier foundations | Separate feature releases |
@@ -30,9 +30,11 @@ Phase numbers express dependencies, not a requirement to finish every earlier ph
 flowchart LR
     P0[0 Contracts and evidence] --> P1[1 Protect existing data]
     P1 --> P2[2 Repository and identity]
-    P2 --> P3[3 Local archive and restore]
+    P1 --> P3[3 Local archive and restore]
+    P2 -. Deferred repository cutover .-> P3
     P3 --> P4[4 Automatic iCloud backup]
-    P2 --> P5[5 EPUB annotation UX]
+    P1 --> P5[5 EPUB annotation UX]
+    P2 -. Future shared identity adoption .-> P5
     P0 --> P6[6 Storyteller book and reading-state sync]
     P4 --> R[Protected EPUB release]
     P5 --> R
@@ -130,7 +132,7 @@ Deliver in small reviewable changes:
 
 ## Phase 5 — Complete the reflowable EPUB annotation experience
 
-**Purpose:** finish the core Scribe-class workflows on durable, recoverable data.
+**Purpose:** finish the core Scribe-class workflows on durable, recoverable data. The [execution backlog](PHASE5_EXECUTION_BACKLOG.md) accounts for every remaining requirement and separates implementation from usability and hardware acceptance. Phase 5 currently uses the protected per-book owners under ADR 010; the Phase 2 reader cutover is deferred, not a prerequisite for this work.
 
 - **P5.1 Retrieve and repair.** Build a common annotation browser with type/color/chapter filters, typed-text and quotation search, thumbnails, navigation, orphan/conflict views and manual reattachment. Include annotations for missing books; do not require the active chapter to be loaded to browse them.
 - **P5.2 Inline and margin notes.** Implement expandable/collapsible margins and inline note placement as presentation of anchored domain objects. Handle multiple nearby notes, landscape columns, narrow screens, zoom where applicable, theme changes and layout invalidation. Moving a note distinguishes moving its canvas from changing its target passage.
@@ -203,9 +205,9 @@ This change creates the plan and links it from the project guidance/review. No i
 | 1 Protect data | Done (BF-017–BF-019, BF-022–BF-028) | iPad/iPhone/Mac checks 1–13 in [DEVICE_ACCEPTANCE_CHECKLIST.md](DEVICE_ACCEPTANCE_CHECKLIST.md) |
 | 2 Repository | Repository, anchors/editions, snapshots, legacy staging; not used by the reader | **Blocked by design issue**: per-stroke revisions grow storage quadratically and can't be compacted ([ADR 003](decisions/003-transactional-annotation-repository.md#cutover-blocker-found-2026-09-30-revision-growth-and-compaction)); deferred until a sync provider needs it. Then: compaction/coarser revisions, owner freeze + journaled cutover, edition persistence, conflict-aware undo |
 | 3 Local archive | Done: `.silveranbackup` export/import, preview, journaled resumable restore, safety copies, source reconnection | Checks 14–21 |
-| 4 iCloud backup | Done behind a build switch: CloudKit transport, scheduling, retention, account isolation, UI | Provision container; checks 22–30 on signed builds; small opt-in rollout |
-| 4S Device sync | Implemented behind the CloudKit build switch: sync engine, `CKSyncEngine` transport, one switch with settings sync, kept versions ([ADR 010](decisions/010-live-icloud-annotation-sync.md)) | Provision the container and push; checks 38–47 on signed devices |
-| 5 EPUB UX | P5.1 started: library-wide Annotations browser (search, filters, books not in the library, damaged-file notice, "Show in Book"), in-reader repair of handwriting and typed highlights that lost their words (suggest, then confirm); P5.2 margin notes (collapsible margin on iPad, icon + viewer on narrow screens); P5.5 Markdown and web-page (handwriting as SVG) export | Repair in chapters not yet opened (library-wide); margin notes (P5.2) need Pencil device acceptance and lasso/move support, lasso/move/resize: UI, gestures and a Swift session/bridge call still to do (P5.3 foundation below), device input/accessibility (P5.4), PDF export |
+| 4 iCloud backup | Done behind a build switch: CloudKit transport, scheduling, retention, account isolation, UI | Verify container/schema provisioning; checks 22–30 on signed builds; small opt-in rollout |
+| 4S Device sync | Implemented behind the CloudKit build switch: sync engine, `CKSyncEngine` transport, one switch with settings sync, kept versions ([ADR 010](decisions/010-live-icloud-annotation-sync.md)) | Verify container/schema/push provisioning; checks 38–47 on signed devices |
+| 5 EPUB UX | P5.1 started: library-wide Annotations browser (search, filters, books not in the library, damaged-file notice, "Show in Book"), in-reader repair of handwriting and typed highlights that lost their words (suggest, then confirm); P5.2 margin notes (collapsible margin on iPad, icon + viewer on narrow screens); P5.5 Markdown, web-page (handwriting as SVG) and paginated PDF export with native preview; chapter filters and browser reset/search improvements | Repair in chapters not yet opened (library-wide); margin notes (P5.2) need Pencil device acceptance and lasso/move support, lasso/move/resize: UI, gestures and a Swift session/bridge call still to do (P5.3 foundation below), device input/accessibility (P5.4), final PDF preview/save/cancel and browser simulator acceptance (Mac locked during verification); copy/paste, classification correction, shared typed anchors/edition continuity and standalone image/SVG export are tracked explicitly in the [execution backlog](PHASE5_EXECUTION_BACKLOG.md) |
 | 6 Storyteller (books and reading state only) | P6.1 started: [compatibility matrix](STORYTELLER_COMPATIBILITY.md); known progress/status quirks already handled | Contract test harness from sanitized fixtures; multi-device position conflict tests; re-probe on each server upgrade |
 | 7 Broader parity | Not started | Separate scoping |
 
@@ -364,9 +366,9 @@ The product owner decided Silveran will eventually support book servers besides 
 - **Deliberately not done:** moving ink between notes or onto other words (that changes what the ink is attached to), copy/paste, the selection UI and gestures, the `InkEngineCalling.inkSelect` Swift bridge call and `InkSession` command, and any Pencil/iPad interaction. No new protocol requirement was added so the existing test doubles are unaffected.
 - **Validation:** `npm test` from `SilveranKit/Tests/WebHarness` passes **128 tests** (120 before plus 8 in `inkSelection.test.mjs`; the `foliate-js` submodule had to be initialised first with `git submodule update --init`). **The Swift half is not compiled or run:** this environment has no Swift toolchain. `InkOperations.swift` and `InkStrokeTransformTests.swift` were written to follow the existing `erase` pattern and their expected numbers were cross-checked against the JavaScript implementation, but `scripts/test --filter InkStrokeTransform` and `scripts/format` still need to be run on a Mac. No device, Pencil or simulator check was done.
 
-### Pending verification (needs a Mac; recorded 2026-09-30)
+### Historical pending verification (Linux handoff; recorded 2026-09-30)
 
-Work from the Linux-only sessions has not been compiled. Before it is relied on, run from the repo root on `claude/focused-goodall-vf9zp6` (or a branch containing it):
+The following was the historical Linux-to-Mac handoff. The management-handoff and subsequent validation entries below supersede its pending status for commands actually run; it does not describe the current branch. Original checklist:
 
 1. `git submodule update --init --recursive`
 2. `scripts/test --filter InkStrokeTransform`: the nine new P5.3 Swift tests.
@@ -376,3 +378,29 @@ Work from the Linux-only sessions has not been compiled. Before it is relied on,
 
 Record the results (commands, counts, failures) in the progress log above; fix failures before building the P5.3 session/bridge/UI wiring on top.
 
+
+### 2026-09-30 — Management handoff and reconciled Phase 5 backlog
+
+- Opening status corrected; Phase 5 requirements are enumerated in [PHASE5_EXECUTION_BACKLOG.md](PHASE5_EXECUTION_BACKLOG.md), without treating the three headline features as the entire exit gate. Project instructions now require recorded simulator usability acceptance per visible increment and preserve real-device/cloud gates.
+- The earlier architecture review is explicitly historical; server annotation sync proposals are superseded by ADR 010. The protected per-book owners remain active; repository cutover stays deferred.
+- Baseline: `scripts/test --filter InkStrokeTransform` compiled and passed **10 tests in one suite** on this Mac. This supersedes the Linux handoff's uncompiled status for the model foundation only; selection gestures, Swift bridge/session wiring and margin selection remain unimplemented.
+- PDF export and annotation-browser filtering are the first managed implementation increment. Further validation is recorded after execution; no Phase 5 exit gate is passed by this entry.
+
+### 2026-09-30 — PDF sharing and annotation-browser completeness increment
+
+- `AppleKit/Shared/AnnotationPDFExport` uses Core Graphics/Core Text to export chapter-grouped quotes, typed notes, bookmarks and vector ink; long UTF-16 text continues across pages without truncation. Pressure-aware pen outlines and constant-width translucent highlighters match the existing stroke model. Original data remains in its protected owners. A PDFKit preview shows the exact bytes before native file export; preparation runs off the UI actor with visible progress, explicit cancellation and cancellation when leaving the browser. Cancelled preparation cannot return a completed document. Done cancels the preview; Save PDF dismisses it before opening the picker.
+- P5.1: chapter filters are scoped to book/source, book-title matches use the same case/accent-insensitive predicates as quote/note matches, active filters have an explicit reset, and no-results offers Show All. Kept versions stay accessible independently of search results. Rows are semantic buttons. Search and filtering were moved into the browser after the first iPad pass showed their dependence on the surrounding library toolbar; export menu text no longer inherits uppercase header styling. Bugfix rationale: BF-030.
+- Automated: `scripts/test --filter InkStrokeTransform` passed **10 tests**; export/library focused checks passed **9 tests**. Full `scripts/test` passed **369 tests in 35 suites**. After the preview/highlighter additions, one full run during a Mac build reproduced OD-012 (**12 issues** in ink-lock deadline waits; PDF tests passed); a subsequent standalone `scripts/test` passed **369 tests in 35 suites**. `npm test` in WebHarness passed **145 tests**. Final `scripts/test` after cancellation and filter polish passed **370 tests in 35 suites**; scoped `swift format lint --strict` for six changed/new Swift files, `git diff --check` and local Markdown link-target validation across eight documents passed.
+- Builds: `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=394B000D-8F9F-4726-AF3A-DC7E6754FF0E' scripts/iosbuild` and `SILVERAN_DISABLE_CODE_SIGNING=1 scripts/macbuild` passed, including the preview adapters. The destination identifies the available iPad runtime; the existing simulator's app was not installed or modified.
+- Visual PDF inspection: rendered mixed annotation and long-note first-page fixtures with `pdftoppm`; text, Japanese/Latin glyphs, chapter grouping, ink colors, a single-point pen mark and translucent highlighter were readable without clipping. PDFKit tests retain every one of 45 annotation markers and the end of a 180-paragraph note, check text bounds above footers, rasterized ink colors and absence of image XObjects. Dense fixture visual acceptance across every page remains open.
+- Simulator pre-check: separate **Silveran Phase 5 QA iPad** (A16, iOS 18.6, unsigned Debug) with source `phase5-usability`/book `export-fixture`: More > Annotations showed four synthetic entries, chapter captions, typed-note line breaks, thumbnail and missing-book retention. Row accessibility exposed actual buttons and hints. Export > PDF reached the native local Files picker with a PDF thumbnail and filename. These checks preceded the final preview and inline search/filter polish; they are not final acceptance of those changes. Native picker coordinate actions failed with the automation tool's `noWindowsAvailable` error; then the Mac locked, blocking further iPad/iPhone interaction. Unlock was requested. Final save/cancel/reopen, preview, combined filters and narrow-screen interaction remain **unverified**, not passed.
+- QA simulators: iPad `3D9C7B9A-8040-4763-9CE1-2E7286FAC227`, iPhone `E7C46202-E207-4781-A0E6-3D067EBFA0C4`. Synthetic owner files were generated by `SILVERAN_PDF_FIXTURE_DIR=/tmp/silveran-phase5-fixtures-final scripts/test`. Both QA devices were shut down while interaction was blocked; fixtures are retained for the next pass. The person's existing simulator data and reading position were not changed. Mac runtime, actual VoiceOver/Pencil and signed cloud acceptance remain open.
+- New observation OD-014: exports currently inherit the existing href-string chapter ordering; true EPUB spine order needs book inspection metadata. This is recorded explicitly rather than claiming spine order was verified.
+
+Final increment verification: the cancellation-aware build passed `scripts/test` (**370 tests in 35 suites**), the exact unsigned iOS/Mac build commands above, scoped formatting lint, whitespace checks and local document-link checks. No simulator acceptance gate was promoted: the final UI attempt again reported the Mac locked. The next action is to unlock the Mac and run checks 48–55 in the isolated QA simulators before proceeding to the lasso UI increment.
+
+### 2026-09-30 — Claude handoff evidence reconciliation
+
+- Reviewed repository-scoped historical Claude sessions and cross-checked reported work against current code. Updated BF-013 to describe the already-present ordering, click suppression, palm interruption, heartbeat, read-aloud catch-up and open-book session ownership changes. `scripts/test --filter InkSessionTests`: **12 tests passed**; `node --test SilveranKit/Tests/WebHarness/inkTouchGuard.test.mjs`: **15 tests passed**.
+- Recovered an unresolved saved-ink edge-tap simulator observation from the 11:00 UTC handoff; recorded OD-015, checklist 56 and an explicit pre-lasso acceptance task. The cause remains unknown; unit tests and the Pencil-mode guard do not establish a fix. Current simulator interaction remains blocked by Mac lock.
+- Corrected the historical ink plan's stale uncommitted statement using commit `fc4bb9d`; linked its status to the canonical backlog. Multi-backend direction is already captured; no historical instruction or estimate silently changes current scope or release gates.
