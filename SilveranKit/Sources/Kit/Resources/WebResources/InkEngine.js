@@ -257,13 +257,22 @@ export default class InkEngine {
 
   /**
    * What strokes written without pausing mean, together (see InkGeometry.proposeGroup). Null when
-   * they must be proposed one at a time instead: the wide margin is open (margin notes don't move
-   * the text, and each stroke there is placed beside its line).
+   * they must be proposed one at a time instead: some are written in the open wide margin, where
+   * each stroke is placed beside its line (margin notes don't move the text).
    */
   proposeGroup(strokes) {
-    if (this.#marginExpanded) return null;
+    if (strokes.length === 1) return [this.propose(strokes[0])];
     const contents = this.#currentContents();
     if (!contents) return [{ op: "none", reason: "no-section" }];
+    if (this.#marginExpanded) {
+      const href = this.#href(contents.index);
+      const layer = this.#marginLayers.get(contents.doc) ?? null;
+      const notes = this.#sections.get(href)?.notes ?? [];
+      const inMargin = strokes.some(stroke => stroke.points?.length && proposeMarginStroke({
+        doc: contents.doc, href, stroke, viewportWidth: window.innerWidth, layer, notes,
+      }));
+      if (inMargin) return null;
+    }
     return proposeGroup({ doc: contents.doc, href: this.#href(contents.index), strokes, viewportWidth: window.innerWidth });
   }
 

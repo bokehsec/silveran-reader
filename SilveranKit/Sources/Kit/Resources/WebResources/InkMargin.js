@@ -309,7 +309,8 @@ export class MarginLayer {
  */
 export const proposeMarginStroke = ({ doc, href, stroke, viewportWidth, layer, notes }) => {
   const frame = columnFrame(doc);
-  if (!frame || !layer) return null;
+  // No layer yet just means no margin notes to continue: the first one is written here (BF-052).
+  if (!frame) return null;
   const pts = stroke.points.map(p => toDoc(doc, p));
   const bb = bbox(pts);
   const cx = (bb.left + bb.right) / 2;
@@ -324,7 +325,7 @@ export const proposeMarginStroke = ({ doc, href, stroke, viewportWidth, layer, n
 
   // Next to (or just under) a margin note already here: continue it.
   for (const note of notes.filter(n => n.placement === "margin")) {
-    const p = layer.placement(note.id);
+    const p = layer?.placement(note.id);
     if (!p || Math.abs(p.left - (gutter.left + MARGIN_INSET)) > 1) continue;
     const bottom = p.top + Math.max(p.height, 24);
     if (bb.top >= p.top - 12 && bb.top <= bottom + 24) {

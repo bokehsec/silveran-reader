@@ -42,6 +42,41 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-052 — The first margin note of a chapter was written into the text instead of the margin
+
+- Date: 2026-10-01
+- Status: Fixed; real-WebKit regression and QA-simulator verified; real Pencil acceptance pending
+- Platforms: iPad/Mac wide margin (shared web ink engine)
+- Components: `InkMargin.proposeMarginStroke`, `InkEngine.proposeGroup`; DEBUG `InkDebug.js` (`open-margin`/`close-margin`, word size), `ReaderMessageRouter` `InkDebugMargin`
+- Related links: BF-051, P5.2, commit 5001d7e (margin notes)
+
+#### Symptom
+
+With the wide margin open in a chapter that had no margin notes yet, handwriting in the margin became an ordinary inline note in the text column, its ink hanging off the column's right edge. Margin notes worked only in chapters that already had one. Seen on the QA iPad simulator (iOS 18.6) with the synthetic 113-page chapter while testing BF-051 in margin mode.
+
+#### Root cause
+
+The margin drawing layer is created only when a chapter has margin notes to draw, and `proposeMarginStroke` returned null without a layer. The layer is needed only to find an existing margin note to continue, so its absence should have meant "start a new margin note".
+
+Found in the same check: after BF-051, `InkEngine.proposeGroup` placed every group one stroke at a time whenever the margin was open, so inline writing with the margin open kept the old slow, one-at-a-time behavior; and a single-stroke group skipped the margin check.
+
+#### Change
+
+- `proposeMarginStroke` works without a layer (no notes to continue), so the first margin stroke starts a margin note.
+- `proposeGroup` falls back to one stroke at a time only when a stroke is actually in the margin; inline writing with the margin open is grouped as in BF-051. A single stroke uses the full `propose` path (margin first, then text).
+- DEBUG: `open-margin` / `close-margin` demo kinds and `word@<y>@<ms>@<x>@<size>`.
+
+#### Validation
+
+- New `InkMarginWebKitTests.firstMarginNote` (real WebKit, reader-like column/gap): returned `null` before the fix, `note:margin` after.
+- `scripts/test` 438 tests / 50 suites; WebHarness 170; unsigned iOS validation build.
+- QA iPad simulator, synthetic chapter: margin open + small word at 81% across → one margin note (1 note + 9 additions, placed one at a time after the pause) shown in the margin; closing the margin → full-width text and a pencil icon beside the line. Margin open + word in the text → "Group of 10 as note", one inline note.
+- Not done: real Pencil, iPhone (no writable margin there by design), reopening the margin by tapping the icon.
+
+#### Compatibility and follow-up
+
+No data change. Only half of the white space right of the column (the gutter, half the 20% gap) is treated as writable margin; writing further right is placed in the text. Worth a product look if people write near the screen edge.
+
 ### BF-051 — Quickly written words split into several note boxes, lost letters and opened slowly
 
 - Date: 2026-10-01

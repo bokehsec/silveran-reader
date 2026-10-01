@@ -8,7 +8,8 @@
  *    on the first page shown, one per comma-separated kind (the simulator has no Pencil): note
  *    (or YES), underline, strike, circle, bracket, highlight, erase, erase-highlight, and word
  *    (the word "testing" as ten strokes, one finishing every 350 ms, as a person writes;
- *    `word@0.8` writes it 80% of the way down the page).
+ *    `word@0.8` writes it 80% of the way down the page; `word@0.8@200@0.7` every 200 ms,
+ *    starting 70% across), and open-margin / close-margin.
  */
 
 /** The word "testing" as ten pen strokes over the middle of the page, in web view coordinates. */
@@ -96,14 +97,24 @@ export function maybeRunInkDebug(foliateManager, detail, view) {
     window.__silveranInkDemoStroke = false;
     const kinds = String(requested).split(",").map(k => (k === "true" || k === "YES" ? "note" : k));
     kinds.forEach((kind, i) => setTimeout(() => {
+      if (kind === "open-margin" || kind === "close-margin") {
+        window.webkit?.messageHandlers?.InkDebugMargin?.postMessage({ open: kind === "open-margin" });
+        return;
+      }
       if (kind.startsWith("word")) {
         // "word@0.8" writes it 80% of the way down the page; "word@0.8@200" finishes a stroke
         // every 200 ms instead of 350.
-        const [, place, pace] = kind.split("@");
+        const [, place, pace, across, size] = kind.split("@");
+        const k = Number.isFinite(parseFloat(size)) ? parseFloat(size) : 1;
         const at = parseFloat(place);
+        const x = Number.isFinite(parseFloat(across)) ? window.innerWidth * parseFloat(across) : undefined;
         const gap = Number.isFinite(parseFloat(pace)) ? parseFloat(pace) : 350;
         const y = Number.isFinite(at) ? window.innerHeight * at : undefined;
-        wordStrokes(undefined, y).forEach((stroke, j) => setTimeout(() => {
+        const strokes = wordStrokes(x, y);
+        const [ox, oy] = strokes[0].points[0];
+        // `@0.4` at the end writes it at 40% size, around where it starts.
+        for (const stroke of strokes) stroke.points = stroke.points.map(([px, py, p]) => [ox + (px - ox) * k, oy + (py - oy) * k, p]);
+        strokes.forEach((stroke, j) => setTimeout(() => {
           window.webkit?.messageHandlers?.InkDebugStroke?.postMessage(stroke);
         }, j * gap));
         console.log("[InkSelfTest] demo word sent");

@@ -484,6 +484,7 @@ private func makeWebViewConfiguration2(
     // highlight, erase, erase-highlight, word (see InkDebug.js).
     contentController.add(coordinator, name: "InkDebugStroke")
     contentController.add(coordinator, name: "InkDebugErase")
+    contentController.add(coordinator, name: "InkDebugMargin")
     var debugGlobals: [String] = []
     if UserDefaults.standard.bool(forKey: "SilveranInkSelfTest") {
         debugGlobals.append("window.__silveranInkSelfTest = true;")

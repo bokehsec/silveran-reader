@@ -10,6 +10,53 @@ import AppKit
 @Suite("Native margin projection", .serialized)
 @MainActor
 struct InkMarginWebKitTests {
+    @Test("The first margin note of a chapter is written in the margin (BF-052)")
+    func firstMarginNote() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "FirstMarginNote-\(UUID().uuidString)"
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.copyItem(at: KitResources.webResourcesDirectory(), to: root)
+        let words = (1...160).map { "word\($0)" }.joined(separator: " ")
+        let html = """
+            <!doctype html><html><head><meta charset="utf-8">
+            <style>html{margin:0;padding:0 82px;box-sizing:border-box;width:656px;height:1100px;column-width:492px;column-gap:164px;
+            column-fill:auto;}body{margin:0;font:22px Georgia,serif;line-height:1.45;}</style>
+            </head><body><p>\(words)</p><script type="module">
+            import { proposeMarginStroke } from './InkMargin.js';
+            window.propose = proposeMarginStroke; window.ready = true;
+            </script></body></html>
+            """
+        let file = root.appendingPathComponent("first-margin.html")
+        try Data(html.utf8).write(to: file)
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 820, height: 1180), configuration: config)
+        defer { view.stopLoading() }
+        view.loadFileURL(file, allowingReadAccessTo: root)
+        var ready = false
+        for _ in 0..<200 {
+            if (try? await view.evaluateJavaScript("window.ready === true")) as? Bool == true {
+                ready = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        try #require(ready)
+        let answer = try await view.callAsyncJavaScript(
+            """
+            const stroke = { tool: 'pen', color: '#111111', width: 2, points: [[590, 200], [620, 230], [640, 210]] };
+            const p = window.propose({ doc: document, href: 'ch', stroke, viewportWidth: innerWidth, layer: null, notes: [] });
+            return p ? `${p.op}:${p.placement ?? p.reason}` : 'null';
+            """,
+            arguments: [:],
+            in: nil,
+            contentWorld: .page
+        )
+        #expect(answer as? String == "note:margin")
+    }
+
     @Test("WebKit lays out a reachable counted margin icon in a scrolling phone width")
     func actualScrollingMargin() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(

@@ -153,6 +153,10 @@ public final class ReaderMessageRouter {
                             await bridge.inkSession.finishStroke(msg)
                         }
 
+                    case "InkDebugMargin":
+                        let open = (body as? [String: Any])?["open"] as? Bool ?? true
+                        Task { @SilveranUIActor in await bridge.inkSession.setMarginOpen(open) }
+
                     case "InkDebugErase":
                         let data = try JSONSerialization.data(withJSONObject: body)
                         let msg = try decoder.decode(InkStrokeInput.self, from: data)
