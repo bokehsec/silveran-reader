@@ -1,6 +1,6 @@
 # Phase 5 execution backlog
 
-Updated: 2026-10-01. Owner: current implementation work in this repository. Status: Phase 5 in progress; implementation paused at the owner's request after typed chapter/passage repair; no Phase 5 exit gate passed. This expands the [canonical plan](ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md), not its scope. An item is complete only with code and recorded acceptance evidence.
+Updated: 2026-10-01. Owner: current implementation work in this repository. Status: Phase 5 in progress; checklist 72 partly accepted on the QA iPad (2026-10-01); no Phase 5 exit gate passed. This expands the [canonical plan](ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md), not its scope. An item is complete only with code and recorded acceptance evidence.
 
 ## Implementation order and remaining work
 
@@ -30,6 +30,7 @@ The implementation order is incremental; no requirement above is implicitly defe
 
 | Increment | Automated checks | Simulator usability | Hardware/cloud | Status |
 | --- | --- | --- | --- | --- |
+| Checklist 72 QA iPad pass; BF-048–BF-050 | Full Mac suite 430/48; new stored-CFI (4) and repeated-confirmation (1) regressions; unsigned iOS/Mac builds | QA iPad: chooser titles/order, auto-search, no-result, cancel, attach with retained history; fixes re-checked. Text editing, iPhone/Mac, VoiceOver/keyboard and reader exit (OD-001) pending | Pending | Partial acceptance; three repair defects fixed |
 | Typed anchors and explicit chapter/passage repair | Full Mac suite 425/47 twice after BF-047; web 170; clean UIKit-hosted iPad/iPhone component suites 101 tests each (114 parameterized executions), zero failures; actual new chosenChapter case verified; unsigned Mac/iOS app builds pass | Checklist 68–72 pending; final UI session exposed the user reader window rather than isolated QA, so no repair mutation was attempted | Pending | Typed code implemented; legacy ink evidence/cross-chapter mapping and native acceptance pending |
 | Margin grouping and native component harness | Full Mac suite 394/41, web suite 158; eight focused margin tests pass. Dedicated UIKit-hosted components pass on iPad/iPhone, including actual WebKit inspection and scrolling tile geometry; exact expanded counts/commands in the canonical plan. | Locked Mac still prevents gesture/zoom/VoiceOver acceptance | Pending | Code implemented; native acceptance pending |
 | Lasso and library repair | Full suite: 379 Swift tests/37 suites, 153 web tests. Actual Mac WebKit detached-chapter integration passes, including unopened/missing chapters. Save failure and stale-edit/deletion tests pass. Final builds recorded in canonical plan. | Native controls and repair flow implemented; hands-on verification blocked by locked Mac | Pending | Code implemented; usability acceptance pending |

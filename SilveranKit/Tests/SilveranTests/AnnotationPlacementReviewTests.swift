@@ -246,6 +246,45 @@ struct AnnotationPlacementReviewTests {
         }
         #expect(try await fs.loadHighlights(bookID: book)?.isEmpty != false)
     }
+    @Test("Confirming the same checked review twice refuses instead of repeating the repair")
+    func repeatedConfirmationRefuses() async throws {
+        // BF-049: the second confirmation compared against the already repaired copy, appended
+        // the current place to history as if it were an old one and reported success.
+        let root = directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fs = FilesystemActor(applicationSupportDirectory: root)
+        let original = typed()
+        try await fs.saveHighlights(bookID: book, highlights: [original])
+        var issue = typedIssue(original)
+        var suggestion = try #require(issue.highlight?.suggestion)
+        suggestion.placement = try HighlightPlacement.capture(
+            scope: AnnotationScope(bookID: book, accountID: "fixture"),
+            asset: AnnotationContentFingerprint(data: Data("current EPUB".utf8)),
+            locator: suggestion.replacementLocator(for: original),
+            selection: AnnotationSelectionEvidence(
+                anchor: TextAnchor(offset: 0, exact: "new words"),
+                normalizedText: "new words"
+            )
+        )
+        issue.highlight?.suggestion = suggestion
+        let review = AnnotationPlacementReview(
+            bookID: book,
+            session: InkSession(store: InkActor(directory: root.appendingPathComponent("ink"))),
+            filesystem: fs,
+            verifyPlacement: { _, _, _ in }
+        )
+        try await review.prepare()
+        try await review.accept(issue)
+        let repaired = try #require(try await fs.loadHighlights(bookID: book)?.first)
+        #expect(repaired.placement?.previous.count == 1)
+        await #expect(throws: AnnotationPersistenceFailure.self) { try await review.accept(issue) }
+        #expect(try await fs.loadHighlights(bookID: book) == [repaired])
+        // A fresh check is the way to review it again.
+        try await review.prepare()
+        try await review.accept(typedIssue(repaired).withPlacement(suggestion.placement))
+        #expect(try await fs.loadHighlights(bookID: book)?.first?.placement?.previous.count == 2)
+    }
+
     @Test(
         "Verified typed repairs recheck the edition, preserve originals and retry without stale queued replacement"
     )
@@ -313,5 +352,12 @@ struct AnnotationPlacementReviewTests {
         }
         #expect(try await fs.loadHighlights(bookID: book) == [saved])
     }
+}
 
+extension AnnotationPlacementIssue {
+    fileprivate func withPlacement(_ placement: HighlightPlacement?) -> Self {
+        var copy = self
+        copy.highlight?.suggestion?.placement = placement
+        return copy
+    }
 }

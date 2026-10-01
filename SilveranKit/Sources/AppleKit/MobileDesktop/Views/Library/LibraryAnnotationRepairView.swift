@@ -18,6 +18,8 @@ struct LibraryAnnotationRepairView: View {
     @State private var saving: String?
     @State private var generation = 0
     @State private var manualHighlight: Highlight?
+    /// Chapter names by href from the edition's spine/TOC, for section headers.
+    @State private var chapterNames: [String: String] = [:]
 
     var body: some View {
         NavigationStack {
@@ -123,7 +125,7 @@ struct LibraryAnnotationRepairView: View {
                                     if saving == issue.id { ProgressView("Saving repair…") }
                                 }.padding(.vertical, 4)
                             } header: {
-                                Text(issue.href.removingPercentEncoding ?? issue.href)
+                                Text(chapterHeader(issue.href))
                             }
                         }
                     }
@@ -181,6 +183,7 @@ struct LibraryAnnotationRepairView: View {
             try await owner.prepare()
             let chapters = try await inspector.open(bookID: book.bookID, category: category)
             let order = Dictionary(uniqueKeysWithValues: chapters.map { ($0.href, $0.index) })
+            chapterNames = Dictionary(chapters.map { ($0.href, $0.displayName) }) { first, _ in first }
             let hrefs = owner.hrefs.sorted {
                 (order[$0] ?? Int.max, $0) < (order[$1] ?? Int.max, $1)
             }
@@ -206,6 +209,16 @@ struct LibraryAnnotationRepairView: View {
         }
         inspector.close()
         checking = false
+    }
+
+    /// The chapter's name in this edition; otherwise the name saved with the annotation, marked
+    /// as missing, and only then the file name.
+    private func chapterHeader(_ href: String) -> String {
+        if let name = chapterNames[href] { return name }
+        let file = href.removingPercentEncoding ?? href
+        let saved = review?.highlights.first { $0.locator.href == href }?.locator.title
+        if let saved, !saved.isEmpty { return "\(saved) (not in this edition)" }
+        return chapterNames.isEmpty ? file : "\(file) (not in this edition)"
     }
 
     private func accept(_ issue: AnnotationPlacementIssue) async {

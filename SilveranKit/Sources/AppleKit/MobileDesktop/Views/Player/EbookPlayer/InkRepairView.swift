@@ -45,6 +45,8 @@ struct InkRepairSheet: View {
     @State private var isLoading = true
     @State private var pendingDelete: Item?
     @State private var notice: String?
+    /// The last load found nothing to list, as opposed to the person having resolved every row.
+    @State private var loadFoundNothing = false
 
     /// One annotation to place, in the chapter with section href `href`.
     struct Item: Identifiable, Hashable {
@@ -77,6 +79,21 @@ struct InkRepairSheet: View {
                 if isLoading {
                     ProgressView("Looking for where your annotations belong…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if loadFoundNothing, viewModel.annotationRepairCount > 0 {
+                    // The banner still counts annotations the page couldn't list just now. Never
+                    // claim they are in place (BF-048).
+                    ContentUnavailableView {
+                        Label("Couldn’t list these annotations", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(
+                            "\(viewModel.annotationRepairCount) annotation(s) in the open chapters still need a place. They are kept; try again, or use Check & Repair in Annotations."
+                        )
+                    } actions: {
+                        Button("Try Again") {
+                            isLoading = true
+                            Task { await load() }
+                        }
+                    }
                 } else if items.values.allSatisfy(\.isEmpty) {
                     ContentUnavailableView(
                         "Everything is in place",
@@ -373,6 +390,7 @@ struct InkRepairSheet: View {
             }
         }
         items = loaded
+        loadFoundNothing = loaded.values.allSatisfy(\.isEmpty)
         isLoading = false
     }
 }

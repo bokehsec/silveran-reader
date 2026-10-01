@@ -331,11 +331,11 @@ class EbookPlayerViewModel {
         guard let bridge = commsBridge else { return [:] }
         var answers: [Int: [HighlightRepairAnswer]] = [:]
         for (sectionIndex, ids) in highlightOrphans {
+            // Every counted orphan is offered. Without a saved CFI the page searches the whole
+            // chapter for the quotation instead of near the old place (BF-048).
             let items = ids.compactMap { id -> (id: String, text: String, cfi: String)? in
-                guard let highlight = highlights.first(where: { $0.id == id }),
-                    let cfi = highlight.locator.locations?.partialCfi
-                else { return nil }
-                return (id.uuidString, highlight.text, cfi)
+                guard let highlight = highlights.first(where: { $0.id == id }) else { return nil }
+                return (id.uuidString, highlight.text, highlight.storedCFI ?? "")
             }
             guard !items.isEmpty else { continue }
             do {
@@ -1252,10 +1252,7 @@ class EbookPlayerViewModel {
         let coloredOnly = highlights.filter { !$0.isBookmark }
         let renderData = coloredOnly.compactMap { highlight -> HighlightRenderData? in
             guard let color = highlight.color else { return nil }
-            let cfi =
-                highlight.locator.locations?.partialCfi
-                ?? highlight.locator.locations?.fragments?.first(where: { $0.hasPrefix("epubcfi(") }
-                ) ?? ""
+            let cfi = highlight.storedCFI ?? ""
             guard !cfi.isEmpty || highlight.placement != nil else { return nil }
 
             guard

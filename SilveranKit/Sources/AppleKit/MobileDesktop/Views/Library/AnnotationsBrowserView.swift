@@ -311,6 +311,8 @@ struct AnnotationsBrowserView: View {
                 }
             }
             Spacer()
+            // Repair is not an export; it gets its own control so it can be found (and named
+            // correctly by VoiceOver) instead of hiding in the share menu.
             Menu {
                 Button("Check & Repair Placement", systemImage: "wrench.and.screwdriver") {
                     repairBook = book
@@ -319,7 +321,14 @@ struct AnnotationsBrowserView: View {
                 if readableCategory(for: book.bookID) == nil {
                     Text("Download the ebook or read-along edition to check placement.")
                 }
-                Divider()
+            } label: {
+                Label("Check & Repair", systemImage: "wrench.and.screwdriver")
+            }
+            .labelStyle(.iconOnly)
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityLabel("Check and repair placement for \(title(for: book.bookID))")
+            Menu {
                 Button("PDF (with handwriting)") { exportPDF(book) }
                     .disabled(preparingPDF)
                 Button("Web Page (with handwriting)") { exportNotes(book, asHTML: true) }

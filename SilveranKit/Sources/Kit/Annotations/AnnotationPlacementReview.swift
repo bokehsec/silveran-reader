@@ -26,6 +26,10 @@ public final class AnnotationPlacementReview {
     public private(set) var ink = BookInk()
     public private(set) var highlights: [Highlight] = []
     public private(set) var pendingRepairID: String?
+    /// Highlights as they were when placement was checked. A confirmation must still match its
+    /// checked copy; `highlights` is reloaded after each repair and cannot serve as that baseline
+    /// (BF-049).
+    private var checkedHighlights: [UUID: Highlight] = [:]
     private let session: InkSession
     private let filesystem: FilesystemActor
     private let bookmarks: BookmarkActor
@@ -75,6 +79,7 @@ public final class AnnotationPlacementReview {
         }
         ink = session.ink
         highlights = try await filesystem.loadHighlights(bookID: bookID) ?? []
+        checkedHighlights = Dictionary(highlights.map { ($0.id, $0) }) { first, _ in first }
     }
 
     public var hrefs: [String] {
@@ -107,6 +112,7 @@ public final class AnnotationPlacementReview {
         if issue.kind == "highlight" {
             guard let id = UUID(uuidString: issue.id), let suggestion = issue.highlight?.suggestion,
                 let original = highlights.first(where: { $0.id == id }),
+                checkedHighlights[id] == original,
                 original.locator.href == issue.href
             else { throw changed() }
             let destination = suggestion.href ?? issue.href

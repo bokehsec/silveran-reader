@@ -39,6 +39,15 @@ public struct Highlight: Codable, Sendable, Hashable, Identifiable {
         locator.title
     }
 
+    /// The saved CFI, wherever the locator keeps it: `partialCfi`, or an `epubcfi(` fragment as
+    /// written by Readium-style locators. Nil when neither exists (for example, a placement-only
+    /// highlight). Rendering and repair must agree on this, or a highlight can be counted as
+    /// needing repair but never offered for it (BF-048).
+    public var storedCFI: String? {
+        if let cfi = locator.locations?.partialCfi, !cfi.isEmpty { return cfi }
+        return locator.locations?.fragments?.first { $0.hasPrefix("epubcfi(") }
+    }
+
     public init(
         id: UUID = UUID(),
         bookID: BookID,

@@ -42,6 +42,105 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-050 — Library Check & Repair was hidden in the Export menu and listed chapters by file path
+
+- Date: 2026-10-01
+- Status: Fixed; verified on the QA iPad simulator, VoiceOver/iPhone/Mac pending
+- Platforms: Apple (iOS/iPadOS/macOS library)
+- Components: `AnnotationsBrowserView.header`, `LibraryAnnotationRepairView`
+- Related links: checklist 72; BF-048/BF-049 found in the same session
+
+#### Symptom
+
+In More > Annotations, the only way to reach Check & Repair Placement was the book's share icon, which VoiceOver announced as "Export notes for <book>". Inside Check & Repair, each section was headed by a raw file path such as "OEBPS/CH10.XHTML" rather than the chapter name the person knows.
+
+#### Root cause
+
+The repair action was added to the existing export menu instead of getting its own control, and the review list used `issue.href` for headers although the inspector had already loaded spine/TOC chapter names.
+
+#### Change
+
+- Each book header has a separate wrench control labelled "Check and repair placement for <book>", holding Check & Repair Placement and the existing "download first" explanation. The share control now contains exports only.
+- Section headers use the inspector's chapter display name (ordinal + TOC title, or "Chapter N · file" fallback). A chapter missing from the edition shows its saved title with "(not in this edition)", or the file name if there is no saved title.
+
+Unchanged: what is checked, the repair actions and the export formats.
+
+#### Validation
+
+- `SILVERAN_XCODE_PROJECT=SilveranValidation.xcodeproj SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=3D9C7B9A-8040-4763-9CE1-2E7286FAC227' scripts/iosbuild` and the corresponding `scripts/macbuild` succeed; `scripts/test` 430/48 passes.
+- QA iPad A16 (iOS 18.6), synthetic Phase 5 Field Notes: wrench and share controls both visible per book; wrench opens Check & Repair; headers read "1. First: The Ledger", "2. Second: The Café" and "Removed Chapter (not in this edition)".
+- Not exercised: VoiceOver announcement, iPhone width, Mac, large text.
+
+#### Compatibility and follow-up
+
+UI only. None known.
+
+### BF-049 — Confirming an already-applied typed repair again rewrote it and duplicated its history
+
+- Date: 2026-10-01
+- Status: Fixed; regression test fails before and passes after; device re-check of the refusal message pending
+- Platforms: Shared (Kit review coordinator); seen in the Apple library repair UI
+- Components: `AnnotationPlacementReview.prepare`/`accept` (Kit/Annotations/AnnotationPlacementReview.swift)
+- Related links: ADR 011; checklist 70/72; BF-044 (stale-review refusal)
+
+#### Symptom
+
+On the QA iPad, the "Mara opens the café" highlight was attached from Check & Repair, then the same review was confirmed again from the chapter/passage chooser. The second confirmation reported success and rewrote the highlight: its current, already-confirmed place was appended to `placement.previous` as if it were an older target (two history entries for one real repair). A stale review must refuse instead (plan, Phase 5 checklist 70).
+
+#### Root cause
+
+`accept` compared the issue with `highlights`, which `accept` itself reloads after every successful repair. The second confirmation therefore found the repaired copy as its "original"; the href matched, the verified proposal was accepted, and the owner's compare-and-swap passed because the expected value was the current value. Nothing remembered the state the review was computed from.
+
+#### Change
+
+`prepare()` records each highlight as it was when placement was checked. `accept` requires the current copy to equal that checked copy before repairing; otherwise it throws the existing "changed since it was checked" error. A new `prepare()` (Check again) starts a fresh baseline. Ink repairs already compared the session against the checked section and are unchanged, as are the owner's compare-and-swap, verification and history recording.
+
+#### Validation
+
+- New `AnnotationPlacementReviewTests.repeatedConfirmationRefuses`: before the fix it recorded 3 issues (no error thrown, file rewritten, history count wrong); after, it passes. It also checks that a fresh check can repair again with history count 2.
+- `scripts/test --filter AnnotationPlacementReviewTests` 6/6; `scripts/test` 430 tests in 48 suites pass. Unsigned iOS and Mac validation builds pass (commands in BF-050).
+- The on-device duplicate entry created before the fix remains in the synthetic QA fixture (`35E4BC97…`, two `previous` entries); it is harmless test data and was not edited.
+
+#### Compatibility and follow-up
+
+No format change. Highlights already given a duplicate history entry by this bug keep it; the entry is a true earlier locator, not a lost one. None known otherwise.
+
+### BF-048 — Reader repair sheet said "Everything is in place" while the banner counted orphaned highlights
+
+- Date: 2026-10-01
+- Status: Fixed; automated and simulator-verified on the QA iPad, iPhone/Mac and hands-on acceptance pending
+- Platforms: Apple (iOS/iPadOS reader; Mac shares the view model); portable helper in Kit
+- Components: `Highlight.storedCFI` (Kit/Models/HighlightModels.swift), `EbookPlayerViewModel.highlightRepairSuggestions`/`sendHighlightsToJS`, `InkRepairSheet`
+- Related links: checklist 72 session in the canonical plan (2026-10-01); BF-044 (relocation clears stale positions)
+
+#### Symptom
+
+Opening the synthetic "Phase 5 Field Notes" fixture on the isolated QA iPad (iOS 18.6) showed "1 annotation couldn't find its place in this edition" in The Ledger chapter. Tapping Review opened "Annotations to place" with "Everything is in place — All annotations in the open chapters have found their words." The orphaned yellow highlight with a typed note could not be reviewed, attached or deleted from the reader, and the sheet contradicted the banner.
+
+#### Root cause
+
+The banner counts every highlight id that the page reports as orphaned. The renderer finds a highlight's saved CFI in `partialCfi` or, failing that, in an `epubcfi(` entry of `locations.fragments` (Readium-style locators, and the fixture, store it only there). `highlightRepairSuggestions` required `partialCfi` and silently dropped every other orphan, so the sheet received no rows and showed its success state. A highlight with no saved CFI at all (a placement-only highlight) was likewise dropped, although the page's suggestion search already tolerates a missing CFI by searching the whole chapter. The success state was chosen whenever the list was empty, without checking the count the banner was showing.
+
+#### Change
+
+- Added `Highlight.storedCFI` in Kit: `partialCfi`, else the first `epubcfi(` fragment, else nil. Rendering and repair now use this one lookup.
+- `highlightRepairSuggestions` offers every counted orphan that still exists, passing an empty CFI when none is saved so the page searches the whole chapter.
+- `InkRepairSheet` shows "Couldn't list these annotations" with Try Again when a load finds nothing while annotations are still counted, so it never claims they are in place. Rows the person resolves still leave the normal success state.
+
+Unchanged: suggestion matching, confirmation, relocation, ink repair and what counts as orphaned.
+
+#### Validation
+
+- Regression: new `HighlightStoredCFITests` (4 tests) covers `partialCfi` precedence, the fragment fallback, an empty `partialCfi` and no CFI. Before the fix the suite does not compile (no shared lookup); `scripts/test --filter HighlightStoredCFITests` passes 4/4 after.
+- `scripts/test`: 429 tests in 48 suites pass.
+- `SILVERAN_XCODE_PROJECT=SilveranValidation.xcodeproj SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=3D9C7B9A-8040-4763-9CE1-2E7286FAC227' scripts/iosbuild` succeeds.
+- QA iPad A16, iOS 18.6, same fixture and chapter: Review now lists the highlight under "FIRST: THE LEDGER" with its old quotation, the suggested passage, "Same words as before." and Attach here / Show in book / Delete. No attach/delete mutation was performed.
+- Not exercised: the new "Couldn't list" state (needs an injected JS failure), iPhone, Mac, VoiceOver.
+
+#### Compatibility and follow-up
+
+No data format or migration change; read-only use of existing locator fields. None known.
+
 ### BF-047 — Writing-lock tests expired while parallel fixtures occupied the UI actor
 
 - Date: 2026-10-01
