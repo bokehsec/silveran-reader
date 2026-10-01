@@ -18,6 +18,13 @@ test("the gutter is to the right of the column holding x, half the gap wide", ()
   assert.equal(drawingWidth(4), 0);
 });
 
+test("with the margin open the text gives up room on its right, which joins the gutter", () => {
+  // Column 100..600 with 140 points of text room kept free: text ends at 460, margin 460..700.
+  const frame = { columnWidth: 500, gap: 200, padLeft: 100, room: 140 };
+  assert.deepEqual(gutterAt(frame, 150), { left: 460, width: 240 });
+  assert.deepEqual(gutterAt(frame, 900), { left: 1160, width: 240 });
+});
+
 test("only notes marked as margin notes are margin notes", () => {
   assert.equal(isMarginNote({ placement: "margin" }), true);
   assert.equal(isMarginNote({}), false);
@@ -140,7 +147,7 @@ test("phone and scrolling gutters leave room for readable margin icons", () => {
     assert.ok(gap / 2 >= 16, `icon fits the ${width}-point phone gutter`);
   }
   assert.equal(marginGap({ hasNotes: false }), "0%");
-  assert.equal(marginGap({ hasNotes: true, expanded: true }), "20%");
+  assert.equal(marginGap({ hasNotes: true, expanded: true }), "8%");
   assert.equal(marginGap({ hasNotes: true, scrolling: true }), "6%");
 
 });

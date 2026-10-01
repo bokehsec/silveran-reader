@@ -11,12 +11,15 @@ const XHTML_NS = "http://www.w3.org/1999/xhtml";
 const SVG_NS = "http://www.w3.org/2000/svg";
 const STYLE_ID = "silveran-ink-style";
 
+// The open wide margin keeps text off the right of each column (InkMargin.MARGIN_ROOM). Padding,
+// because the paginator pins the body's margin; this replaces the reader's right text margin.
 const INK_CSS = `
 ${INK_TAG} { display:block !important; position:relative !important; margin:0 !important;
   padding:0 !important; border:0 !important; text-indent:0 !important; float:none !important;
   break-inside:avoid !important; -webkit-column-break-inside:avoid !important;
   background:var(--silveran-ink-note-tint, rgba(255, 196, 0, 0.08)) !important;
   border-radius:6px; pointer-events:none !important; }
+html[data-silveran-margin="open"] body { padding-right:28% !important; }
 ${INK_TAG} > svg { position:absolute; left:0; top:0; overflow:visible; pointer-events:none; }
 ${INK_TAG} .silveran-ink-highlighter { mix-blend-mode:var(--silveran-ink-highlighter-blend, multiply); }
 `;

@@ -10,7 +10,7 @@ import { ensureInkStyle, placeNotes, clearNotes } from "./InkLayout.js";
 import { proposeStroke, proposeGroup, hitTestNotes, visibleWidth, pageStartOffset, toDoc } from "./InkGeometry.js";
 import { selectInLasso, transformPoints } from "./InkSelection.js";
 import { strokeAttributes } from "./InkStrokeShape.js";
-import { MarginLayer, proposeMarginStroke, proposeMarginGroup, isMarginNote } from "./InkMargin.js";
+import { MarginLayer, proposeMarginStroke, proposeMarginGroup, isMarginNote, setMarginRoom } from "./InkMargin.js";
 
 /**
  * InkEngine - the page's half of Apple Pencil ink (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.1).
@@ -84,6 +84,7 @@ export default class InkEngine {
   /** A section document finished loading: draw what was last drawn, and ask Swift for its ink. */
   setupSection(index, doc) {
     ensureInkStyle(doc);
+    setMarginRoom(doc, this.#marginExpanded);
     const href = this.#href(index);
     this.#loaded.set(href, { index, ref: new WeakRef(doc) });
     const cached = this.#sections.get(href);
@@ -168,6 +169,7 @@ export default class InkEngine {
   setMarginExpanded(expanded) {
     if (this.#marginExpanded === !!expanded) return;
     this.#marginExpanded = !!expanded;
+    for (const { doc } of this.#contents()) setMarginRoom(doc, this.#marginExpanded);
     for (const [href, section] of this.#sections) this.render(href, section);
   }
 

@@ -21,9 +21,24 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 export const MARGIN_INSET = 6;
 export const ICON_SIZE = 16;
 
+/**
+ * Share of each column kept free of text, on its right, while the wide margin is open. The text
+ * moves left within the page instead of the gap between pages widening: the paginator keeps half
+ * of any gap outside the section frame, where ink cannot be drawn (OD-022).
+ */
+export const MARGIN_ROOM = 0.28;
+/** The `<html>` attribute marking an open margin; InkLayout's style narrows the text by `MARGIN_ROOM`. */
+export const MARGIN_OPEN_ATTRIBUTE = "data-silveran-margin";
+
+/** Marks (or unmarks) a section document as showing the open wide margin. */
+export const setMarginRoom = (doc, open) => {
+  if (open) doc.documentElement.setAttribute(MARGIN_OPEN_ATTRIBUTE, "open");
+  else doc.documentElement.removeAttribute(MARGIN_OPEN_ATTRIBUTE);
+};
+
 /** Collapsed phone gutters must fit a legible tile; scrolling needs a gutter too. */
 export const marginGap = ({ hasNotes = false, expanded = false, narrow = false, scrolling = false }) => {
-  if (expanded && !scrolling) return "20%";
+  if (expanded && !scrolling) return "8%";
   if (!hasNotes) return "0%";
   return narrow && !scrolling ? "12%" : "6%";
 };
@@ -47,10 +62,15 @@ export const columnFrame = doc => {
         right < ICON_SIZE || width <= left + right) return null;
     return { columnWidth: width - left - right, gap: 2 * right, padLeft: left, scrolled: true };
   }
+  // Text kept off the right of each column for the open margin (`MARGIN_ROOM`), in points.
+  const room = doc.documentElement.getAttribute(MARGIN_OPEN_ATTRIBUTE) === "open" && doc.body
+    ? parseFloat(doc.defaultView.getComputedStyle(doc.body).paddingRight) || 0
+    : 0;
   return {
     columnWidth,
     gap: Number.isFinite(gap) ? gap : 0,
     padLeft: parseFloat(style.paddingLeft) || 0,
+    room,
   };
 };
 
@@ -58,8 +78,9 @@ export const columnFrame = doc => {
 export const gutterAt = (frame, x) => {
   const stride = frame.columnWidth + frame.gap;
   const column = frame.scrolled ? 0 : Math.max(0, Math.floor((x - frame.padLeft) / stride));
-  const right = frame.padLeft + column * stride + frame.columnWidth;
-  return { left: right, width: frame.gap / 2 };
+  const room = frame.room ?? 0;
+  const right = frame.padLeft + column * stride + frame.columnWidth - room;
+  return { left: right, width: frame.gap / 2 + room };
 };
 
 /** Width available for a note's strokes in a gutter of `width`. */
@@ -344,7 +365,7 @@ export const proposeMarginGroup = ({ doc, href, strokes, viewportWidth, layer, n
   // Ink right of the column counts as margin ink, even past the page's edge (OD-022).
   if (all.filter(([x]) => x >= zone.left).length <= MARGIN_SHARE * all.length) return null;
   const bb = bbox(all);
-  if (bb.left < zone.left - MARGIN_REACH * frame.columnWidth) return null;
+  if (bb.left < zone.left - MARGIN_REACH * (frame.columnWidth - (frame.room ?? 0))) return null;
   const { gutter } = zone;
   const width = drawingWidth(gutter.width);
   if (width < ICON_SIZE * 2) return null;
