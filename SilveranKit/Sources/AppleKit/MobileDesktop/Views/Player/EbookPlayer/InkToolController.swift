@@ -239,11 +239,25 @@ final class InkUndoProxy: UndoManager {
     nonisolated override var redoActionName: String { "Handwriting" }
 
     nonisolated override func undo() {
-        MainActor.assumeIsolated { _ = session?.undo() }
+        MainActor.assumeIsolated {
+            // Strokes still waiting for the Pencil to pause become ink first, then are undone as
+            // one step (OD-021).
+            guard let session else { return }
+            Task { @MainActor in
+                await session.commitWrittenStrokes()
+                _ = session.undo()
+            }
+        }
     }
 
     nonisolated override func redo() {
-        MainActor.assumeIsolated { _ = session?.redo() }
+        MainActor.assumeIsolated {
+            guard let session else { return }
+            Task { @MainActor in
+                await session.commitWrittenStrokes()
+                _ = session.redo()
+            }
+        }
     }
 
     /// Tells whoever shows undo buttons (the palette) to look again.

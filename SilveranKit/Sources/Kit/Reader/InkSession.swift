@@ -6,6 +6,9 @@ import Foundation
 public protocol InkEngineCalling: AnyObject {
     /// What should be done with a finished stroke.
     func inkPropose(_ stroke: InkStrokeInput) async throws -> InkProposal
+    /// What strokes written without pausing mean together, measured on the page as it was while
+    /// they were written. Nil: propose them one at a time.
+    func inkProposeGroup(_ strokes: [InkStrokeInput]) async throws -> [InkProposal]?
     /// Draws a section's ink (idempotent). `focus` names a note or mark to bring into view.
     func inkRender(href: String, section: SectionInk, focus: String?) async throws
     /// What the eraser path (web view coordinates) touches on the current page.
@@ -100,6 +103,11 @@ public final class InkSession {
     private var rendererGeneration: UInt64 = 0
     private var isDetaching = false
     private var acceptedWork: UInt64 = 0
+    /// Strokes written since the Pencil last paused (OD-021). They stay on screen where they were
+    /// written and become ink together when the writing lock releases, so nothing on the page
+    /// moves mid-word. Their callers wait until then.
+    private var writtenStrokes: [InkStrokeInput] = []
+    private var writtenStrokeWaiters: [CheckedContinuation<Void, Never>] = []
     public var hasPendingChanges: Bool { !pendingSections.isEmpty }
 
     /// Finish accepted work while the old renderer is still alive, then invalidate its callbacks.
@@ -136,7 +144,7 @@ public final class InkSession {
     /// How far the eraser reaches, in points.
     public static let eraserRadius = 10.0
 
-    public var canUndo: Bool { !undoStack.isEmpty }
+    public var canUndo: Bool { !undoStack.isEmpty || !writtenStrokes.isEmpty }
     public var canRedo: Bool { !redoStack.isEmpty }
 
     private struct Entry {
@@ -330,6 +338,39 @@ public final class InkSession {
         return true
     }
 
+    /// Applies changes made together (one written group) as one undo step per section.
+    @discardableResult
+    public func apply(_ operations: [InkOperation]) -> Bool {
+        guard operations.count > 1 else { return operations.first.map { apply($0) } ?? false }
+        guard canEdit else { return false }
+        if selection != nil { cancelSelection() }
+        var hrefs: [String] = []
+        for operation in operations where !hrefs.contains(operation.href) {
+            hrefs.append(operation.href)
+        }
+        var changed = false
+        for href in hrefs {
+            let group = operations.filter { $0.href == href }
+            let before = section(href)
+            var after = before
+            var applied = false
+            for operation in group where operation.apply(to: &after) { applied = true }
+            guard applied else { continue }
+            commit(href: href, before: before, after: after, focus: group.last?.focusID)
+            if group.allSatisfy(\.isUndoable) {
+                undoStack.append(Entry(href: href, before: before, after: after))
+            }
+            changed = true
+        }
+        guard changed else { return false }
+        if undoStack.count > Self.undoLimit {
+            undoStack.removeFirst(undoStack.count - Self.undoLimit)
+        }
+        redoStack.removeAll()
+        onUndoStateChanged?()
+        return true
+    }
+
     @discardableResult
     public func undo() -> Bool {
         cancelSelection()
@@ -424,6 +465,7 @@ public final class InkSession {
     /// recovery/retry; waiting for a failed write must not acknowledge it as saved.
     @discardableResult
     public func flush() async -> Bool {
+        await commitWrittenStrokes()
         var capturedWork: UInt64
         var capturedRevision: UInt64
         repeat {
@@ -623,6 +665,7 @@ public final class InkSession {
     private var previewRevision: UInt64 = 0
 
     public func selectInk(lasso: [[Double]]) async {
+        await commitWrittenStrokes()
         cancelSelection()
         let request = selectionGeneration
         let renderer = rendererGeneration
@@ -901,6 +944,7 @@ public final class InkSession {
     /// undo step. Runs in order with strokes.
     public func erase(points: [[Double]]) async {
         guard !isDetaching else { return }
+        await commitWrittenStrokes()
         acceptedWork += 1
         let previous = strokeTail
         let task = Task { [weak self] in
@@ -930,6 +974,13 @@ public final class InkSession {
     public func finishStroke(_ stroke: InkStrokeInput) async {
         guard !isDetaching else { return }
         acceptedWork += 1
+        if isWriting {
+            // Mid-word: hold it until the Pencil pauses (see `writtenStrokes`).
+            writtenStrokes.append(stroke)
+            if writtenStrokes.count == 1 { onUndoStateChanged?() }
+            await withCheckedContinuation { writtenStrokeWaiters.append($0) }
+            return
+        }
         let previous = strokeTail
         let queued = ContinuousClock.now
         let task = Task { [weak self] in
@@ -940,46 +991,85 @@ public final class InkSession {
         await task.value
     }
 
-    private func process(_ stroke: InkStrokeInput, queuedAt: ContinuousClock.Instant) async {
+    /// Turns the strokes written since the last pause into ink, together, and returns once the
+    /// page has drawn them. Called when the writing lock releases and before anything else that
+    /// must see them (erasing, selecting, undo, saving, closing).
+    public func commitWrittenStrokes() async {
+        guard !writtenStrokes.isEmpty else { return }
+        let strokes = writtenStrokes
+        let waiters = writtenStrokeWaiters
+        writtenStrokes.removeAll()
+        writtenStrokeWaiters.removeAll()
+        let previous = strokeTail
+        let queued = ContinuousClock.now
+        let task = Task { [weak self] in
+            await previous?.value
+            await self?.processGroup(strokes, queuedAt: queued)
+        }
+        strokeTail = task
+        await task.value
+        for waiter in waiters { waiter.resume() }
+        onUndoStateChanged?()
+    }
+
+    private func processGroup(_ strokes: [InkStrokeInput], queuedAt: ContinuousClock.Instant) async {
         guard canEdit, let engine else { return }
         let started = ContinuousClock.now
-        let proposal: InkProposal
+        let proposals: [InkProposal]?
         do {
-            proposal = try await engine.inkPropose(stroke)
+            proposals = try await engine.inkProposeGroup(strokes)
         } catch {
-            debugLog("[InkSession] Proposing a stroke failed: \(error)")
-            return
+            debugLog("[InkSession] Proposing a group failed, one at a time instead: \(error)")
+            proposals = nil
         }
-        guard let href = proposal.section else {
-            debugLog("[InkSession] Stroke ignored: \(proposal.reason ?? "no reason")")
+        guard let proposals else {
+            for stroke in strokes { await process(stroke, queuedAt: queuedAt) }
             return
         }
         let stamp = now()
+        apply(proposals.flatMap { operations(for: $0, at: stamp) })
+        let proposed = ContinuousClock.now
+        await renderTail?.value
+        let ms = { (d: Duration) in Int(d / .milliseconds(1)) }
+        debugLog(
+            "[InkSession] Group of \(strokes.count) as \(proposals.map { "\($0.op)" }.joined(separator: ",")) waited \(ms(started - queuedAt))ms, placed \(ms(proposed - started))ms, drawn \(ms(ContinuousClock.now - proposed))ms"
+        )
+    }
+
+    /// The changes a proposal asks for.
+    private func operations(for proposal: InkProposal, at stamp: Date) -> [InkOperation] {
+        guard let href = proposal.section else {
+            debugLog("[InkSession] Stroke ignored: \(proposal.reason ?? "no reason")")
+            return []
+        }
         switch proposal.op {
             case .note:
-                guard let anchor = proposal.anchor, let local = proposal.stroke else { return }
-                apply(
+                let strokes = proposal.allStrokes
+                guard let anchor = proposal.anchor, !strokes.isEmpty else { return [] }
+                return [
                     .addNote(
                         href: href,
                         note: InkNote(
                             id: makeID(),
                             anchor: anchor,
-                            strokes: [local],
+                            strokes: strokes,
                             createdAt: stamp,
                             placement: proposal.placement,
                             refWidth: proposal.refWidth,
-                        ),
+                        )
                     )
-                )
+                ]
             case .append:
-                guard let noteID = proposal.noteId, let local = proposal.stroke else { return }
-                apply(.appendToNote(href: href, noteID: noteID, stroke: local, at: stamp))
+                guard let noteID = proposal.noteId else { return [] }
+                return proposal.allStrokes.map {
+                    .appendToNote(href: href, noteID: noteID, stroke: $0, at: stamp)
+                }
             case .mark:
                 guard let kind = proposal.markKind, let start = proposal.start,
                     let end = proposal.end,
                     let local = proposal.stroke
-                else { return }
-                apply(
+                else { return [] }
+                return [
                     .addMark(
                         href: href,
                         mark: InkMark(
@@ -992,10 +1082,24 @@ public final class InkSession {
                             createdAt: stamp,
                         )
                     )
-                )
+                ]
             case .none:
                 debugLog("[InkSession] Stroke ignored: \(proposal.reason ?? "no reason")")
+                return []
         }
+    }
+
+    private func process(_ stroke: InkStrokeInput, queuedAt: ContinuousClock.Instant) async {
+        guard canEdit, let engine else { return }
+        let started = ContinuousClock.now
+        let proposal: InkProposal
+        do {
+            proposal = try await engine.inkPropose(stroke)
+        } catch {
+            debugLog("[InkSession] Proposing a stroke failed: \(error)")
+            return
+        }
+        for operation in operations(for: proposal, at: now()) { apply(operation) }
         let proposed = ContinuousClock.now
         // The caller removes its live stroke once the page has drawn the result.
         await renderTail?.value
@@ -1066,6 +1170,22 @@ public final class InkSession {
     private func release() {
         releaseTask = nil
         guard isWriting else { return }
+        if !writtenStrokes.isEmpty {
+            // Keep the lock (no page turns, no finger gestures) until the written strokes are on
+            // the page. Pencil-down meanwhile cancels this and keeps writing.
+            releaseTask = Task { [weak self] in
+                await self?.commitWrittenStrokes()
+                guard !Task.isCancelled else { return }
+                self?.releaseTask = nil
+                self?.finishRelease()
+            }
+            return
+        }
+        finishRelease()
+    }
+
+    private func finishRelease() {
+        guard isWriting else { return }
         isWriting = false
         onWritingUpdate?(false)
         let pending = deferred
@@ -1082,6 +1202,9 @@ public enum InkSessionPersistenceState: Equatable, Sendable {
 }
 
 extension InkEngineCalling {
+    public func inkProposeGroup(_ strokes: [InkStrokeInput]) async throws -> [InkProposal]? {
+        nil
+    }
     public func inkFocusMarginNote(href: String, noteID: String) async throws -> Bool {
         throw ReaderCommsBridgeError.jsNotAvailable
     }

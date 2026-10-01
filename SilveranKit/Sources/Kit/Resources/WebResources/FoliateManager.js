@@ -1750,6 +1750,16 @@ class FoliateManager {
     }
   }
 
+  /** Proposals for strokes written without pausing, or null to propose them one at a time. */
+  inkProposeGroup(strokesJSON) {
+    try {
+      return JSON.stringify(this.#inkEngine.proposeGroup(JSON.parse(strokesJSON)));
+    } catch (error) {
+      console.error("[FM2] inkProposeGroup failed:", error);
+      return JSON.stringify(null);
+    }
+  }
+
   /** What the eraser path touches on the current page. */
   inkHitTest(pointsJSON, radius) {
     return JSON.stringify(this.#inkEngine.hitTest(JSON.parse(pointsJSON), radius));

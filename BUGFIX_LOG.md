@@ -42,6 +42,43 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-051 — Quickly written words split into several note boxes, lost letters and opened slowly
+
+- Date: 2026-10-01
+- Status: Fixed; automated, real-WebKit and QA-simulator verified; real Pencil/iPad acceptance pending (checklist 73)
+- Platforms: Apple (iPadOS Pencil input); shared Kit session and web ink engine
+- Components: `InkSession` (finishStroke, commitWrittenStrokes, release, apply batch), `InkEngineCalling.inkProposeGroup`, `InkProposal.strokes`, `InkGeometry.proposeGroup`/`markProposal`, `InkEngine.proposeGroup`, `FoliateManager.inkProposeGroup`, `InkToolController` undo/redo, DEBUG `InkDebug.js` word demo and `ReaderMessageRouter`
+- Related links: [OD-021](docs/OBSERVED_ODDITIES.md) (owner report and screenshot, 2026-10-01)
+
+#### Symptom
+
+Writing a word inline, the writing area appeared after a noticeable delay. Some letters did not show (or turned into an underline/strike), and others appeared in a second or third box away from where they were written. Reproduced on the QA iPad simulator (iOS 18.6) with a synthetic 113-page chapter: "testing" written as 10 strokes, one every 200 ms, 56% down the page became 3 boxes with letters about 60 pt from where they were written; later strokes waited up to 835 ms and each redraw took up to 330 ms. In real WebKit the old behavior made 6 of the 10 letters into marks, split the rest into 2 boxes and moved one letter 93 pt down.
+
+#### Root cause
+
+Each stroke was decided and drawn on its own, against the layout left by the previous stroke: the first stroke inserted a box sized to itself and pushed the text down, so the next letter was judged against moved text, often fell outside that box (and started another) or, if short and over a text line, was classified as a mark. Every stroke also redrew all notes in the chapter and re-paginated it (~175 ms per stroke on the simulator, more as boxes multiplied), so strokes queued while the page moved under the writer.
+
+#### Change
+
+- While the writing lock is held (Pencil down, until about a second after it lifts), `finishStroke` keeps pen and highlighter strokes on screen where they were drawn and does not touch the page. When the lock releases, `commitWrittenStrokes` sends them to the page together; the lock stays held (no page turns) until they are drawn, and Pencil-down meanwhile keeps writing.
+- `InkGeometry.proposeGroup` measures the page once for the whole group. Strokes spanning at least 2.5 lines (and highlighter strokes) may still be marks; all other strokes are handwriting placed as one note, or added to the note they are in or just under. A group that began in a paragraph gap moves down to the note's top as one piece, as single strokes already did. One stroke alone is decided exactly as before.
+- The group is applied as one undo step. Erasing, lasso selection, saving/closing (`flush`) and the palette's undo/redo commit pending strokes first. If the page cannot answer for a group (open wide margin, error), strokes are placed one at a time as before.
+- DEBUG: `-SilveranInkDemoStroke word@<height>@<ms>` writes "testing" through the real pipeline, and the debug log records per-stroke/group wait, place and draw times.
+
+Unchanged: stored ink format, anchors, how a single stroke is classified, margin-note writing, eraser and lasso behavior. Intentional: a mark drawn on its own now appears as a mark after the pause rather than immediately (the ink is visible throughout).
+
+#### Validation
+
+- `InkWritingGroupTests` (4): nothing reaches the page mid-word; one group, one note, one undo step on pause; Pencil-down before the pause extends the group; erase/close commit first and in order; fallback to one-at-a-time.
+- `InkWordWritingWebKitTests` (real WebKit, iPad-sized paginated page with the ink stylesheet): the word stays one note with every letter visible, no sideways movement and one shared vertical offset at six heights; the old one-at-a-time behavior still splits (comparison test). Placement for a 420-paragraph chapter: 20 ms to decide, 16 ms to lay out.
+- `scripts/test`: 437 tests in 50 suites pass (twice); WebHarness `npm test`: 170 pass; unsigned iOS validation build passes.
+- QA iPad A16 simulator, iOS 18.6, synthetic 31.5k-word chapter, `word@0.56@200`, `word@0.40@200`, `word@0.85@200`: one box each, word in place (screenshots inspected); log "Group of 10 as note … placed ~180 ms, drawn ~184 ms" once per word. `underline,circle` still become marks.
+- Not done: real Pencil and palm input, real-iPad timing, VoiceOver, very fast multi-word writing over page/column breaks.
+
+#### Compatibility and follow-up
+
+No data format or migration change. The pause before writing becomes ink uses the existing 1 s writing lock; if real use shows it feels slow or too eager, tune it with checklist 73. Older app versions read the resulting notes unchanged.
+
 ### BF-050 — Library Check & Repair was hidden in the Export menu and listed chapters by file path
 
 - Date: 2026-10-01

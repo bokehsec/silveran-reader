@@ -7,7 +7,7 @@ import {
 import { MarkLayer } from "./InkMarks.js";
 import { installInkAwareCFI, rangeFromCFI } from "./InkFilters.js";
 import { ensureInkStyle, placeNotes, clearNotes } from "./InkLayout.js";
-import { proposeStroke, hitTestNotes, visibleWidth, pageStartOffset, toDoc } from "./InkGeometry.js";
+import { proposeStroke, proposeGroup, hitTestNotes, visibleWidth, pageStartOffset, toDoc } from "./InkGeometry.js";
 import { selectInLasso, transformPoints } from "./InkSelection.js";
 import { strokeAttributes } from "./InkStrokeShape.js";
 import { MarginLayer, proposeMarginStroke, isMarginNote } from "./InkMargin.js";
@@ -253,6 +253,18 @@ export default class InkEngine {
       stroke,
       viewportWidth: window.innerWidth,
     });
+  }
+
+  /**
+   * What strokes written without pausing mean, together (see InkGeometry.proposeGroup). Null when
+   * they must be proposed one at a time instead: the wide margin is open (margin notes don't move
+   * the text, and each stroke there is placed beside its line).
+   */
+  proposeGroup(strokes) {
+    if (this.#marginExpanded) return null;
+    const contents = this.#currentContents();
+    if (!contents) return [{ op: "none", reason: "no-section" }];
+    return proposeGroup({ doc: contents.doc, href: this.#href(contents.index), strokes, viewportWidth: window.innerWidth });
   }
 
   /** What the eraser path touches on the current page. */

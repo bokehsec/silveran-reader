@@ -9,6 +9,13 @@ extension ReaderCommsBridge: InkEngineCalling {
         return try decodeInkResult(InkProposal.self, from: result)
     }
 
+    public func inkProposeGroup(_ strokes: [InkStrokeInput]) async throws -> [InkProposal]? {
+        let result = try await callInk(
+            "return await window.foliateManager.inkProposeGroup(\(try jsLiteral(strokes)));"
+        )
+        return try decodeInkResult([InkProposal]?.self, from: result)
+    }
+
     public func inkRender(href: String, section: SectionInk, focus: String?) async throws {
         let focusLiteral = try focus.map { try jsString($0) } ?? "null"
         _ = try await callInk(

@@ -145,7 +145,13 @@ public final class ReaderMessageRouter {
                         // DEBUG only: a synthetic stroke from InkDebug.js (the simulator has no Pencil).
                         let data = try JSONSerialization.data(withJSONObject: body)
                         let msg = try decoder.decode(InkStrokeInput.self, from: data)
-                        Task { @SilveranUIActor in await bridge.inkSession.finishStroke(msg) }
+                        // As the Pencil does: down, up, then the stroke, so strokes sent in
+                        // quick succession are grouped like real writing.
+                        Task { @SilveranUIActor in
+                            bridge.inkSession.penDown()
+                            bridge.inkSession.penUp()
+                            await bridge.inkSession.finishStroke(msg)
+                        }
 
                     case "InkDebugErase":
                         let data = try JSONSerialization.data(withJSONObject: body)

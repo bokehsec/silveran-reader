@@ -158,17 +158,8 @@ export const proposeStroke = ({ doc, href, stroke, viewportWidth }) => {
   if (inside) return append(inside);
 
   const index = buildTextIndex(doc.body);
-  const env = classifierEnv(doc, index, lines, lineHeight);
-  const mark = tool === "highlighter" ? classifyHighlightStroke(env, pts) : classifyPenStroke(env, pts);
-  if (mark) {
-    const { start, end } = makeMarkAnchors(index.text, mark.start, mark.end);
-    return {
-      op: "mark", section: href, markKind: mark.kind, start, end, geometry: mark.geometry,
-      // Keep the original pressure-aware drawing, normalized to a new canvas origin.
-      // Marks still render from their anchored geometry; these samples allow correction.
-      stroke: { tool, color, width, points: local({ left: bb.left - 8, top: bb.top - 8 }, 1) },
-    };
-  }
+  const mark = markProposal({ doc, href, stroke, pts, bb, index, lines, lineHeight });
+  if (mark) return mark;
 
   // Just under a note continues it.
   const below = notes.find(el => {
@@ -206,6 +197,101 @@ export const proposeStroke = ({ doc, href, stroke, viewportWidth }) => {
     op: "note", section: href, anchor,
     stroke: { tool, color, width, points: relative.map(([x, y, ...rest]) => [x, round1(y + dy), ...rest]) },
   };
+};
+
+/** A `mark` proposal if the stroke is a mark on the words it crosses, else null. Measures only. */
+const markProposal = ({ doc, href, stroke, pts, bb, index, lines, lineHeight }) => {
+  const { tool = "pen", color, width } = stroke;
+  const env = classifierEnv(doc, index, lines, lineHeight);
+  const mark = tool === "highlighter" ? classifyHighlightStroke(env, pts) : classifyPenStroke(env, pts);
+  if (!mark) return null;
+  const { start, end } = makeMarkAnchors(index.text, mark.start, mark.end);
+  return {
+    op: "mark", section: href, markKind: mark.kind, start, end, geometry: mark.geometry,
+    // Keep the original pressure-aware drawing, normalized to a new canvas origin.
+    // Marks still render from their anchored geometry; these samples allow correction.
+    stroke: {
+      tool, color, width,
+      points: pts.map(([x, y, ...rest]) => [round1(x - (bb.left - 8)), round1(y - (bb.top - 8)), ...rest]),
+    },
+  };
+};
+
+/** A pen mark this long or tall is deliberate even in the middle of writing; shorter "marks" are letters. */
+const MARK_SPAN_LINES = 2.5;
+
+/**
+ * What a group of strokes written without pausing means (a word or a few words), all measured
+ * against the page as the person saw it while writing: nothing is inserted between strokes.
+ * A single stroke is exactly `proposeStroke`. Otherwise highlighter strokes and long pen marks
+ * (underlines, circles, brackets spanning several words or lines) stay marks, and all other
+ * strokes are handwriting that goes into one note together: added to a note they are in or just
+ * under, or a new note before the first line the writing reached. Returns proposals in order;
+ * a handwriting proposal carries `strokes` (each in the note's coordinates).
+ */
+export const proposeGroup = ({ doc, href, strokes, viewportWidth }) => {
+  if (strokes.length <= 1) return strokes.map(stroke => proposeStroke({ doc, href, stroke, viewportWidth }));
+  // The page is measured once for the whole group; nothing is inserted until the end.
+  const allLines = visibleLines(doc, viewportWidth);
+  const index = buildTextIndex(doc.body);
+  const marks = [];
+  const writing = [];
+  for (const stroke of strokes) {
+    if (!stroke.points?.length) continue;
+    const pts = stroke.points.map(p => toDoc(doc, p));
+    const bb = bbox(pts);
+    const lines = columnLines(allLines, bb);
+    const lineHeight = lineHeightOf(doc, lines);
+    const deliberate = stroke.tool === "highlighter" || Math.max(bb.width, bb.height) >= MARK_SPAN_LINES * lineHeight;
+    const mark = deliberate ? markProposal({ doc, href, stroke, pts, bb, index, lines, lineHeight }) : null;
+    if (mark) marks.push(mark);
+    else writing.push(stroke);
+  }
+  return writing.length ? [writingProposal({ doc, href, strokes: writing, allLines, index }), ...marks] : marks;
+};
+
+/** Handwriting strokes written together, as one `note` or `append` proposal with `strokes`. */
+const writingProposal = ({ doc, href, strokes, allLines, index }) => {
+  const docPoints = strokes.map(s => s.points.map(p => toDoc(doc, p)));
+  const bb = bbox(docPoints.flat());
+  const localStrokes = (origin, scale, dy = 0) => strokes.map(({ tool = "pen", color, width }, i) => ({
+    tool, color, width,
+    points: docPoints[i].map(([x, y, ...rest]) =>
+      [round1((x - origin.left) / scale), round1((y - origin.top) / scale + dy), ...rest]),
+  }));
+  const lines = columnLines(allLines, bb);
+  const lineHeight = lineHeightOf(doc, lines);
+  const notes = [...doc.querySelectorAll(INK_TAG)].filter(el => {
+    const r = el.getBoundingClientRect();
+    return bb.left < r.right + 40 && bb.right > r.left - 40;
+  });
+  const into = notes.find(el => {
+    const r = el.getBoundingClientRect();
+    return bb.top >= r.top - 0.3 * lineHeight && bb.top < r.bottom + 1.2 * lineHeight;
+  });
+  if (into) {
+    const r = into.getBoundingClientRect();
+    return { op: "append", section: href, noteId: into.dataset.id, strokes: localStrokes(r, parseFloat(into.dataset.scale) || 1) };
+  }
+  const next = lines.find(L => L.bottom > bb.top + 2);
+  let anchorRange = next ? caret(doc, next.left + 1, (next.top + next.bottom) / 2) : null;
+  if (!anchorRange && lines.length) {
+    const last = lines[lines.length - 1];
+    anchorRange = caret(doc, last.right - 1, (last.top + last.bottom) / 2);
+    anchorRange?.collapse(false);
+  }
+  if (!anchorRange) return { op: "none", reason: "no-anchor" };
+  anchorRange.collapse(true);
+  const anchor = anchorForBoundary(index, anchorRange.startContainer, anchorRange.startOffset);
+  if (!anchor) return { op: "none", reason: "no-text" };
+  const probe = noteElement(doc, { id: "probe", strokes: [] });
+  probe.style.height = "0px";
+  insertAt(anchorRange.startContainer, anchorRange.startOffset, probe);
+  const origin = probe.getBoundingClientRect();
+  removeElement(probe);
+  // The whole group moves together, and only if it began above the note (in a paragraph gap).
+  const minY = bb.top - origin.top;
+  return { op: "note", section: href, anchor, strokes: localStrokes(origin, 1, minY < 2 ? 2 - minY : 0) };
 };
 
 /**

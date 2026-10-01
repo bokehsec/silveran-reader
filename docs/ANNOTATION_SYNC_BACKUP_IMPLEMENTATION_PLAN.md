@@ -495,3 +495,9 @@ Final increment verification: the cancellation-aware build passed `scripts/test`
 - **Observed, not fixed:** OD-001 (reader top-bar taps only hide the bars while the repair banner shows; simulator input not conclusive) and OD-020 (banner count covers loaded chapters but says "this edition").
 - Verification: `scripts/test` passes **430 tests in 48 suites** (new `HighlightStoredCFITests` 4, `repeatedConfirmationRefuses` 1, which failed with 3 issues before BF-049). Web resources unchanged (no web-harness rerun needed). Unsigned iOS (`scripts/iosbuild`, QA iPad destination) and Mac (`scripts/macbuild`) validation builds pass. UIKit component tests (`scripts/iostest`) were not rerun; no component tests changed.
 - No Phase 5 exit gate is passed. Next: hands-on reader-exit check (OD-001), the rest of checklist 72 on iPhone/Mac with VoiceOver/keyboard, then checklists 48–71 and legacy ink edition/cross-chapter mapping.
+
+### 2026-10-01 — Handwritten words stay together (OD-021 → BF-051)
+
+- Owner report: writing a word was slow to open a writing area, and letters vanished or landed in other boxes. Reproduced on the QA iPad simulator with a new DEBUG word demo and a synthetic 113-page chapter, and in real WebKit (`InkWordWritingWebKitTests`).
+- Product decision (owner, 2026-10-01): ink stays where it is written while writing, and the space opens when the Pencil pauses. Implemented as BF-051: strokes are held during the writing lock and placed together, one note and one undo step per pause; deliberate long marks still classify as marks; a single stroke behaves as before.
+- Verification: 437 Swift tests / 50 suites (twice), 170 web tests, unsigned iOS build, QA-simulator word runs at three heights (one box each, ~180 ms + ~184 ms once per word instead of ~175 ms per stroke). Checklist 73 adds real Pencil/iPad acceptance. No Phase 5 exit gate is passed.

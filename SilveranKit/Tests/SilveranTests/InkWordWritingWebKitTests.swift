@@ -29,7 +29,9 @@ struct InkWordWritingWebKitTests {
         let paragraphs: Int
     }
 
-    func run(paragraphs: Int) async throws -> Report {
+    /// `grouped`: the strokes are placed together once the Pencil pauses (current behavior);
+    /// otherwise one at a time after each redraw (the behavior OD-021 reported).
+    func run(paragraphs: Int, y0: Double = 560, grouped: Bool = true) async throws -> Report {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "InkWord-\(UUID().uuidString)"
         )
@@ -53,10 +55,11 @@ struct InkWordWritingWebKitTests {
             p{margin:0 0 12px;text-align:justify;}</style>
             </head><body>\(body)
             <script type="module">
-            import { proposeStroke } from './InkGeometry.js';
-            import { placeNotes } from './InkLayout.js';
+            import { proposeStroke, proposeGroup } from './InkGeometry.js';
+            import { placeNotes, ensureInkStyle } from './InkLayout.js';
             import { INK_TAG } from './InkAnchoring.js';
-            window.inkModules = { proposeStroke, placeNotes, INK_TAG };
+            ensureInkStyle(document);
+            window.inkModules = { proposeStroke, proposeGroup, placeNotes, INK_TAG };
             window.wordReady = true;
             </script></body></html>
             """
@@ -82,7 +85,7 @@ struct InkWordWritingWebKitTests {
         try #require(ready)
         let answer = try await view.callAsyncJavaScript(
             Self.writeWord,
-            arguments: [:],
+            arguments: ["y0": y0, "grouped": grouped],
             in: nil,
             contentWorld: .page
         )
@@ -94,8 +97,8 @@ struct InkWordWritingWebKitTests {
     /// The word "testing" in ten strokes, written across the middle of the page as one would on
     /// an iPad, each stroke processed only after the previous one has been laid out.
     static let writeWord = """
-        const { proposeStroke, placeNotes, INK_TAG } = window.inkModules;
-        const x0 = 120, y0 = 560, h = 40;
+        const { proposeStroke, proposeGroup, placeNotes, INK_TAG } = window.inkModules;
+        const x0 = 120, h = 40;
         const line = (ax, ay, bx, by, n = 14) => Array.from({ length: n }, (_, i) => {
           const t = i / (n - 1); return [ax + (bx - ax) * t, ay + (by - ay) * t, 0.5];
         });
@@ -125,22 +128,36 @@ struct InkWordWritingWebKitTests {
         const where = [];
         let id = 0;
         const reports = [];
-        for (const { letter, points } of letters) {
-          const stroke = { tool: "pen", color: "#111111", width: 2.2, points };
+        const pen = points => ({ tool: "pen", color: "#111111", width: 2.2, points });
+        if (grouped) {
           let t = performance.now();
-          const p = proposeStroke({ doc: document, href: "ch", stroke, viewportWidth: innerWidth });
+          const proposals = proposeGroup({ doc: document, href: "ch", strokes: letters.map(l => pen(l.points)), viewportWidth: innerWidth });
           const proposeMs = performance.now() - t;
-          if (p.op === "note") { const n = { id: "n" + (++id), anchor: p.anchor, strokes: \
-        [p.stroke], createdAt: id }; notes.push(n); where.push({ id: n.id, index: 0 }); }
-          else if (p.op === "append") { const n = notes.find(n => n.id === p.noteId); \
-        n.strokes.push(p.stroke); where.push({ id: n.id, index: n.strokes.length - 1 }); }
-          else where.push(null);
+          const writing = proposals.find(p => p.op === "note" || p.op === "append");
+          if (writing?.op === "note") notes.push({ id: "n" + (++id), anchor: writing.anchor, strokes: writing.strokes, createdAt: id });
           t = performance.now();
-          const placed = placeNotes(document, notes, { maxHeight: innerHeight });
-          document.body.getBoundingClientRect(); void document.body.offsetHeight;
+          placeNotes(document, notes, { maxHeight: innerHeight });
+          void document.body.offsetHeight;
           const layoutMs = performance.now() - t;
-          reports.push({ orphaned: placed.orphaned.length, reason: p.reason, letter, op: p.op, \
-        noteId: p.noteId ?? (p.op === "note" ? "n" + id : null), proposeMs, layoutMs });
+          const handwriting = writing?.strokes?.length === letters.length;
+          letters.forEach(({ letter }, i) => {
+            where.push(handwriting && writing.op === "note" ? { id: "n1", index: i } : null);
+            reports.push({ letter, op: writing?.op ?? "none", noteId: handwriting ? "n1" : null, proposeMs, layoutMs });
+          });
+        } else {
+          for (const { letter, points } of letters) {
+            let t = performance.now();
+            const p = proposeStroke({ doc: document, href: "ch", stroke: pen(points), viewportWidth: innerWidth });
+            const proposeMs = performance.now() - t;
+            if (p.op === "note") { const n = { id: "n" + (++id), anchor: p.anchor, strokes: [p.stroke], createdAt: id }; notes.push(n); where.push({ id: n.id, index: 0 }); }
+            else if (p.op === "append") { const n = notes.find(n => n.id === p.noteId); n.strokes.push(p.stroke); where.push({ id: n.id, index: n.strokes.length - 1 }); }
+            else where.push(null);
+            t = performance.now();
+            placeNotes(document, notes, { maxHeight: innerHeight });
+            void document.body.offsetHeight;
+            const layoutMs = performance.now() - t;
+            reports.push({ letter, op: p.op, noteId: where[where.length - 1]?.id ?? null, proposeMs, layoutMs });
+          }
         }
         // Where each stroke is drawn now, against where the pen wrote it.
         letters.forEach(({ points }, i) => {
@@ -167,34 +184,33 @@ struct InkWordWritingWebKitTests {
     func chapterLengthCost() async throws {
         for paragraphs in [40, 420] {
             let report = try await run(paragraphs: paragraphs)
-            let propose = report.strokes.map(\.proposeMs)
-            let layout = report.strokes.map(\.layoutMs)
             print(
-                "[InkWord] \(paragraphs) paragraphs: propose max \(propose.max() ?? 0)ms, layout max \(layout.max() ?? 0)ms, notes \(report.notes)"
+                "[InkWord] \(paragraphs) paragraphs, grouped: propose \(report.strokes.first?.proposeMs ?? 0)ms, layout \(report.strokes.first?.layoutMs ?? 0)ms"
             )
         }
     }
 
-    @Test("A word written in quick strokes becomes one note that stays where it was written")
-    func wordStaysTogether() async throws {
-        let report = try await run(paragraphs: 40)
+    @Test(
+        "A word written without pausing becomes one note and stays where it was written",
+        arguments: [530.0, 560, 590, 620, 650, 700]
+    )
+    func wordStaysTogether(y0: Double) async throws {
+        let report = try await run(paragraphs: 40, y0: y0)
+        #expect(report.notes == 1, "one word, one note")
+        let shifts = Set(report.strokes.compactMap { $0.dy.map { Int($0.rounded()) } })
         for s in report.strokes {
-            print(
-                "[InkWord] \(s.letter) \(s.op) \(s.noteId ?? "-") propose \(String(format: "%.1f", s.proposeMs))ms layout \(String(format: "%.1f", s.layoutMs))ms dx \(s.dx.map { String(format: "%.0f", $0) } ?? "-") dy \(s.dy.map { String(format: "%.0f", $0) } ?? "-") visible \(s.visible)"
-            )
+            #expect(s.visible, "\(s.letter) is shown")
+            #expect(abs(s.dx ?? .infinity) <= 1, "\(s.letter) stays where it was written across")
+            // Writing that began in a paragraph gap moves down to the note's top, as one piece.
+            #expect((-1...20).contains(s.dy ?? .infinity), "\(s.letter) moves at most a gap down")
         }
-        // OD-021: today letters over text become marks and the rest splits into several notes,
-        // drawn away from where they were written. Remove withKnownIssue once fixed.
-        withKnownIssue("OD-021: a quickly written word splits and moves") {
-            #expect(report.notes == 1, "one word, one note")
-            for s in report.strokes {
-                #expect(s.visible, "\(s.letter) is shown")
-                #expect(
-                    abs(s.dx ?? .infinity) <= 2 && abs(s.dy ?? .infinity) <= 2,
-                    "\(s.letter) stays where it was written"
-                )
-            }
-        }
+        #expect(shifts.count == 1, "the word moves together, if at all: \(shifts)")
+    }
+
+    @Test("Placing strokes one at a time splits the word (the OD-021 behavior, for comparison)")
+    func oneAtATimeSplits() async throws {
+        let report = try await run(paragraphs: 40, grouped: false)
+        #expect(report.notes != 1 || report.strokes.contains { !$0.visible })
     }
 }
 #endif

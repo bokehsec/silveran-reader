@@ -57,6 +57,9 @@ public struct InkProposal: Codable, Sendable, Hashable {
     public var refWidth: Double?
     /// For `note` and `append`: the stroke in the note's own coordinates.
     public var stroke: InkStroke?
+    /// For a group written without pausing (`InkEngine.proposeGroup`): all its handwriting
+    /// strokes, in the note's own coordinates. Takes the place of `stroke`.
+    public var strokes: [InkStroke]?
     /// For `mark`: what it is and the words it covers.
     public var markKind: InkMarkKind?
     public var start: TextAnchor?
@@ -77,7 +80,9 @@ public struct InkProposal: Codable, Sendable, Hashable {
         reason: String? = nil,
         placement: InkNotePlacement? = nil,
         refWidth: Double? = nil,
+        strokes: [InkStroke]? = nil,
     ) {
+        self.strokes = strokes
         self.placement = placement
         self.refWidth = refWidth
         self.op = op
@@ -91,6 +96,11 @@ public struct InkProposal: Codable, Sendable, Hashable {
         self.geometry = geometry
         self.reason = reason
     }
+}
+
+extension InkProposal {
+    /// The handwriting strokes this proposal adds, single or grouped.
+    public var allStrokes: [InkStroke] { strokes ?? stroke.map { [$0] } ?? [] }
 }
 
 /// One stroke of a note, named by the note and the stroke's position in it.
