@@ -53,6 +53,7 @@ public struct EbookPlayerView: View {
     @State private var isComicScrubberVisible = false
     #if os(iOS)
     @State private var inkToolPreferenceMessage: String?
+    @State private var inkToolStripPreferenceMessage: String?
     #endif
     private let onClose: (() -> Void)?
 
@@ -125,6 +126,11 @@ public struct EbookPlayerView: View {
                 )
                 #if os(iOS)
                 InkToolPreferenceBanner(message: inkToolPreferenceMessage)
+                InkToolPreferenceBanner(
+                    message: inkToolStripPreferenceMessage,
+                    retry: { try InkToolStripPreferenceStore.shared.retryPending() },
+                    exportRecovery: { try InkToolStripPreferenceStore.shared.exportRecovery() }
+                )
                 #endif
             }
         }
@@ -133,7 +139,14 @@ public struct EbookPlayerView: View {
             text: viewModel.translationText,
         )
         #if os(iOS)
-        .onAppear { inkToolPreferenceMessage = InkToolPreferenceStore.shared.statusMessage }
+        .onAppear {
+            inkToolPreferenceMessage = InkToolPreferenceStore.shared.statusMessage
+            inkToolStripPreferenceMessage = InkToolStripPreferenceStore.shared.statusMessage
+        }
+        .onReceive(NotificationCenter.default.publisher(for: InkToolStripPreferenceStore.didChange))
+        { _ in
+            inkToolStripPreferenceMessage = InkToolStripPreferenceStore.shared.statusMessage
+        }
         .onReceive(NotificationCenter.default.publisher(for: InkToolPreferenceStore.didChange)) {
             _ in
             inkToolPreferenceMessage = InkToolPreferenceStore.shared.statusMessage
@@ -528,6 +541,14 @@ public struct EbookPlayerView: View {
         #endif
     }
 
+    #if os(iOS)
+    /// The draggable mini player is on screen at the bottom.
+    private var isMiniPlayerShowing: Bool {
+        !(isPad && viewModel.showAudioSidebar)
+            && (viewModel.settingsVM.alwaysShowMiniPlayer || viewModel.isReadingBarVisible)
+    }
+    #endif
+
     private var readerContent: some View {
         ZStack(alignment: .bottom) {
             #if os(iOS)
@@ -564,6 +585,7 @@ public struct EbookPlayerView: View {
                             ebookPath: ebookPath,
                             commsBridge: $viewModel.commsBridge,
                             inkSession: viewModel.inkSession,
+                            inkToolStrip: viewModel.inkToolStrip,
                             onBridgeReady: { bridge in
                                 viewModel.installBridgeHandlers(
                                     bridge,
@@ -582,6 +604,7 @@ public struct EbookPlayerView: View {
                             ebookPath: ebookPath,
                             commsBridge: $viewModel.commsBridge,
                             inkSession: viewModel.inkSession,
+                            inkToolStrip: viewModel.inkToolStrip,
                             onBridgeReady: { bridge in
                                 viewModel.installBridgeHandlers(
                                     bridge,
@@ -665,7 +688,6 @@ public struct EbookPlayerView: View {
                     onSleepTimerStart: viewModel.handleSleepTimerStart,
                     onSleepTimerCancel: viewModel.handleSleepTimerCancel,
                     onToggleInkTools: viewModel.commsBridge?.toggleInkTools,
-                    onSelectInk: viewModel.commsBridge?.selectInkWithLasso,
                     onToggleMargin: marginToggle,
                     onViewMarginNotes: marginViewer,
                     marginOpen: viewModel.inkMarginState.expanded,
@@ -678,6 +700,19 @@ public struct EbookPlayerView: View {
             if !(isPad && viewModel.showAudioSidebar) {
                 draggableAudioCard
                     .simultaneousGesture(chromeInteractionGesture)
+            }
+
+            // Above the mini player, and clear of it when it shows; hidden while the audio card
+            // is pulled up over the page.
+            if isPad, !viewModel.isComicBook, viewModel.inkToolStrip.isShowing,
+                !viewModel.isAudioCardExpanded
+            {
+                InkToolStripView(
+                    strip: viewModel.inkToolStrip,
+                    avoidsTopBar: viewModel.isTopBarVisible,
+                    avoidsMiniPlayer: isMiniPlayerShowing
+                )
+                .transition(.opacity)
             }
 
             playbackProgressBar

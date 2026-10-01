@@ -12,20 +12,20 @@ Design and spike record: [`PENCIL_INK_PLAN.md`](PENCIL_INK_PLAN.md). This plan s
 | M0 Isolate the spike | Implemented and committed | Initial M0–M4 implementation is in `fc4bb9d`; DEBUG hooks moved to `InkDebug.js`. The earlier handoff's “not committed” statement is superseded by repository history. |
 | M1 Page never turns while writing | Implemented; **device acceptance pending** | `BUGFIX_LOG.md` BF-013. |
 | M2 Model ownership and word anchors | Implemented; simulator-verified | See below. |
-| M3 Writing tools | Implemented; simulator-verified except Pencil input | PencilKit palette, pressure pen, marks, stroke eraser, undo. See below. |
+| M3 Writing tools | Implemented; simulator-verified except Pencil input | Silveran's own tool strip (replaced Apple's palette, 2026-10-01), pressure pen, marks, stroke eraser, undo. See below. |
 | M4 Highlighter | Implemented; simulator-verified except Pencil input | Highlight marks and translucent strokes in notes. |
 | M5 Fit and finish | Not started | |
 | M6 Typed highlights in both editions | Not started | |
 
 ### M3–M4 as built
 
-- **Palette:** `PKToolPicker(toolItems:)` with pen, marker (the highlighter) and vector eraser (`InkToolController`), shown on the first Pencil touch and from a Handwriting button in the iPad top toolbar; it hides when the reader hides the chrome by tapping (not when the chrome fades on its own). A hidden responder view owns first responder; the next Pencil-down takes it back from WebKit. Undo/redo go through that responder's `undoManager`, a proxy (`InkUndoProxy`) for `InkSession`. The tool, colour and thickness are remembered per device in `UserDefaults` (`InkToolStore`). Pencil double-tap and squeeze follow the system preference (`UIPencilInteraction`: switch eraser, switch previous, show palette).
+- **Tool strip** (replaced `PKToolPicker`, owner 2026-10-01): a slim SwiftUI bar (`InkToolStripView`, state in `InkToolStrip`) with pen, highlighter, stroke eraser and select; three colours for the tool in hand (tap the chosen one again to change it from presets or any colour); fine or bold; undo and redo. It sits about 6 pt from a screen edge — top by default, clear of the iPad window controls and below the reader's top bar or above the mini player when they show — and its grip drags it to the top, bottom, left or right. Its end arrow rolls it up into one button showing the tool in hand in its colour, with a chevron pointing the way it unrolls; it stays rolled up until tapped (finger or Pencil). It appears on the first Pencil touch and from the Handwriting button in the iPad top bar, and hides when the reader hides the chrome by tapping. The separate select (lasso) button in the top bar was removed; select is in the strip. Tool, colour and thickness stay in `SilveranInkTools.v1` (`InkToolPreferenceStore`); the strip's colours, edge and rolled-up state are in `SilveranInkToolStrip.v1` (`InkToolStripPreferenceStore`), both protected owners (BF-024 rules) and both in the preferences backup. A hidden responder view still owns first responder for the system undo/redo (three-finger swipe, shake, keyboard) through `InkUndoProxy`. Pencil double-tap and squeeze follow the system preference (`UIPencilInteraction`): switch eraser, switch previous, or show the tools (which also unrolls them).
 - **Pen:** filled outline that follows pressure. The same routine exists in JS (`InkStrokeShape.js`) and Swift (`InkStrokeOutline`), pinned to the same golden numbers in both test suites; the live stroke uses the Swift one. Pressure mapping (force over the Pencil's maximum; 0.2 draws the chosen width, 0.4 is 1.3x, 0 is 0.7x) is a first guess that needs tuning on a device.
 - **Marks:** the MVP classifier is ported unchanged (`InkClassify.js`), thresholds included, and runs against an `env` so it is tested on a fake monospaced page (`fixtures/fakePage.mjs`). **The fixtures are synthetic strokes** modelled on the MVP's behaviour, not recordings; record real strokes on a device and add them. Marks are drawn from their words in an `Overlayer` per section (`InkMarks.js`) and redrawn on relayout. A mark stores two anchors (covered words up to 200 characters; last 32 characters) so it survives edits in the middle.
 - **Highlighter:** a sweep over words becomes a `highlight` mark (a band per line, multiply blend, translucent); anywhere else it is a translucent flat-capped stroke in a note.
 - **Eraser:** erases on Pencil-up everything the path touched (note strokes and marks, one undo step); an emptied note is removed.
 - **Debug:** `-SilveranInkDemoStroke note,underline,strike,circle,bracket,highlight,erase,erase-highlight` synthesizes strokes against the real page (the simulator has no Pencil); underline, highlight, bracket and erase were checked this way in the iPad simulator. Circle and strike were not run in the app (covered by the fake-page tests only).
-- **Not done from M3:** dark-theme colour conversion (M5); the palette's undo buttons refreshing after changes is untested (needs a device).
+- **Not done from M3:** dark-theme colour conversion (M5); the strip with a real Pencil (tapping it with the Pencil, writing near it, palm rejection around it, double-tap/squeeze) needs a device.
 
 ### M2 as built, and where it differs from the plan
 
@@ -41,7 +41,7 @@ Design and spike record: [`PENCIL_INK_PLAN.md`](PENCIL_INK_PLAN.md). This plan s
 ## 1. Goals
 
 1. **The page never turns while you write.** The Pencil never turns pages, and nothing else turns them mid-stroke.
-2. **Regular writing tools:** pen and highlighter in any colour and thickness, a stroke eraser, and undo/redo, chosen from Apple's standard tool palette.
+2. **Regular writing tools:** pen and highlighter with three chosen colours each and two thicknesses, a stroke eraser, select, and undo/redo, from Silveran's own compact tool strip.
 3. **One set of notes per book:** ink written in the ebook appears in the same place in the read-along edition, and vice versa.
 4. **Built to last:** a single owner for ink data, anchors that survive edition and layout changes, and tests that fail when any of this regresses.
 
@@ -49,7 +49,9 @@ Design and spike record: [`PENCIL_INK_PLAN.md`](PENCIL_INK_PLAN.md). This plan s
 
 | Decision | Choice |
 |---|---|
-| Tool palette | Apple's `PKToolPicker`, limited to pen, highlighter, stroke eraser, colours, thicknesses |
+| Tool palette (owner, 2026-10-01; replaces "Apple's `PKToolPicker`") | Silveran's own slim strip: pen, highlighter, eraser, select; three colours per writing tool, each changeable; fine/bold; undo/redo. Apple's palette took too much room for a reader. |
+| Tool strip placement (owner, 2026-10-01) | Close to the screen edge; top by default; the reader can drag it to the top, bottom, left or right. |
+| Rolling up the strip (owner, 2026-10-01) | It rolls up into one button showing the tool in hand, with a visible cue that it unrolls, and stays rolled up until tapped with a finger or the Pencil (a Pencil touch on the page does not unroll it). |
 | Highlighter shape | Keeps the hand-drawn marker shape; attached to the words it covers |
 | Pencil highlighter vs. Highlights list | Stays ink; listed under "Handwriting" in the sidebar, not in Highlights |
 | Typed highlights in both editions | Yes, as a separate follow-up (M6) reusing the new anchors |
@@ -69,7 +71,7 @@ Design and spike record: [`PENCIL_INK_PLAN.md`](PENCIL_INK_PLAN.md). This plan s
 | **Kit — `InkSession`** (one per open book, `@MainActor`) | The book's ink model in memory, applying operations, undo/redo, the writing lock, the current tool, calling `InkActor` to persist | Geometry, DOM, UIKit |
 | **Kit — `InkActor`** | Loading and saving `BookInk` files, migrations | Anything about the page |
 | **JS — `InkEngine`** (renamed from `InkManager`) | Geometry: mapping points into a section, classifying a stroke, hit-testing the eraser, resolving anchors, drawing notes and marks, the CFI filter, the stylus touch filter | Stored state beyond what it is told to draw; it never persists or decides on undo |
-| **AppleKit (iOS) — `InkInputController`** | Pencil capture, the live stroke, `PKToolPicker`, `UIPencilInteraction`, the Pencil-down/up signals for the writing lock | Ink data |
+| **AppleKit (iOS) — `InkInputController`, `InkToolController`, `InkToolStrip`** | Pencil capture, the live stroke, the tool strip's state and its link to `InkSession.tool`, `UIPencilInteraction`, the Pencil-down/up signals for the writing lock | Ink data |
 | **AppleKit — SwiftUI** | Settings, sidebar "Handwriting" list | — |
 
 The rule: **Kit decides, JS measures and draws.** This fixes the spike's inversion (JS held the notes and Swift mirrored them), and is what makes undo, the eraser, cross-edition anchoring and unit testing possible.

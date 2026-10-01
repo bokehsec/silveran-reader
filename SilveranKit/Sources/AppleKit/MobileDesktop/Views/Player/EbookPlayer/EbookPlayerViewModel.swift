@@ -137,6 +137,8 @@ class EbookPlayerViewModel {
     var commsBridge: ReaderCommsBridge? = nil
     /// Per-book lifecycle ownership keeps pending edits alive beyond a view or WebView.
     let inkSession: InkSession
+    /// The iPad writing-tool strip for this book; it outlives the web view like the session.
+    let inkToolStrip: InkToolStrip
     var inkPersistenceState: InkSessionPersistenceState = .saved
     /// Ink in the loaded chapters that no longer finds its words (P5.1 repair).
     var inkOrphanCount = 0
@@ -261,6 +263,7 @@ class EbookPlayerViewModel {
         self.inkSession =
             bookData.map { ReadingSessionStore.shared.inkSession(for: $0.metadata.id) }
             ?? InkSession()
+        self.inkToolStrip = InkToolStrip(session: inkSession)
         self.settingsVM = settingsVM
         #if os(macOS)
         let savedAudioSidebarState =
@@ -564,7 +567,7 @@ class EbookPlayerViewModel {
             isTopBarVisible = isReadingBarVisible
             debugLog("[EbookPlayerViewModel] Toggled overlay visibility: \(isReadingBarVisible)")
         }
-        // The writing palette goes with the chrome when the reader hides it (not when it fades on its own).
+        // The writing tools go with the chrome when the reader hides it (not when it fades on its own).
         if !isTopBarVisible { commsBridge?.hideInkTools?() }
         #endif
     }

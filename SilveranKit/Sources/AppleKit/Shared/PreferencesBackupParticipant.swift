@@ -10,6 +10,7 @@ import SilveranKit
 /// - `device.plist`: archive-only keys (window, table and per-source/shelf layout choices). They
 ///   restore only on the same kind of device and only for allowlisted keys and value types.
 /// - `inkTools.json`: the Pencil tool choice, restored through its protected owner.
+/// - `inkToolStrip.json`: the tool strip's colours, edge and rolled-up state, likewise.
 ///
 /// Credentials, diagnostics and sync bookkeeping are never captured. Values are restored as the
 /// local baseline; they are not published to iCloud preference sync.
@@ -108,6 +109,9 @@ struct PreferencesBackupParticipant: BackupParticipant {
             if let tools = defaults.data(forKey: InkToolPreferenceStore.key) {
                 files["inkTools.json"] = tools
             }
+            if let strip = defaults.data(forKey: InkToolStripPreferenceStore.key) {
+                files["inkToolStrip.json"] = strip
+            }
             return BackupParticipantCapture(
                 status: files.isEmpty ? .empty : .complete,
                 message: skipped == 0
@@ -190,28 +194,32 @@ struct PreferencesBackupParticipant: BackupParticipant {
                 }
             }
             if context.isSameDeviceClass, let data = files["inkTools.json"] {
-                let store = suiteName == nil ? InkToolPreferenceStore.shared : nil
-                if let settings = try? InkToolSettingsPersistenceCodec.decode(data) {
-                    if let store, store.loadResult.canPersist, store.pending == nil {
-                        if store.loadResult.settings == settings {
-                            result.unchanged += 1
-                        } else {
-                            if !dryRun { try store.save(settings) }
-                            result.applied += 1
-                        }
-                    } else if store == nil {
-                        if !dryRun { defaults.set(data, forKey: InkToolPreferenceStore.key) }
-                        result.applied += 1
-                    } else {
-                        if !dryRun { try context.preserve(data, kind: kind, path: "inkTools.json") }
-                        result.attention.append(
-                            "Pencil tool choices weren't restored because the ones on this device need attention first."
-                        )
-                    }
-                } else {
-                    damaged += 1
-                    if !dryRun { try context.preserve(data, kind: kind, path: "inkTools.json") }
-                }
+                try restoreProtected(
+                    data,
+                    path: "inkTools.json",
+                    key: InkToolPreferenceStore.key,
+                    store: suiteName == nil ? InkToolPreferenceStore.shared : nil,
+                    attention: "Pencil tool choices weren't restored because the ones on this device need attention first.",
+                    defaults: defaults,
+                    context: context,
+                    dryRun: dryRun,
+                    result: &result,
+                    damaged: &damaged
+                )
+            }
+            if context.isSameDeviceClass, let data = files["inkToolStrip.json"] {
+                try restoreProtected(
+                    data,
+                    path: "inkToolStrip.json",
+                    key: InkToolStripPreferenceStore.key,
+                    store: suiteName == nil ? InkToolStripPreferenceStore.shared : nil,
+                    attention: "Pencil tool strip choices weren't restored because the ones on this device need attention first.",
+                    defaults: defaults,
+                    context: context,
+                    dryRun: dryRun,
+                    result: &result,
+                    damaged: &damaged
+                )
             }
             if damaged > 0 {
                 result.attention.append(
@@ -219,6 +227,43 @@ struct PreferencesBackupParticipant: BackupParticipant {
                 )
             }
             return result
+        }
+    }
+
+    /// Restores a protected Pencil preference through its owner. A valid backup replaces a
+    /// healthy local value; a local value needing recovery, or a damaged backup, is never
+    /// overwritten and the backed-up bytes are preserved.
+    @MainActor
+    private func restoreProtected<Codec: ProtectedPreferenceCodec>(
+        _ data: Data,
+        path: String,
+        key: String,
+        store: ProtectedPreferenceStore<Codec>?,
+        attention: String,
+        defaults: UserDefaults,
+        context: BackupRestoreContext,
+        dryRun: Bool,
+        result: inout BackupParticipantResult,
+        damaged: inout Int
+    ) throws {
+        guard let settings = try? Codec.decode(data) else {
+            damaged += 1
+            if !dryRun { try context.preserve(data, kind: kind, path: path) }
+            return
+        }
+        if let store, store.loadResult.canPersist, store.pending == nil {
+            if store.loadResult.settings == settings {
+                result.unchanged += 1
+            } else {
+                if !dryRun { try store.save(settings) }
+                result.applied += 1
+            }
+        } else if store == nil {
+            if !dryRun { defaults.set(data, forKey: key) }
+            result.applied += 1
+        } else {
+            if !dryRun { try context.preserve(data, kind: kind, path: path) }
+            result.attention.append(attention)
         }
     }
 }

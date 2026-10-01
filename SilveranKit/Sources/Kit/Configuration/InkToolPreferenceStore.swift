@@ -50,47 +50,27 @@ public enum InkToolSettingsPersistenceCodec {
         return data
     }
 
-    private static func validColor(_ value: String) -> Bool {
-        let bytes = Array(value.utf8)
-        return bytes.count == 7 && bytes[0] == 35
-            && bytes.dropFirst().allSatisfy {
-                (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
-            }
-    }
+    private static func validColor(_ value: String) -> Bool { isValidInkColor(value) }
 
-    private static func failure(_ message: String) -> InkToolPreferenceFailure {
-        InkToolPreferenceFailure(message: message)
+    private static func failure(_ message: String) -> ProtectedPreferenceFailure {
+        ProtectedPreferenceFailure(message: message)
     }
 }
 
-public struct InkToolPreferenceFailure: Error, LocalizedError {
-    public let message: String
-    public var errorDescription: String? { message }
+extension InkToolSettingsPersistenceCodec: ProtectedPreferenceCodec {
+    public static var defaultValue: InkToolSettings { InkToolSettings() }
 }
 
-public struct InkToolPreferenceLoad {
-    public enum State: String { case missing, valid, corrupt, unsupported }
-    public let state: State
-    public let settings: InkToolSettings
-    public let original: Data?
-    public var canPersist: Bool { state == .missing || state == .valid }
-}
+public typealias InkToolPreferenceFailure = ProtectedPreferenceFailure
+public typealias InkToolPreferenceLoad = ProtectedPreferenceLoad<InkToolSettings>
 
-/// One owner for the device's Pencil tool preferences across reader/web-view replacement.
-/// UserDefaults readback confirms the local preference API accepted a write; it is not an
-/// fsync guarantee or a complete archive participant.
+/// The device's Pencil tool, colour and thickness in hand (`SilveranInkTools.v1`).
 @MainActor
-public final class InkToolPreferenceStore {
+public final class InkToolPreferenceStore: ProtectedPreferenceStore<InkToolSettingsPersistenceCodec> {
     public static let shared = InkToolPreferenceStore()
     public static let didChange = Notification.Name("SilveranInkToolPreferenceDidChange")
     /// The UserDefaults key used by the shared store.
     public static let key = "SilveranInkTools.v1"
-    private let defaults: UserDefaults
-    private let key: String
-    private let write: @MainActor (Data, UserDefaults, String) throws -> Void
-    public private(set) var loadResult: InkToolPreferenceLoad
-    public private(set) var pending: InkToolSettings?
-    public private(set) var saveFailure: String?
 
     public init(
         defaults: UserDefaults = .standard,
@@ -101,108 +81,12 @@ public final class InkToolPreferenceStore {
             key in defaults.set(data, forKey: key)
         }
     ) {
-        self.defaults = defaults
-        self.key = key
-        self.write = write
-        loadResult = Self.read(defaults: defaults, key: key)
-    }
-
-    public var presented: InkToolSettings { pending ?? loadResult.settings }
-    public var statusMessage: String? {
-        if !loadResult.canPersist {
-            return
-                "Saved Pencil tools need recovery. New choices remain in this app until it closes."
-        }
-        if pending != nil { return saveFailure ?? "Pencil tool preferences are not saved yet." }
-        return saveFailure
-    }
-
-    public func save(_ settings: InkToolSettings) throws {
-        pending = settings
-        defer { NotificationCenter.default.post(name: Self.didChange, object: nil) }
-        do {
-            let live = Self.read(defaults: defaults, key: key)
-            guard loadResult.canPersist, live.canPersist,
-                live.state == loadResult.state, live.original == loadResult.original
-            else {
-                throw InkToolPreferenceFailure(
-                    message:
-                        "Saved Pencil tools changed or need recovery. Export recovery before replacing the original."
-                )
-            }
-            let bytes = try InkToolSettingsPersistenceCodec.encode(settings)
-            try write(bytes, defaults, key)
-            let committed = Self.read(defaults: defaults, key: key)
-            guard committed.state == .valid, committed.original == bytes else {
-                throw InkToolPreferenceFailure(
-                    message: "Pencil tool settings were not accepted by local preferences."
-                )
-            }
-            loadResult = committed
-            pending = nil
-            saveFailure = nil
-        } catch {
-            saveFailure = error.localizedDescription
-            throw error
-        }
-    }
-
-    public func retryPending() throws {
-        guard let pending else { return }
-        try save(pending)
-    }
-
-    @discardableResult
-    public func retryLoad() -> InkToolPreferenceLoad {
-        let live = Self.read(defaults: defaults, key: key)
-        loadResult = live
-        if live.canPersist, pending == nil { saveFailure = nil }
-        NotificationCenter.default.post(name: Self.didChange, object: nil)
-        return live
-    }
-
-    public func exportRecovery() throws -> Data {
-        struct Recovery: Encodable {
-            let schema = 1
-            let state: String
-            let original: Data?
-            let pending: InkToolSettings?
-        }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return try encoder.encode(
-            Recovery(
-                state: loadResult.state.rawValue,
-                original: loadResult.original,
-                pending: pending
-            )
+        super.init(
+            defaults: defaults,
+            key: key,
+            noun: "Pencil tools",
+            notification: Self.didChange,
+            write: write
         )
-    }
-
-    private static func read(defaults: UserDefaults, key: String) -> InkToolPreferenceLoad {
-        guard let value = defaults.object(forKey: key) else {
-            return InkToolPreferenceLoad(
-                state: .missing,
-                settings: InkToolSettings(),
-                original: nil
-            )
-        }
-        guard let data = value as? Data else {
-            return InkToolPreferenceLoad(
-                state: .unsupported,
-                settings: InkToolSettings(),
-                original: nil
-            )
-        }
-        do {
-            let settings = try InkToolSettingsPersistenceCodec.decode(data)
-            return InkToolPreferenceLoad(state: .valid, settings: settings, original: data)
-        } catch {
-            return InkToolPreferenceLoad(
-                state: .corrupt,
-                settings: InkToolSettings(),
-                original: data
-            )
-        }
     }
 }

@@ -516,6 +516,8 @@ struct EbookPlayerWebView: View {
     @Binding var commsBridge: ReaderCommsBridge?
     /// The book's ink session; it outlives this web view (see `EbookPlayerViewModel.inkSession`).
     let inkSession: InkSession?
+    /// The book's writing-tool strip (iPad); like the session it outlives this web view.
+    let inkToolStrip: InkToolStrip?
     let onBridgeReady: ((ReaderCommsBridge) -> Void)?
     let onContentPurged: (() -> Void)?
 
@@ -523,12 +525,14 @@ struct EbookPlayerWebView: View {
         ebookPath: URL?,
         commsBridge: Binding<ReaderCommsBridge?>,
         inkSession: InkSession? = nil,
+        inkToolStrip: InkToolStrip? = nil,
         onBridgeReady: ((ReaderCommsBridge) -> Void)?,
         onContentPurged: (() -> Void)? = nil,
     ) {
         self.ebookPath = ebookPath
         self._commsBridge = commsBridge
         self.inkSession = inkSession
+        self.inkToolStrip = inkToolStrip
         self.onBridgeReady = onBridgeReady
         self.onContentPurged = onContentPurged
     }
@@ -538,6 +542,7 @@ struct EbookPlayerWebView: View {
             ebookPath: ebookPath,
             commsBridge: $commsBridge,
             inkSession: inkSession,
+            inkToolStrip: inkToolStrip,
             onBridgeReady: onBridgeReady,
             onContentPurged: onContentPurged,
         )
@@ -553,6 +558,7 @@ private struct WebViewWrapper2: View {
     let ebookPath: URL?
     @Binding var commsBridge: ReaderCommsBridge?
     let inkSession: InkSession?
+    let inkToolStrip: InkToolStrip?
     let onBridgeReady: ((ReaderCommsBridge) -> Void)?
     let onContentPurged: (() -> Void)?
     @State private var webView: WKWebView?
@@ -562,6 +568,7 @@ private struct WebViewWrapper2: View {
             webView: $webView,
             commsBridge: $commsBridge,
             inkSession: inkSession,
+            inkToolStrip: inkToolStrip,
             ebookPath: ebookPath,
             onBridgeReady: onBridgeReady,
             onReaderReady: {
@@ -636,6 +643,7 @@ private struct WebViewRepresentable2: PlatformViewRepresentable {
     @Binding var webView: WKWebView?
     @Binding var commsBridge: ReaderCommsBridge?
     let inkSession: InkSession?
+    let inkToolStrip: InkToolStrip?
     let ebookPath: URL?
     let onBridgeReady: ((ReaderCommsBridge) -> Void)?
     let onReaderReady: () -> Void
@@ -724,6 +732,7 @@ private struct WebViewRepresentable2: PlatformViewRepresentable {
                 }
                 let tools = InkToolController(
                     session: bridge.inkSession,
+                    strip: inkToolStrip ?? InkToolStrip(session: bridge.inkSession),
                     host: wkWebView.superview ?? wkWebView,
                 )
                 ink.tools = tools

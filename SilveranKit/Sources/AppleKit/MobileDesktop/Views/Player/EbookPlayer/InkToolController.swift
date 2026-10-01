@@ -1,56 +1,25 @@
 #if os(iOS)
-import PencilKit
 import UIKit
 
-/// The writing tools on iPad (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, M3): Apple's standard tool
-/// palette limited to pen, highlighter and stroke eraser with their colours and thicknesses, the
-/// system undo and redo, and the Pencil's double-tap and squeeze.
+/// The writing tools' UIKit side on iPad (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, "Tool strip").
+/// The tools themselves are Silveran's own strip (`InkToolStrip`, drawn by `InkToolStripView`);
+/// this controller connects it to the Pencil (first touch, double-tap and squeeze) and to the
+/// system undo and redo.
 ///
-/// The palette needs a first responder, so a hidden view of this controller's own takes that role.
-/// WebKit takes it back when text is selected; the next Pencil-down asserts it again. Undo and redo
-/// go through that responder's `undoManager`, a proxy for `InkSession`, which is what makes the
-/// palette's buttons, the three-finger swipe and shake work.
+/// Undo and redo from the three-finger swipe, shake and keyboard shortcuts go through a hidden
+/// first responder's `undoManager`, a proxy for `InkSession`. WebKit takes first responder when
+/// text is selected; the next Pencil-down asserts it again.
 @MainActor
-final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteractionDelegate {
+final class InkToolController: NSObject, UIPencilInteractionDelegate {
     private let session: InkSession
-    private let store: InkToolPreferenceStore
-    private let picker: PKToolPicker
+    private let strip: InkToolStrip
     private let responder = InkResponderView()
-    private let penItem: PKToolPickerInkingItem
-    private let markerItem: PKToolPickerInkingItem
-    private let lassoItem = PKToolPickerLassoItem()
-    private let eraserItem: PKToolPickerEraserItem
     private let undoProxy: InkUndoProxy
-    private var settings: InkToolSettings
-    private var previousIdentifier: String
-    /// The palette is meant to be showing (the reader asked, or the Pencil first touched the page).
-    private(set) var wantsPalette = false
-    private var hasAutoShown = false
 
-    private static let penID = "silveran.ink.pen"
-    private static let markerID = "silveran.ink.highlighter"
-
-    init(session: InkSession, host: UIView, store: InkToolPreferenceStore = .shared) {
+    init(session: InkSession, strip: InkToolStrip, host: UIView) {
         self.session = session
-        self.store = store
-        settings = store.presented
+        self.strip = strip
         undoProxy = InkUndoProxy(session: session)
-
-        penItem = PKToolPickerInkingItem(
-            type: .pen,
-            color: UIColor(inkHex: settings.pen.color),
-            width: CGFloat(settings.pen.width),
-            identifier: Self.penID,
-        )
-        markerItem = PKToolPickerInkingItem(
-            type: .marker,
-            color: UIColor(inkHex: settings.highlighter.color),
-            width: CGFloat(settings.highlighter.width),
-            identifier: Self.markerID,
-        )
-        eraserItem = PKToolPickerEraserItem(type: .vector)
-        picker = PKToolPicker(toolItems: [penItem, markerItem, eraserItem, lassoItem])
-        previousIdentifier = Self.penID
         super.init()
 
         responder.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
@@ -59,111 +28,41 @@ final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteracti
         responder.undoProxy = undoProxy
         host.addSubview(responder)
 
-        picker.addObserver(self)
-        picker.selectedToolItemIdentifier = identifier(for: settings.selected)
-        previousIdentifier =
-            settings.selected == .eraser ? Self.penID : identifier(for: settings.selected)
-        session.tool = settings.current
-
-        session.onUndoStateChanged = { [weak self] in self?.undoProxy.stateChanged() }
+        session.onUndoStateChanged = { [weak self] in
+            self?.undoProxy.stateChanged()
+            self?.strip.refreshUndo()
+        }
+        strip.refreshUndo()
         host.addInteraction(UIPencilInteraction(delegate: self))
     }
 
-    // MARK: Palette
+    // MARK: Strip
 
     func toggle() {
-        debugLog("[InkTools] Toggle (showing: \(wantsPalette))")
-        if wantsPalette { hide() } else { show() }
-    }
-
-    func show() {
-        wantsPalette = true
-        presentPalette()
+        strip.toggle()
+        if strip.isShowing { assertResponder() } else { responder.resignFirstResponder() }
     }
 
     func hide() {
-        wantsPalette = false
-        picker.setVisible(false, forFirstResponder: responder)
+        strip.hide()
         responder.resignFirstResponder()
     }
 
-    private func presentPalette() {
-        guard responder.window != nil else {
-            debugLog("[InkTools] Cannot show the palette: the responder is not in a window")
-            return
-        }
-        picker.setVisible(true, forFirstResponder: responder)
-        let became = responder.isFirstResponder || responder.becomeFirstResponder()
-        debugLog(
-            "[InkTools] Palette requested; first responder: \(became), visible: \(picker.isVisible)"
-        )
-    }
-
-    /// The Pencil touched the page: pick up whatever the palette shows now, bring the palette up the
-    /// first time, and take back the responder if WebKit has it.
+    /// The Pencil touched the page: the strip comes up the first time, and the responder for
+    /// undo comes back from WebKit if it took it.
     func pencilDown() {
-        if !(picker.selectedToolItem is PKToolPickerLassoItem) { syncToolFromPalette() }
-        if !hasAutoShown {
-            hasAutoShown = true
-            show()
-        } else if wantsPalette, !responder.isFirstResponder {
-            presentPalette()
-        }
+        strip.pencilDown()
+        assertResponder()
     }
 
-    func selectionEnded() {
-        if picker.selectedToolItem is PKToolPickerLassoItem {
-            picker.selectedToolItemIdentifier = identifier(for: settings.selected)
-        }
-    }
+    func selectionEnded() { strip.selectionEnded() }
 
-    func selectLasso() {
-        picker.selectedToolItemIdentifier = lassoItem.identifier
-        session.isSelectingInk = true
-        hide()
-    }
+    /// Picks the select tool (a margin note was chosen for editing).
+    func selectLasso() { strip.select(.select) }
 
-    // MARK: Tools
-
-    private func identifier(for mode: InkTool.Mode) -> String {
-        switch mode {
-            case .pen: Self.penID
-            case .highlighter: Self.markerID
-            case .eraser: eraserItem.identifier
-        }
-    }
-
-    /// Reads the palette's selected tool (its colour and thickness may have changed).
-    private func syncToolFromPalette() {
-        let item = picker.selectedToolItem
-        session.isSelectingInk = item is PKToolPickerLassoItem
-        if let inking = item as? PKToolPickerInkingItem {
-            let tool = inking.inkingTool
-            let mode: InkTool.Mode = inking.identifier == Self.markerID ? .highlighter : .pen
-            settings.select(
-                InkTool(mode: mode, color: tool.color.inkHex, width: Double(tool.width))
-            )
-        } else if item is PKToolPickerEraserItem {
-            settings.select(.eraser)
-        }
-        if settings.current != session.tool {
-            session.tool = settings.current
-            do { try store.save(settings) } catch {
-                debugLog("[InkTools] Preference save needs recovery: \(error)")
-            }
-        }
-        if item.identifier != eraserItem.identifier { previousIdentifier = item.identifier }
-    }
-
-    nonisolated func toolPickerSelectedToolItemDidChange(_ toolPicker: PKToolPicker) {
-        MainActor.assumeIsolated { syncToolFromPalette() }
-    }
-
-    nonisolated func toolPickerVisibilityDidChange(_ toolPicker: PKToolPicker) {
-        MainActor.assumeIsolated {
-            // The reader swiped the palette away: leave it away until asked for.
-            if !picker.isVisible, responder.isFirstResponder { wantsPalette = false }
-        }
+    private func assertResponder() {
+        guard responder.window != nil, !responder.isFirstResponder else { return }
+        _ = responder.becomeFirstResponder()
     }
 
     // MARK: Pencil double-tap and squeeze
@@ -185,33 +84,24 @@ final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteracti
         }
     }
 
-    /// Follows the reader's system preference for the Pencil (Settings > Apple Pencil).
+    /// Follows the reader's system preference for the Pencil (Settings > Apple Pencil). Asking the
+    /// Pencil for the palette brings the strip up and unrolls it: that is an explicit request.
     private func perform(_ action: UIPencilPreferredAction) {
         switch action {
             case .switchEraser:
-                toggleEraser()
+                strip.toggleEraser()
             case .switchPrevious:
-                picker.selectedToolItemIdentifier = previousIdentifier
+                strip.switchToPrevious()
             case .showColorPalette, .showInkAttributes, .showContextualPalette:
-                show()
+                strip.show()
+                strip.unroll()
             default:
                 break
         }
     }
-
-    /// The eraser, and back to what was in hand before it.
-    func toggleEraser() {
-        if session.tool.mode == .eraser {
-            picker.selectedToolItemIdentifier = previousIdentifier
-        } else {
-            previousIdentifier = picker.selectedToolItem.identifier
-            picker.selectedToolItemIdentifier = eraserItem.identifier
-        }
-        syncToolFromPalette()
-    }
 }
 
-/// The hidden first responder that shows the palette and answers undo and redo.
+/// The hidden first responder that answers the system's undo and redo.
 final class InkResponderView: UIView {
     var undoProxy: UndoManager?
 
@@ -219,8 +109,8 @@ final class InkResponderView: UIView {
     override var undoManager: UndoManager? { undoProxy }
 }
 
-/// What the system's undo and redo (the palette's buttons, the three-finger swipe, shake, the
-/// keyboard shortcuts) talk to. It keeps no history of its own: `InkSession` does.
+/// What the system's undo and redo (the three-finger swipe, shake, the keyboard shortcuts)
+/// talk to. It keeps no history of its own: `InkSession` does.
 final class InkUndoProxy: UndoManager {
     private weak var session: InkSession?
 
@@ -260,7 +150,7 @@ final class InkUndoProxy: UndoManager {
         }
     }
 
-    /// Tells whoever shows undo buttons (the palette) to look again.
+    /// Tells the system's undo menus to look again.
     func stateChanged() {
         NotificationCenter.default.post(name: .NSUndoManagerCheckpoint, object: self)
     }
