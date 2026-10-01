@@ -188,3 +188,19 @@ test("the same marks land on the same words in the read-along edition", () => {
     assert.equal(layer.rangeOf(mark.id).toString().replace(/\s+/g, " "), "harbour office had pressed a ledger");
   }
 });
+
+test("tapping words covered by an underline hits the annotation even above its painted stroke", () => {
+  const { doc, window } = loadSection(ebookChapter());
+  const { index, page } = useLayout(window, doc, 40);
+  const words = 'island had no name';
+  const mark = markOn(index.text, words, 'underline', { refH: 20, points: [[0, 5], [1, 5]] });
+  const engine = new InkEngine({ post: () => {} });
+  engine.setView({ book: { sections: [{ id: 'ch1.xhtml' }] }, resolveCFI: () => null,
+    renderer: { getContents: () => [{ index: 0, doc }], render() {}, scrollToAnchor() {} } });
+  engine.render('ch1.xhtml', { notes: [], marks: [mark] });
+  const at = index.text.indexOf(words);
+  const line = page.env.rangeLines(at, at + words.length)[0];
+  assert.equal(engine.inkAt(doc, (line.left + line.right) / 2, (line.top + line.bottom) / 2), true,
+    'the mark belongs to these words; tapping their middle must not navigate');
+  assert.equal(engine.inkAt(doc, line.right + 80, line.top - 80), false, 'unmarked page still navigates normally');
+});

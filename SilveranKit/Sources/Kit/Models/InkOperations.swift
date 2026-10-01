@@ -160,24 +160,37 @@ public struct InkStrokeTransform: Codable, Sendable, Hashable {
     /// pushed further past the note's left or top edge (a note's height is measured down from 0).
     /// Ink already past an edge is not pulled back by a move that never touched it. Nil if the
     /// transform is not finite or the strokes have no points.
-    func clamped(keeping strokes: [InkStroke]) -> InkStrokeTransform? {
+    func clamped(keeping strokes: [InkStroke], maximumWidth: Double? = nil) -> InkStrokeTransform? {
         guard isFinite else { return nil }
         var left = Double.infinity
         var top = Double.infinity
+        var right = -Double.infinity
         for stroke in strokes {
             let half = stroke.width / 2
             for point in stroke.points where point.count >= 2 {
                 left = min(left, point[0] - half)
                 top = min(top, point[1] - half)
+                right = max(right, point[0] + half)
             }
         }
         guard left.isFinite, top.isFinite else { return nil }
-        let s = min(Self.maxScale, max(Self.minScale, scale))
+        var s = min(Self.maxScale, max(Self.minScale, scale))
+        var rightLimit: Double?
+        if let maximumWidth, maximumWidth.isFinite, maximumWidth > 0 {
+            let limit = max(maximumWidth, right)
+            rightLimit = limit
+            if right > left { s = min(s, (limit - min(0, left)) / (right - left)) }
+        }
         let scaledLeft = originX + s * (left - originX)
         let scaledTop = originY + s * (top - originY)
+        var movedX = max(dx, min(0, -scaledLeft))
+        if let rightLimit {
+            let scaledRight = originX + s * (right - originX)
+            movedX = min(movedX, rightLimit - scaledRight)
+        }
         return InkStrokeTransform(
             scale: s,
-            dx: max(dx, min(0, -scaledLeft)),
+            dx: movedX,
             dy: max(dy, min(0, -scaledTop)),
             originX: originX,
             originY: originY,
@@ -303,7 +316,12 @@ public enum InkOperation: Sendable, Equatable {
     /// strokes inside the note (`InkStrokeTransform.clamped`); a move that changes no point does
     /// nothing. Indexes that do not name a stroke are ignored.
     case transformStrokes(
-        href: String, noteID: String, indexes: [Int], transform: InkStrokeTransform, at: Date)
+        href: String,
+        noteID: String,
+        indexes: [Int],
+        transform: InkStrokeTransform,
+        at: Date
+    )
     /// Replaces a section outright. Not undoable; used to migrate version 1 ink.
     case replaceSection(href: String, section: SectionInk)
     /// Attaches a note to new words in its section (P5.1 repair, confirmed by the person).
@@ -348,7 +366,9 @@ public enum InkOperation: Sendable, Equatable {
                 return true
 
             case .appendToNote(_, let noteID, let stroke, let at):
-                guard let index = section.notes.firstIndex(where: { $0.id == noteID }) else { return false }
+                guard let index = section.notes.firstIndex(where: { $0.id == noteID }) else {
+                    return false
+                }
                 section.notes[index].strokes.append(stroke)
                 section.notes[index].updatedAt = at
                 return true
@@ -363,7 +383,8 @@ public enum InkOperation: Sendable, Equatable {
                 var byNote: [String: [Int]] = [:]
                 for ref in strokes { byNote[ref.noteId, default: []].append(ref.index) }
                 for (noteID, indexes) in byNote {
-                    guard let noteIndex = section.notes.firstIndex(where: { $0.id == noteID }) else { continue }
+                    guard let noteIndex = section.notes.firstIndex(where: { $0.id == noteID })
+                    else { continue }
                     var removedFromNote = false
                     // Highest first, so earlier removals do not shift later indexes.
                     for index in Set(indexes).sorted(by: >)
@@ -387,10 +408,14 @@ public enum InkOperation: Sendable, Equatable {
                 guard let noteIndex = section.notes.firstIndex(where: { $0.id == noteID }) else {
                     return false
                 }
-                let valid = Set(indexes).filter { section.notes[noteIndex].strokes.indices.contains($0) }
+                let valid = Set(indexes).filter {
+                    section.notes[noteIndex].strokes.indices.contains($0)
+                }
                 guard !valid.isEmpty,
                     let applied = transform.clamped(
-                        keeping: valid.map { section.notes[noteIndex].strokes[$0] }
+                        keeping: valid.map { section.notes[noteIndex].strokes[$0] },
+                        maximumWidth: section.notes[noteIndex].isMarginNote
+                            ? section.notes[noteIndex].refWidth : nil
                     )
                 else { return false }
                 var changed = false

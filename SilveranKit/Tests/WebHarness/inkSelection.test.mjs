@@ -122,3 +122,41 @@ test("a move or resize cannot push the selection out of its note or past the sca
   assert.equal(clampTransform(bounds, { dx: NaN }), null);
   assert.equal(clampTransform(bounds, { origin: [Infinity, 0] }), null);
 });
+
+test("margin selections use the drawn SVG placement and translate back to the reader viewport", () => {
+  const { doc, note, window } = placed();
+  const margin = { ...note, id: "margin", placement: "margin", refWidth: 200 };
+  Object.defineProperty(window, "frameElement", { value: { getBoundingClientRect: () => ({ left: -600, top: 25 }) } });
+  const marginLayer = { placement: id => id === "margin" ? { left: 900, top: 100, scale: 0.5 } : null };
+  const selected = selectInLasso({ doc, notes: [margin], lasso: square(295, 145, 355, 160), marginLayer });
+  assert.deepEqual(selected.indexes, [1]);
+  assert.equal(selected.scale, 0.5);
+  assert.deepEqual(selected.viewportBounds, { left: 299, top: 149, right: 351, bottom: 151 });
+  assert.equal(selectInLasso({ doc, notes: [margin], lasso: square(295, 145, 355, 160), marginLayer: { placement: () => null } }), null,
+    "collapsed icons cannot masquerade as editable handwriting");
+});
+
+test("preview changes only selected SVG paths, keeps cached data, and identity restores the original", () => {
+  const { doc, note } = placed();
+  const engine = new InkEngine({ post: () => {} });
+  engine.setView({
+    book: { sections: [{ id: "ch1.xhtml" }] }, resolveCFI: () => null,
+    renderer: { getContents: () => [{ index: 0, doc }], render() {}, scrollToAnchor() {} },
+  });
+  engine.render("ch1.xhtml", { notes: [note], marks: [] });
+  const paths = [...doc.querySelectorAll(`${INK_TAG} path`)];
+  const before = paths.map(p => p.getAttribute("d"));
+  assert.ok(engine.previewSelection("ch1.xhtml", "n", [0], { dx: 15, dy: 8, scale: 1 }));
+  assert.notEqual(paths[0].getAttribute("d"), before[0]);
+  assert.equal(paths[1].getAttribute("d"), before[1]);
+  assert.deepEqual(note.strokes[0].points, [[0, 0], [100, 0]]);
+  assert.ok(engine.previewSelection("ch1.xhtml", "n", [0], { dx: 0, dy: 0, scale: 1 }));
+  assert.equal(paths[0].getAttribute("d"), before[0]);
+  assert.equal(engine.previewSelection("missing", "n", [0], {}), false);
+});
+
+test("display width limits moving and resizing so strokes stay in the column or margin", () => {
+  const bounds = { left: 10, top: 20, right: 110, bottom: 70 };
+  assert.deepEqual(clampTransform(bounds, { dx: 300, maximumWidth: 200 }), { scale: 1, dx: 90, dy: 0 });
+  assert.deepEqual(clampTransform(bounds, { scale: 4, origin: [10, 20], maximumWidth: 200 }), { scale: 2, dx: -10, dy: 0 });
+});

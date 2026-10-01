@@ -23,6 +23,8 @@ struct AnnotationsBrowserView: View {
     @State private var pdfTask: Task<Void, Never>?
     @State private var pdfPreview: PreparedPDF?
     @State private var pdfToSave: PreparedPDF?
+    @State private var repairBook: AnnotationBookSummary?
+    @State private var placementCounts: [BookID: Int] = [:]
     @State private var chapter: ChapterChoice?
 
     private struct ChapterChoice: Hashable {
@@ -45,6 +47,15 @@ struct AnnotationsBrowserView: View {
             .task { await reload() }
             .refreshable { await reload() }
             .onDisappear { pdfTask?.cancel() }
+            .sheet(item: $repairBook, onDismiss: { Task { await reload() } }) { book in
+                LibraryAnnotationRepairView(
+                    book: book,
+                    title: title(for: book.bookID),
+                    category: readableCategory(for: book.bookID) ?? .ebook
+                ) { count in
+                    placementCounts[book.bookID] = count
+                }
+            }
             .sheet(item: $pdfPreview, onDismiss: savePreparedPDF) { prepared in
                 NavigationStack {
                     AnnotationPDFPreview(data: prepared.data)
@@ -232,6 +243,13 @@ struct AnnotationsBrowserView: View {
                     Text("Not in your library — notes are kept")
                         .font(.caption).foregroundStyle(.secondary).textCase(nil)
                 }
+                if let count = placementCounts[book.bookID], count > 0 {
+                    Label(
+                        "\(count) annotation(s) need placement",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption).foregroundStyle(.orange).textCase(nil)
+                }
                 if book.needsRecovery {
                     Label(
                         "Some annotations need recovery; open the book to fix them",
@@ -242,6 +260,14 @@ struct AnnotationsBrowserView: View {
             }
             Spacer()
             Menu {
+                Button("Check & Repair Placement", systemImage: "wrench.and.screwdriver") {
+                    repairBook = book
+                }
+                .disabled(readableCategory(for: book.bookID) == nil)
+                if readableCategory(for: book.bookID) == nil {
+                    Text("Download the ebook or read-along edition to check placement.")
+                }
+                Divider()
                 Button("PDF (with handwriting)") { exportPDF(book) }
                     .disabled(preparingPDF)
                 Button("Web Page (with handwriting)") { exportNotes(book, asHTML: true) }
@@ -342,14 +368,20 @@ struct AnnotationsBrowserView: View {
         loading = false
     }
 
+    private func readableCategory(for bookID: BookID) -> LocalMediaCategory? {
+        if mediaViewModel.localMediaPath(for: bookID, category: .ebook) != nil { return .ebook }
+        if mediaViewModel.localMediaPath(for: bookID, category: .synced) != nil { return .synced }
+        return nil
+    }
+
     private func show(_ entry: AnnotationEntry) {
         guard let book = metadata(for: entry.bookID) else {
             message =
                 "This book isn't in your library. Its annotations are kept and will reconnect if the book is added again."
             return
         }
-        guard mediaViewModel.localMediaPath(for: book.id, category: .ebook) != nil else {
-            message = "Download the ebook to see this annotation in place."
+        guard readableCategory(for: book.id) != nil else {
+            message = "Download the ebook or read-along edition to see this annotation in place."
             return
         }
         ReaderOpenRequest.shared.request(book.id, at: entry.locator)

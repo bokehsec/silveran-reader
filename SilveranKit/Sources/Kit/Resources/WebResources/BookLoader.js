@@ -24,6 +24,11 @@ export default class BookLoader {
       .catch(err => console.error("[BookLoader] Failed to load book from directory:", err));
   }
 
+  /** Loads for read-only inspection; does not open a renderer or emit reader events. */
+  async loadForInspection(dirPath) {
+    return await this.#loadBookFromDirectory(dirPath);
+  }
+
   /**
    * Create a custom loader for a directory (extracted EPUB)
    */

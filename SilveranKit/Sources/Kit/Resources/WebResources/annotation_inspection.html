@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Annotation inspection</title></head><body>
+<script type="module">
+import BookLoader from './BookLoader.js';
+import { AnnotationInspection } from './AnnotationInspection.js';
+window.openAnnotationInspection = async path => {
+  window.annotationInspection?.close();
+  const book = await new BookLoader(null).loadForInspection(path);
+  window.annotationInspection = new AnnotationInspection(book);
+  return JSON.stringify(window.annotationInspection.structure());
+};
+window.annotationInspectionReady = true;
+</script></body></html>

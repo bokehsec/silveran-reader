@@ -18,6 +18,7 @@ final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteracti
     private let responder = InkResponderView()
     private let penItem: PKToolPickerInkingItem
     private let markerItem: PKToolPickerInkingItem
+    private let lassoItem = PKToolPickerLassoItem()
     private let eraserItem: PKToolPickerEraserItem
     private let undoProxy: InkUndoProxy
     private var settings: InkToolSettings
@@ -48,7 +49,7 @@ final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteracti
             identifier: Self.markerID,
         )
         eraserItem = PKToolPickerEraserItem(type: .vector)
-        picker = PKToolPicker(toolItems: [penItem, markerItem, eraserItem])
+        picker = PKToolPicker(toolItems: [penItem, markerItem, eraserItem, lassoItem])
         previousIdentifier = Self.penID
         super.init()
 
@@ -101,13 +102,25 @@ final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteracti
     /// The Pencil touched the page: pick up whatever the palette shows now, bring the palette up the
     /// first time, and take back the responder if WebKit has it.
     func pencilDown() {
-        syncToolFromPalette()
+        if !(picker.selectedToolItem is PKToolPickerLassoItem) { syncToolFromPalette() }
         if !hasAutoShown {
             hasAutoShown = true
             show()
         } else if wantsPalette, !responder.isFirstResponder {
             presentPalette()
         }
+    }
+
+    func selectionEnded() {
+        if picker.selectedToolItem is PKToolPickerLassoItem {
+            picker.selectedToolItemIdentifier = identifier(for: settings.selected)
+        }
+    }
+
+    func selectLasso() {
+        picker.selectedToolItemIdentifier = lassoItem.identifier
+        session.isSelectingInk = true
+        hide()
     }
 
     // MARK: Tools
@@ -123,6 +136,7 @@ final class InkToolController: NSObject, PKToolPickerObserver, UIPencilInteracti
     /// Reads the palette's selected tool (its colour and thickness may have changed).
     private func syncToolFromPalette() {
         let item = picker.selectedToolItem
+        session.isSelectingInk = item is PKToolPickerLassoItem
         if let inking = item as? PKToolPickerInkingItem {
             let tool = inking.inkingTool
             let mode: InkTool.Mode = inking.identifier == Self.markerID ? .highlighter : .pen

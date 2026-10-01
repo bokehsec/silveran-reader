@@ -53,14 +53,16 @@ export const lassoSelects = (lasso, points, coverage = LASSO_COVERAGE) => {
  * each stroke's width), and the note's display scale (below 1 only when the note was shrunk to
  * fit the page).
  */
-export const selectInLasso = ({ doc, notes, lasso }) => {
+export const selectInLasso = ({ doc, notes, lasso, marginLayer = null }) => {
   const path = lasso.map(p => toDoc(doc, p));
   let best = null;
-  for (const el of doc.querySelectorAll(INK_TAG)) {
-    const note = notes.find(n => n.id === el.dataset.id);
-    if (!note) continue;
-    const r = el.getBoundingClientRect();
-    const scale = parseFloat(el.dataset.scale) || 1;
+  const frame = doc.defaultView?.frameElement?.getBoundingClientRect() ?? { left: 0, top: 0 };
+  for (const note of notes) {
+    const el = [...doc.querySelectorAll(INK_TAG)].find(el => el.dataset.id === note.id);
+    const margin = note.placement === "margin" ? marginLayer?.placement(note.id) : null;
+    if (!el && !margin) continue;
+    const r = margin ?? el.getBoundingClientRect();
+    const scale = margin?.scale ?? (parseFloat(el.dataset.scale) || 1);
     const indexes = [];
     const covered = [];
     note.strokes.forEach((stroke, index) => {
@@ -72,7 +74,15 @@ export const selectInLasso = ({ doc, notes, lasso }) => {
       covered.push([b.left - half, b.top - half], [b.right + half, b.bottom + half]);
     });
     if (indexes.length && (!best || indexes.length > best.indexes.length)) {
-      best = { noteId: note.id, indexes, bounds: boundsOf(covered), scale };
+      const bounds = boundsOf(covered);
+      best = { noteId: note.id, indexes, bounds, scale, noteWidth: margin ? (note.refWidth || margin.width / scale) : r.width / scale,
+        viewportBounds: {
+          left: frame.left + r.left + bounds.left * scale,
+          top: frame.top + r.top + bounds.top * scale,
+          right: frame.left + r.left + bounds.right * scale,
+          bottom: frame.top + r.top + bounds.bottom * scale,
+        },
+      };
     }
   }
   return best;
@@ -84,17 +94,21 @@ export const selectInLasso = ({ doc, notes, lasso }) => {
  * height is measured down from 0, so ink above it would hang out of the note). Returns
  * `{ scale, dx, dy }`, or null if the input is not finite numbers.
  */
-export const clampTransform = (bounds, { scale = 1, dx = 0, dy = 0, origin = [0, 0] }) => {
+export const clampTransform = (bounds, { scale = 1, dx = 0, dy = 0, origin = [0, 0], maximumWidth = null }) => {
   if (![scale, dx, dy, origin[0], origin[1]].every(Number.isFinite)) return null;
-  const s = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+  let s = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+  const limit = Number.isFinite(maximumWidth) && maximumWidth > 0 ? Math.max(maximumWidth, bounds.right) : null;
+  if (limit != null && bounds.right > bounds.left) s = Math.min(s, (limit - Math.min(0, bounds.left)) / (bounds.right - bounds.left));
   const [ox, oy] = origin;
   const left = ox + s * (bounds.left - ox);
   const top = oy + s * (bounds.top - oy);
+  let movedX = Math.max(dx, Math.min(0, -left));
+  if (limit != null) movedX = Math.min(movedX, limit - (ox + s * (bounds.right - ox)));
   return {
     scale: s,
     // A selection already poking out (its padded box can start below 0) may not go further out,
     // but is not pulled back in by a move that never touched that edge.
-    dx: Math.max(dx, Math.min(0, -left)),
+    dx: movedX,
     dy: Math.max(dy, Math.min(0, -top)),
   };
 };

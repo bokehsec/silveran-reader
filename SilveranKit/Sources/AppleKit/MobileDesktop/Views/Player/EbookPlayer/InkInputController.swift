@@ -16,6 +16,7 @@ import WebKit
 final class InkInputController: NSObject, UIGestureRecognizerDelegate {
     private weak var webView: WKWebView?
     private let liveView = InkLiveView()
+    private let selectionOverlay: InkSelectionOverlay
     private let recognizer = InkStrokeGestureRecognizer()
     /// True while something else owns the page (a curl in progress, Scrolling Mode); the
     /// Pencil then does not write.
@@ -23,11 +24,13 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
     /// The book's ink state: the writing lock and the tool in hand.
     private let session: InkSession
     /// The palette; brought up on the first touch.
+    private var strokeIsLasso = false
     weak var tools: InkToolController?
 
     init(webView: WKWebView, overlayParent: UIView, session: InkSession) {
         self.webView = webView
         self.session = session
+        selectionOverlay = InkSelectionOverlay(session: session)
         super.init()
 
         liveView.frame = webView.frame
@@ -36,6 +39,24 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
         liveView.backgroundColor = .clear
         liveView.accessibilityElementsHidden = true
         overlayParent.addSubview(liveView)
+        selectionOverlay.frame = webView.frame
+        selectionOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        overlayParent.addSubview(selectionOverlay)
+        let oldModeChanged = session.onSelectionModeChanged
+        session.onSelectionModeChanged = { [weak self] in
+            oldModeChanged?()
+            guard let self else { return }
+            self.recognizer.allowedTouchTypes =
+                self.session.isSelectingInk
+                ? [
+                    UITouch.TouchType.pencil.rawValue as NSNumber,
+                    UITouch.TouchType.direct.rawValue as NSNumber,
+                ]
+                : [UITouch.TouchType.pencil.rawValue as NSNumber]
+            if !self.session.isSelectingInk { self.tools?.selectionEnded() }
+            self.selectionOverlay.refresh()
+        }
+        session.onSelectionChanged = { [weak self] in self?.selectionOverlay.refresh() }
 
         recognizer.delegate = self
         recognizer.onStroke = { [weak self] event in self?.handle(event) }
@@ -46,16 +67,33 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
         !isBlocked()
     }
 
+    func cancelSelectionForLayoutChange() { session.cancelSelection() }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch)
+        -> Bool
+    {
+        guard let touched = touch.view else { return true }
+        return !touched.isDescendant(of: selectionOverlay)
+    }
+
     private func handle(_ event: InkStrokeGestureRecognizer.Event) {
         guard let webView else { return }
         func convert(_ sample: InkSample) -> InkSample {
-            InkSample(point: webView.convert(sample.point, from: recognizer.view), pressure: sample.pressure)
+            InkSample(
+                point: webView.convert(sample.point, from: recognizer.view),
+                pressure: sample.pressure
+            )
         }
         switch event {
             case .began(let sample):
+                strokeIsLasso = session.isSelectingInk
                 session.penDown()
-                tools?.pencilDown()
-                liveView.begin(at: convert(sample), tool: session.tool)
+                if !strokeIsLasso { tools?.pencilDown() }
+                if session.isSelectingInk {
+                    liveView.beginLasso(at: convert(sample))
+                } else {
+                    liveView.begin(at: convert(sample), tool: session.tool)
+                }
             case .moved(let samples, let predicted):
                 session.penMoved()
                 liveView.append(samples.map(convert), predicted: predicted.map(convert))
@@ -66,8 +104,13 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
                 session.penUp()
                 guard let stroke = liveView.finish() else { return }
                 let session = session
+                let selecting = strokeIsLasso
                 Task { @MainActor in
-                    await session.finishStroke(points: stroke.points)
+                    if selecting {
+                        if session.isSelectingInk { await session.selectInk(lasso: stroke.points) }
+                    } else if !session.isSelectingInk {
+                        await session.finishStroke(points: stroke.points)
+                    }
                     stroke.layer.removeFromSuperlayer()
                 }
         }
@@ -165,9 +208,11 @@ final class InkLiveView: UIView {
     private var predicted: [InkSample] = []
     private var live: CAShapeLayer?
     private var tool: InkTool = .pen
+    private var isLasso = false
 
     func begin(at sample: InkSample, tool: InkTool) {
         cancel()
+        isLasso = false
         self.tool = tool
         let shape = CAShapeLayer()
         switch tool.mode {
@@ -197,9 +242,23 @@ final class InkLiveView: UIView {
         redraw()
     }
 
+    func beginLasso(at sample: InkSample) {
+        begin(at: sample, tool: .pen)
+        isLasso = true
+        live?.fillColor = nil
+        live?.strokeColor = UIColor.systemBlue.cgColor
+        live?.lineWidth = 2
+        live?.lineDashPattern = [6, 4]
+        redraw()
+    }
+
     func append(_ newSamples: [InkSample], predicted: [InkSample]) {
         for sample in newSamples {
-            if let last = samples.last, hypot(sample.point.x - last.point.x, sample.point.y - last.point.y) < 0.8 { continue }
+            if let last = samples.last,
+                hypot(sample.point.x - last.point.x, sample.point.y - last.point.y) < 0.8
+            {
+                continue
+            }
             samples.append(sample)
         }
         self.predicted = predicted
@@ -224,7 +283,9 @@ final class InkLiveView: UIView {
         let points: [[Double]] = samples.map { sample in
             let x = Double((sample.point.x * 10).rounded() / 10)
             let y = Double((sample.point.y * 10).rounded() / 10)
-            if tool.mode == .pen, let pressure = sample.pressure { return [x, y, (pressure * 1000).rounded() / 1000] }
+            if tool.mode == .pen, let pressure = sample.pressure {
+                return [x, y, (pressure * 1000).rounded() / 1000]
+            }
             return [x, y]
         }
         let finished = Finished(points: points, layer: live)
@@ -235,6 +296,10 @@ final class InkLiveView: UIView {
 
     private func redraw() {
         let all = samples + predicted
+        if isLasso {
+            live?.path = Self.smoothPath(all.map(\.point)).cgPath
+            return
+        }
         switch tool.mode {
             case .pen:
                 let points = all.map { sample -> [Double] in
@@ -242,7 +307,9 @@ final class InkLiveView: UIView {
                     if let pressure = sample.pressure { p.append(pressure) }
                     return p
                 }
-                live?.path = Self.polygonPath(InkStrokeOutline.outline(points: points, size: tool.width)).cgPath
+                live?.path =
+                    Self.polygonPath(InkStrokeOutline.outline(points: points, size: tool.width))
+                    .cgPath
             case .highlighter, .eraser:
                 live?.path = Self.smoothPath(all.map(\.point)).cgPath
         }

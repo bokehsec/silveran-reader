@@ -3,7 +3,9 @@ import Foundation
 /// Swift's calls into the page's ink engine (`InkEngine.js`, reached through FoliateManager).
 extension ReaderCommsBridge: InkEngineCalling {
     public func inkPropose(_ stroke: InkStrokeInput) async throws -> InkProposal {
-        let result = try await callInk("return await window.foliateManager.inkPropose(\(try jsLiteral(stroke)));")
+        let result = try await callInk(
+            "return await window.foliateManager.inkPropose(\(try jsLiteral(stroke)));"
+        )
         return try decodeInkResult(InkProposal.self, from: result)
     }
 
@@ -19,6 +21,26 @@ extension ReaderCommsBridge: InkEngineCalling {
             "return await window.foliateManager.inkHitTest(\(try jsLiteral(points)), \(radius));"
         )
         return try decodeInkResult(InkHit.self, from: result)
+    }
+
+    public func inkSelect(lasso: [[Double]]) async throws -> InkSelectionHit {
+        let result = try await callInk(
+            "return await window.foliateManager.inkSelect(\(try jsLiteral(lasso)));"
+        )
+        return try decodeInkResult(InkSelectionHit.self, from: result)
+    }
+
+    public func inkPreviewSelection(
+        href: String,
+        noteID: String,
+        indexes: [Int],
+        transform: InkStrokeTransform
+    ) async throws -> Bool {
+        struct Preview: Decodable { let shown: Bool }
+        let result = try await callInk(
+            "return await window.foliateManager.inkPreviewSelection(\(try jsString(href)), \(try jsString(noteID)), \(try jsLiteral(indexes)), \(try jsLiteral(transform)));"
+        )
+        return try decodeInkResult(Preview.self, from: result).shown
     }
 
     public func inkMigrate(href: String, notes: [InkNote]) async throws -> [InkMigratedAnchor] {
@@ -42,7 +64,9 @@ extension ReaderCommsBridge: InkEngineCalling {
 
     /// Briefly marks a suggested place for orphaned ink and shows it. False when the page could
     /// not find it (its section is not loaded).
-    public func inkFlashPassage(href: String, start: TextAnchor, end: TextAnchor?) async throws -> Bool {
+    public func inkFlashPassage(href: String, start: TextAnchor, end: TextAnchor?) async throws
+        -> Bool
+    {
         struct Shown: Decodable { let shown: Bool }
         let endLiteral = try end.map { try jsLiteral($0) } ?? "null"
         let result = try await callInk(
@@ -52,7 +76,10 @@ extension ReaderCommsBridge: InkEngineCalling {
     }
 
     public func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws {
-        struct Margin: Encodable { let hasNotes: Bool?; let open: Bool? }
+        struct Margin: Encodable {
+            let hasNotes: Bool?
+            let open: Bool?
+        }
         _ = try await callInk(
             "return await window.foliateManager.inkSetMargin(\(try jsLiteral(Margin(hasNotes: hasNotes, open: open))));"
         )

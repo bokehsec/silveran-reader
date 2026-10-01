@@ -25,6 +25,22 @@ private final class FakeEngine: InkEngineCalling {
     var repairAnswers: [InkRepairAnswer] = []
     var repairCalls: [(href: String, ids: [String])] = []
     var pageAnchor = InkPageAnchor()
+    var selectionHit = InkSelectionHit()
+    var onSelect: (() async -> Void)?
+    var previews: [InkStrokeTransform] = []
+    func inkSelect(lasso: [[Double]]) async throws -> InkSelectionHit {
+        await onSelect?()
+        return selectionHit
+    }
+    func inkPreviewSelection(
+        href: String,
+        noteID: String,
+        indexes: [Int],
+        transform: InkStrokeTransform
+    ) async throws -> Bool {
+        previews.append(transform)
+        return true
+    }
 
     func inkPropose(_ stroke: InkStrokeInput) async throws -> InkProposal {
         proposed.append(stroke)
@@ -689,7 +705,11 @@ struct InkSessionModelTests {
                 answer: InkRepairAnswer(
                     id: "a",
                     kind: "note",
-                    suggestion: InkRepairSuggestion(anchor: anchor(40), score: 0.8, excerpt: excerpt)
+                    suggestion: InkRepairSuggestion(
+                        anchor: anchor(40),
+                        score: 0.8,
+                        excerpt: excerpt
+                    )
                 )
             )
         )
@@ -703,7 +723,11 @@ struct InkSessionModelTests {
                     id: "m",
                     kind: "mark",
                     suggestion: InkRepairSuggestion(
-                        start: anchor(50), end: anchor(60), score: 1, excerpt: excerpt)
+                        start: anchor(50),
+                        end: anchor(60),
+                        score: 1,
+                        excerpt: excerpt
+                    )
                 )
             )
         )
@@ -716,8 +740,10 @@ struct InkSessionModelTests {
             !session.acceptRepair(
                 href: "c1",
                 answer: InkRepairAnswer(
-                    id: "a", kind: "note",
-                    suggestion: InkRepairSuggestion(anchor: anchor(40), score: 1, excerpt: excerpt))
+                    id: "a",
+                    kind: "note",
+                    suggestion: InkRepairSuggestion(anchor: anchor(40), score: 1, excerpt: excerpt)
+                )
             )
         )
 
@@ -777,8 +803,13 @@ struct InkSessionModelTests {
         let session = await openSession(directory: directory, engine: engine, ids: ["m1"])
         engine.proposals = [
             InkProposal(
-                op: .note, section: "c1", anchor: anchor(30), stroke: InkStroke(points: [[1, 2]]),
-                placement: .margin, refWidth: 96)
+                op: .note,
+                section: "c1",
+                anchor: anchor(30),
+                stroke: InkStroke(points: [[1, 2]]),
+                placement: .margin,
+                refWidth: 96
+            )
         ]
         await session.finishStroke(InkStrokeInput(points: [[5, 5]]))
         let note = session.section("c1").notes.first
@@ -787,14 +818,22 @@ struct InkSessionModelTests {
         #expect(note?.refWidth == 96)
         #expect(session.hasMarginNotes)
         await session.flush()
-        #expect(engine.marginCalls.last?.hasNotes == true, "the page is told the book now has margin notes")
+        #expect(
+            engine.marginCalls.last?.hasNotes == true,
+            "the page is told the book now has margin notes"
+        )
     }
 
     @Test("Margin notes survive saving and reopening; notes without a placement stay in the text")
     func marginNotesRoundTrip() async throws {
         let marginNote = InkNote(
-            id: "m", anchor: anchor(1), strokes: [InkStroke(points: [[0, 0]])], createdAt: stamp,
-            placement: .margin, refWidth: 80)
+            id: "m",
+            anchor: anchor(1),
+            strokes: [InkStroke(points: [[0, 0]])],
+            createdAt: stamp,
+            placement: .margin,
+            refWidth: 80
+        )
         let book = BookInk(sections: ["c1": SectionInk(notes: [marginNote, note("inline")])])
         let data = try JSONEncoder().encode(book)
         let decoded = try JSONDecoder().decode(BookInk.self, from: data)
@@ -963,4 +1002,129 @@ struct InkSessionModelTests {
         #expect(notes[0].legacyCFI == nil)
         #expect(notes[1].legacyCFI != nil)
     }
+    @Test(
+        "Lasso previews do not save; commit is one undo step and survives reopen, including margins"
+    )
+    func selectionCommit() async {
+        for placement: InkNotePlacement? in [nil, .margin] {
+            let directory = makeDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let engine = FakeEngine()
+            let session = await openSession(directory: directory, engine: engine)
+            var original = note("selected", strokes: 2)
+            original.placement = placement
+            original.strokes = [
+                InkStroke(points: [[10, 20, 0.7], [30, 40]]), InkStroke(points: [[50, 60]]),
+            ]
+            #expect(session.apply(.addNote(href: "ch1", note: original)))
+            #expect(await session.flush())
+            engine.selectionHit = InkSelectionHit(
+                section: "ch1",
+                selection: InkSelectedStrokes(
+                    noteId: "selected",
+                    indexes: [0],
+                    bounds: InkSelectionBounds(left: 9, top: 19, right: 31, bottom: 41),
+                    viewportBounds: InkSelectionBounds(
+                        left: 109,
+                        top: 119,
+                        right: 131,
+                        bottom: 141
+                    ),
+                    scale: 1
+                )
+            )
+            session.isSelectingInk = true
+            await session.selectInk(lasso: [[100, 100], [140, 100], [140, 150], [100, 150]])
+            #expect(session.selection != nil)
+            #expect(session.previewSelection(InkStrokeTransform(dx: 5, dy: 8)) != nil)
+            #expect(
+                session.section("ch1").notes[0] == original,
+                "preview never mutates durable creative data"
+            )
+            #expect(session.commitSelection())
+            #expect(await session.flush())
+            let moved = session.section("ch1").notes[0]
+            #expect(moved.anchor == original.anchor)
+            #expect(moved.placement == original.placement)
+            #expect(moved.strokes[0].points == [[15, 28, 0.7], [35, 48]])
+            #expect(moved.strokes[1] == original.strokes[1])
+            let loaded = await InkActor(directory: directory).load(bookID: bookID)
+            #expect(loaded.ink.sections["ch1"]?.notes[0] == moved)
+            #expect(session.undo())
+            #expect(session.section("ch1").notes[0] == original)
+            #expect(session.redo())
+            #expect(session.section("ch1").notes[0] == moved)
+        }
+    }
+
+    @Test("Cancel restores preview; stale indexes and late selection results cannot edit")
+    func selectionCancellation() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        let original = note("selected")
+        #expect(session.apply(.addNote(href: "ch1", note: original)))
+        engine.selectionHit = InkSelectionHit(
+            section: "ch1",
+            selection: InkSelectedStrokes(
+                noteId: "selected",
+                indexes: [0],
+                bounds: InkSelectionBounds(left: 0, top: 0, right: 20, bottom: 20),
+                viewportBounds: InkSelectionBounds(left: 100, top: 100, right: 120, bottom: 120),
+                scale: 1
+            )
+        )
+        session.isSelectingInk = true
+        await session.selectInk(lasso: [])
+        _ = session.previewSelection(InkStrokeTransform(dx: 5))
+        session.cancelSelection()
+        #expect(await session.flush())
+        #expect(session.selection == nil)
+        #expect(engine.previews.last?.isIdentity == true)
+        #expect(session.section("ch1").notes[0] == original)
+        engine.onSelect = { session.isSelectingInk = false }
+        await session.selectInk(lasso: [])
+        #expect(session.selection == nil)
+        engine.onSelect = nil
+        session.isSelectingInk = true
+        engine.selectionHit.selection?.indexes = [99]
+        await session.selectInk(lasso: [])
+        #expect(session.selection == nil)
+        #expect(!session.commitSelection())
+    }
+
+    @Test("Duplicating selected strokes creates a new note identity and deleting is undoable")
+    func selectionDuplicateAndDelete() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine, ids: ["copy"])
+        let original = note("selected", strokes: 2)
+        #expect(session.apply(.addNote(href: "ch1", note: original)))
+        engine.selectionHit = InkSelectionHit(
+            section: "ch1",
+            selection: InkSelectedStrokes(
+                noteId: "selected",
+                indexes: [0],
+                bounds: InkSelectionBounds(left: 0, top: 0, right: 20, bottom: 20),
+                viewportBounds: InkSelectionBounds(left: 100, top: 100, right: 120, bottom: 120),
+                scale: 1
+            )
+        )
+        session.isSelectingInk = true
+        await session.selectInk(lasso: [])
+        #expect(session.duplicateSelection())
+        let copied = session.section("ch1").notes[1]
+        #expect(copied.id == "copy")
+        #expect(copied.anchor == original.anchor)
+        #expect(copied.strokes == [original.strokes[0]])
+        await session.selectInk(lasso: [])
+        #expect(session.deleteSelection())
+        #expect(session.section("ch1").notes[0].strokes == [original.strokes[1]])
+        #expect(session.undo())
+        #expect(session.section("ch1").notes[0] == original)
+        #expect(await session.flush())
+    }
+
 }

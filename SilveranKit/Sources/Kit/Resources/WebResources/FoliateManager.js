@@ -210,6 +210,8 @@ class FoliateManager {
    * turn the page, only a deliberate swipe does, so reaching for the writing can't flip it.
    */
   #inkPencilMode = false;
+  #inkSelectionMode = false;
+  #inkWriting = false;
   // The web side of the Pencil writing lock; see InkTouchGuard.js.
   #inkTouchGuard = new InkTouchGuard();
 
@@ -1703,13 +1705,19 @@ class FoliateManager {
 
   /** Swift reports the Pencil is on the page (or has just lifted); see InkTouchGuard. */
   setInkWriting(writing) {
-    this.#inkTouchGuard.setWriting(writing);
+    this.#inkWriting = !!writing;
+    this.#inkTouchGuard.setWriting(this.#inkWriting || this.#inkSelectionMode);
   }
 
   /** Mode and theme: { enabled?, background?, isWriting?, pencilMode? }. */
+  setInkSelectionMode(enabled) {
+    this.#inkSelectionMode = !!enabled;
+    this.#inkTouchGuard.setWriting(this.#inkWriting || this.#inkSelectionMode);
+  }
+
   inkSetContext(jsonString) {
     const { isWriting, pencilMode, ...context } = JSON.parse(jsonString);
-    if (isWriting !== undefined) this.#inkTouchGuard.setWriting(isWriting);
+    if (isWriting !== undefined) this.setInkWriting(isWriting);
     if (pencilMode !== undefined) this.#inkPencilMode = !!pencilMode;
     this.#inkEngine.setContext(context);
   }
@@ -1738,6 +1746,11 @@ class FoliateManager {
   inkSelect(lassoJSON) {
     return JSON.stringify(this.#inkEngine.select(JSON.parse(lassoJSON)));
   }
+
+  inkPreviewSelection(href, noteId, indexesJSON, transformJSON) {
+    return JSON.stringify({ shown: this.#inkEngine.previewSelection(href, noteId, JSON.parse(indexesJSON), JSON.parse(transformJSON)) });
+  }
+
 
   /** The CFI of a note, to navigate to it (null when its section is not loaded or it is not placed). */
   inkLocate(href, id) {

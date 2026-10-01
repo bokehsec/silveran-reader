@@ -34,7 +34,11 @@ struct InkStrokeTransformTests {
     ) -> (changed: Bool, ink: SectionInk) {
         var result = section
         let changed = InkOperation.transformStrokes(
-            href: "c1", noteID: note, indexes: indexes, transform: transform, at: edited
+            href: "c1",
+            noteID: note,
+            indexes: indexes,
+            transform: transform,
+            at: edited
         ).apply(to: &result)
         return (changed, result)
     }
@@ -53,7 +57,9 @@ struct InkStrokeTransformTests {
                 == [[10, 10], [50, 30, 0.7]]
         )
         #expect(
-            InkStrokeTransform(scale: 0.5, dx: 1, dy: 2).apply(to: points) == [[6, 7], [16, 12, 0.7]]
+            InkStrokeTransform(scale: 0.5, dx: 1, dy: 2).apply(to: points) == [
+                [6, 7], [16, 12, 0.7],
+            ]
         )
         #expect(InkStrokeTransform(scale: 1.0 / 3.0).apply(to: [[1, 1]]) == [[0.3, 0.3]])
     }
@@ -117,7 +123,9 @@ struct InkStrokeTransformTests {
     func appliesResize() {
         let ink = section(strokes: [stroke([[10, 10], [30, 20]], width: 3)])
         let result = transformed(
-            InkStrokeTransform(scale: 2, originX: 10, originY: 10), strokes: [0], in: ink
+            InkStrokeTransform(scale: 2, originX: 10, originY: 10),
+            strokes: [0],
+            in: ink
         )
         #expect(result.changed)
         #expect(result.ink.notes[0].strokes[0].points == [[10, 10], [50, 30]])
@@ -162,10 +170,28 @@ struct InkStrokeTransformTests {
     @Test("The operation names its section and note, and is undoable")
     func operationMetadata() {
         let operation = InkOperation.transformStrokes(
-            href: "c1", noteID: "n", indexes: [0], transform: InkStrokeTransform(dx: 1), at: edited
+            href: "c1",
+            noteID: "n",
+            indexes: [0],
+            transform: InkStrokeTransform(dx: 1),
+            at: edited
         )
         #expect(operation.href == "c1")
         #expect(operation.focusID == "n")
         #expect(operation.isUndoable)
     }
+    @Test("Moves and resizes respect the displayed column or margin width")
+    func widthLimit() {
+        let strokes = [stroke([[10, 20], [110, 70]], width: 0)]
+        let moved = InkStrokeTransform(dx: 300).clamped(keeping: strokes, maximumWidth: 200)
+        #expect(moved?.dx == 90)
+        let resized = InkStrokeTransform(scale: 4, originX: 10, originY: 20).clamped(
+            keeping: strokes,
+            maximumWidth: 200
+        )
+        #expect(resized?.scale == 2)
+        #expect(resized?.dx == -10)
+        #expect(resized?.apply(to: [[10, 20], [110, 70]]) == [[0, 20], [200, 120]])
+    }
+
 }

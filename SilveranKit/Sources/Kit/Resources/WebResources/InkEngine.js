@@ -7,7 +7,8 @@ import { MarkLayer } from "./InkMarks.js";
 import { installInkAwareCFI, rangeFromCFI } from "./InkFilters.js";
 import { ensureInkStyle, placeNotes, clearNotes } from "./InkLayout.js";
 import { proposeStroke, hitTestNotes, visibleWidth, pageStartOffset, toDoc } from "./InkGeometry.js";
-import { selectInLasso } from "./InkSelection.js";
+import { selectInLasso, transformPoints } from "./InkSelection.js";
+import { strokeAttributes } from "./InkStrokeShape.js";
 import { MarginLayer, proposeMarginStroke, isMarginNote } from "./InkMargin.js";
 
 /**
@@ -267,7 +268,29 @@ export default class InkEngine {
     if (!contents) return { section: null, selection: null };
     const href = this.#href(contents.index);
     const notes = this.#sections.get(href)?.notes ?? [];
-    return { section: href, selection: selectInLasso({ doc: contents.doc, notes, lasso }) };
+    return { section: href, selection: selectInLasso({ doc: contents.doc, notes, lasso, marginLayer: this.#marginLayers.get(contents.doc) }) };
+  }
+
+  /** Temporary drawing projection. The cached/stored note and pagination are unchanged. */
+  previewSelection(href, noteId, indexes, transform) {
+    const contents = this.#contentsFor(href);
+    const note = this.#sections.get(href)?.notes?.find(n => n.id === noteId);
+    if (!contents || !note) return false;
+    const doc = contents.doc;
+    const inline = [...doc.querySelectorAll(INK_TAG)].find(el => el.dataset.id === noteId);
+    const group = inline?.querySelector("svg > g") ??
+      [...doc.querySelectorAll(".silveran-margin-layer > g")].find(el => el.dataset.id === noteId);
+    if (!group) return false;
+    const paths = [...group.children];
+    for (const i of indexes) {
+      const stroke = note.strokes[i];
+      if (!stroke || !paths[i]) continue;
+      const points = transformPoints(stroke.points, { ...transform, origin: [transform.originX ?? 0, transform.originY ?? 0] });
+      for (const [name, value] of Object.entries(strokeAttributes({ ...stroke, points }, this.#paint(stroke.color)))) {
+        paths[i].setAttribute(name, value);
+      }
+    }
+    return true;
   }
 
   /**
@@ -281,7 +304,7 @@ export default class InkEngine {
     }
     if (this.#marginLayers.get(doc)?.contains(x, y, slop)) return true;
     const layer = this.#markLayers.get(doc);
-    return !!layer && layer.hitTest([[x, y]], slop).length > 0;
+    return !!layer && layer.contains(x, y, slop);
   }
 
   /** The CFI of a note or mark in a loaded section, to navigate to it. Null if it is not loaded or not placed. */

@@ -831,6 +831,24 @@ public actor FilesystemActor {
         }
     }
 
+    /// Compare-and-update runs without suspension inside the protected owner. Library inspection
+    /// cannot overwrite a note/color edit or deletion that arrived after its snapshot.
+    public func repairHighlight(expected: Highlight, replacement: Highlight, bookID: BookID) throws
+    {
+        let current = try loadHighlights(bookID: bookID) ?? []
+        guard expected.id == replacement.id, expected.bookID == bookID,
+            replacement.bookID == bookID,
+            let latest = current.first(where: { $0.id == expected.id }),
+            try HighlightsCodec.equivalent(latest, expected)
+        else {
+            throw AnnotationPersistenceFailure(
+                message:
+                    "This annotation changed since inspection. Check it again before repairing."
+            )
+        }
+        try mutateHighlights(.update(replacement), bookID: bookID)
+    }
+
     public func saveHighlights(bookID: BookID, highlights: [Highlight]) throws {
         // Existing callers cannot bypass protection with a whole-file replacement.
         _ = try loadHighlights(bookID: bookID)
@@ -1001,9 +1019,10 @@ public actor FilesystemActor {
     /// Returns the installed reader web resources, installing them from the app bundle first when
     /// they are missing. The reader must use this rather than `getWebResourcesDirectory()` so a
     /// book opened before launch-time installation finishes never loads an absent reader.
-    public func readyWebResourcesDirectory() throws -> URL {
+    public func readyWebResourcesDirectory(requiredFile: String = "foliate_wrap.html") throws -> URL
+    {
         let webResourcesDir = getWebResourcesDirectory()
-        let htmlURL = webResourcesDir.appendingPathComponent("foliate_wrap.html")
+        let htmlURL = webResourcesDir.appendingPathComponent(requiredFile)
         if !FileManager.default.fileExists(atPath: htmlURL.path) {
             debugLog("[FilesystemActor] Web resources missing; installing before opening reader")
             try copyWebResources(from: KitResources.webResourcesDirectory())

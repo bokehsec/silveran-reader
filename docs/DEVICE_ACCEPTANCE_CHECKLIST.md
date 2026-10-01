@@ -111,3 +111,12 @@ These checks expand the earlier browser checklist. None is marked passed by code
 | 54 | Reopen exported PDF in Files/Preview; export long notes and large ink | Every annotation/end marker appears, multi-page text stays above footers, no cropped strokes, chapter/author/provenance present |
 | 55 | iPhone portrait/landscape and iPad narrow split-screen, light/dark | Search/filter/reset remain discoverable, preview fits the page and zooms, native picker is usable, no unintended reader navigation |
 | 56 | Reopen a synthetic book containing saved ink; tap ink in both page-edge zones before writing, then after rotation/reflow | Inline marks/notes and margin drawings respond without turning the page; repeat after the first stroke to distinguish hit testing from Pencil-mode suppression (OD-015) |
+
+## Phase 5 authoring and unopened-chapter repair increment
+
+| # | Check | Pass when |
+| --- | --- | --- |
+| 57 | Library > book actions > Check & Repair with ebook-only/read-along-only downloads; missing file/book | Progress and Cancel are clear; all annotated chapters are checked; saved reading position is unchanged; unavailable content is explained and notes remain kept |
+| 58 | Review orphaned typed highlights/ink, repeated/no-suggestion/missing chapters; attach and reopen; inject a failed save and edit on another device | Original note/handwriting and target context are visible; only explicit confirmation repairs; identity/color/note/strokes stay intact; stale review refuses; failed edits retry without loss; no guessed attachment |
+| 59 | iPad Select Handwriting or PencilKit lasso: select partial inline/margin strokes; move/resize; Cancel/Done/Delete/Duplicate; undo/redo/reopen | Controls are discoverable, targets are usable, bounds prevent clipping, preview never reports saved, Cancel preserves original, Done is one undo step, copies have new identities and no page accidentally turns |
+| 60 | Lasso during narration, rotation/reflow/split-screen, renderer rebuild, iCloud arrival, large text/VoiceOver | Layout changes invalidate stale selection safely; no obsolete indexes overwrite arriving edits; editing/save status remains truthful; narration/palm/gesture interaction passes separately on real Pencil hardware |

@@ -216,7 +216,7 @@ public struct EbookPlayerView: View {
         .sheet(isPresented: $viewModel.showInkRepair) {
             InkRepairSheet(viewModel: viewModel) { viewModel.showInkRepair = false }
                 #if os(macOS)
-                .frame(minWidth: 520, minHeight: 480)
+            .frame(minWidth: 520, minHeight: 480)
                 #endif
         }
         #if os(iOS)
@@ -635,6 +635,7 @@ public struct EbookPlayerView: View {
                     onSleepTimerStart: viewModel.handleSleepTimerStart,
                     onSleepTimerCancel: viewModel.handleSleepTimerCancel,
                     onToggleInkTools: viewModel.commsBridge?.toggleInkTools,
+                    onSelectInk: viewModel.commsBridge?.selectInkWithLasso,
                     onToggleMargin: marginToggle,
                     marginOpen: viewModel.inkMarginState.expanded,
                     settingsVM: viewModel.settingsVM,
@@ -1075,12 +1076,11 @@ private struct TitleBarConfigurator: NSViewRepresentable {
         let buttonTypes: [NSWindow.ButtonType] = [
             .closeButton, .miniaturizeButton, .zoomButton,
         ]
-        buttonTypes
-            .compactMap { window.standardWindowButton($0) }
-            .forEach { button in
-                button.alphaValue = isTitleBarVisible ? 1 : 0
-                button.isEnabled = isTitleBarVisible
-            }
+        for type in buttonTypes {
+            guard let button = window.standardWindowButton(type) else { continue }
+            button.alphaValue = isTitleBarVisible ? 1 : 0
+            button.isEnabled = isTitleBarVisible
+        }
 
         if let titlebarView = window.standardWindowButton(.closeButton)?.superview {
             titlebarView.alphaValue = isTitleBarVisible ? 1 : 0

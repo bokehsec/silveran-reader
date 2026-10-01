@@ -32,6 +32,7 @@ public final class ReaderCommsBridge {
     public let inkSession: InkSession
 
     /// Shows or hides the writing tool palette. Set by the iPad reader; nil where the Pencil does not write.
+    public var selectInkWithLasso: (() -> Void)?
     public var toggleInkTools: (() -> Void)?
     public var hideInkTools: (() -> Void)?
 
@@ -106,6 +107,12 @@ public final class ReaderCommsBridge {
         inkSession.onPencilModeChanged = { [weak self] in
             self?.pushInkState("window.foliateManager?.inkSetContext('{\"pencilMode\":true}')")
         }
+        inkSession.onSelectionModeChanged = { [weak self] in
+            guard let self else { return }
+            self.pushInkState(
+                "window.foliateManager?.setInkSelectionMode(\(self.inkSession.isSelectingInk))"
+            )
+        }
         // A web view rebuilt for a book already written in starts in Pencil mode.
         if inkSession.isPencilMode {
             pushInkState("window.foliateManager?.inkSetContext('{\"pencilMode\":true}')")
@@ -136,6 +143,7 @@ public final class ReaderCommsBridge {
 
     /// JS is sending Swift a Relocated event when user navigates, page turns, resizes, etc.
     public func sendSwiftRelocated(_ message: RelocatedMessage) {
+        inkSession.cancelSelection()
         debugLog("[ReaderCommsBridge] sendSwiftRelocated")
         debugLog(
             "[ReaderCommsBridge]   section: \(message.sectionIndex?.description ?? "nil"), page: \(message.pageIndex?.description ?? "nil")"
@@ -172,7 +180,7 @@ public final class ReaderCommsBridge {
         // Margin taps, swipes and arrow keys never turn the page while writing. A "drag" is
         // a finger-driven curl that started before the lock (the animator won't start one
         // while writing) and must be allowed to finish.
-        if message.source != "drag", inkSession.isWriting {
+        if message.source != "drag", inkSession.isWriting || inkSession.isSelectingInk {
             debugLog("[ReaderCommsBridge] Ignoring navigation while writing with the Pencil")
             return
         }
@@ -598,9 +606,15 @@ public final class ReaderCommsBridge {
         items: [(id: String, text: String, cfi: String)]
     ) async throws -> [HighlightRepairAnswer] {
         guard let js else { throw ReaderCommsBridgeError.jsNotAvailable }
-        struct Item: Encodable { let id: String; let text: String; let cfi: String }
+        struct Item: Encodable {
+            let id: String
+            let text: String
+            let cfi: String
+        }
         let json = String(
-            decoding: try JSONEncoder().encode(items.map { Item(id: $0.id, text: $0.text, cfi: $0.cfi) }),
+            decoding: try JSONEncoder().encode(
+                items.map { Item(id: $0.id, text: $0.text, cfi: $0.cfi) }
+            ),
             as: UTF8.self
         )
         let literal = String(decoding: try JSONEncoder().encode(json), as: UTF8.self)

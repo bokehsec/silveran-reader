@@ -42,6 +42,62 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-032 — Tapping the words of an ink mark could turn the page
+
+- Date: 2026-09-30
+- Status: Needs validation (automated regression passes; original simulator scenario pending)
+- Platforms: EPUB renderer on Apple platforms; shared JavaScript geometry
+- Components: `InkMarks.MarkLayer.contains`, `InkEngine.inkAt`, `inkMarks.test.mjs`
+- Related links: OD-015 in [Observed oddities](docs/OBSERVED_ODDITIES.md), checklist 56
+
+#### Symptom
+
+Before writing in a session (so Pencil mode is not suppressing every margin tap), tapping the words covered by an underline can fall through to page-edge navigation. A synthetic underline five points below a text line reproduces the failed hit test when tapping the center of its words. Claude's earlier simulator handoff reported a similar saved-mark tap near the left edge; that precise scenario has not been rerun.
+
+#### Root cause
+
+`InkEngine.inkAt` reused the eraser's painted-path hit test. An underline or bracket belongs to its covered words, but its painted shape can sit farther than the twelve-point hit tolerance from an ordinary word-center tap. The tap should target the annotation's words as well as its strokes. Coordinate mismatch was an earlier hypothesis; this regression confirms a different, concrete gap without claiming the old simulator coordinates were reproduced.
+
+#### Change
+
+Add a tap-specific `MarkLayer.contains` that checks fresh client rectangles of the anchored word range, then falls back to painted-path geometry. Use it for navigation suppression. Keep eraser hit testing unchanged so erasing text near a stroke does not unexpectedly remove the mark. Unmarked page areas retain normal navigation.
+
+#### Validation
+
+`node --test SilveranKit/Tests/WebHarness/inkMarks.test.mjs`: the new word-center regression failed before the change (10 passed, 1 failed) and passes after it (11 passed). The test also checks an unmarked region remains outside the hit area; existing eraser tests pass. Full web/build results are recorded with the Phase 5 increment. Original iPad simulator edge taps, reflow and rotation remain checklist 56 acceptance work while the Mac is locked.
+
+#### Compatibility and follow-up
+
+No persisted data or migration changes. Wider tap targets deliberately include the words that an ink mark annotates. None known beyond the pending simulator acceptance.
+
+### BF-031 — Library annotations rejected downloaded read-along editions
+
+- Date: 2026-09-30
+- Status: Needs validation (simulator interaction pending)
+- Platforms: iOS/iPadOS and macOS annotation browser
+- Components: `AnnotationsBrowserView.readableCategory`, `show`, library placement review
+- Related links: [Phase 5 execution backlog](docs/PHASE5_EXECUTION_BACKLOG.md)
+
+#### Symptom
+
+With only a read-along EPUB downloaded, Show in Book said to download the ebook even though the same book was readable offline. Library repair would also have been unavailable for that download category.
+
+#### Root cause
+
+The browser checked only `.ebook` in the source-neutral local-media cache. Read-along files live under `.synced`; the reader and `BookServiceActor.prepareEbookForReading` already support that category.
+
+#### Change
+
+Resolve a readable category from an ebook first, then a downloaded read-along edition. Use that decision for Show in Book and the new owned placement inspector. Explain both download choices when neither exists. This does not download anything or match a different source/book, and audio-only files still cannot be inspected as EPUB.
+
+#### Validation
+
+Code inspection confirmed the category mismatch and the existing preparation contract. `scripts/test` passed 379 tests in 37 suites; `npm test` in WebHarness passed 153. Unsigned `scripts/macbuild` and `scripts/iosbuild` passed (exact destination and commands in the canonical plan's managed lasso/repair entry). Actual Show in Book/repair interaction with a read-along-only synthetic download remains pending while the Mac is locked; do not mark this accepted from compilation alone.
+
+#### Compatibility and follow-up
+
+No storage or identity migration. Verify checklist 57 with both ebook and read-along downloads, including missing files and unavailable sources. None known beyond the pending interaction check.
+
 ### BF-030 — Annotation title search bypassed filters and hid recovery navigation
 
 - Date: 2026-09-30

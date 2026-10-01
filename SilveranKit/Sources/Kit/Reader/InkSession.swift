@@ -10,6 +10,13 @@ public protocol InkEngineCalling: AnyObject {
     func inkRender(href: String, section: SectionInk, focus: String?) async throws
     /// What the eraser path (web view coordinates) touches on the current page.
     func inkHitTest(points: [[Double]], radius: Double) async throws -> InkHit
+    func inkSelect(lasso: [[Double]]) async throws -> InkSelectionHit
+    func inkPreviewSelection(
+        href: String,
+        noteID: String,
+        indexes: [Int],
+        transform: InkStrokeTransform
+    ) async throws -> Bool
     /// The word anchors for version 1 notes, worked out from their CFIs.
     func inkMigrate(href: String, notes: [InkNote]) async throws -> [InkMigratedAnchor]
     /// Suggested new places for ink in a loaded section that no longer finds its words.
@@ -81,6 +88,8 @@ public final class InkSession {
     public weak var engine: (any InkEngineCalling)? {
         didSet {
             guard oldValue !== engine else { return }
+            cancelSelection()
+            isSelectingInk = false
             rendererGeneration += 1
             if engine == nil { readySections.removeAll() }
             migrating.removeAll()
@@ -214,6 +223,7 @@ public final class InkSession {
     @discardableResult
     public func reloadFromStore() async -> Bool {
         guard isOpen, let bookID else { return true }
+        cancelSelection()
         guard await flush() else { return false }
         openGeneration += 1
         let generation = openGeneration
@@ -302,6 +312,7 @@ public final class InkSession {
     @discardableResult
     public func apply(_ operation: InkOperation) -> Bool {
         guard canEdit else { return false }
+        if selection != nil { cancelSelection() }
         let href = operation.href
         let before = section(href)
         var after = before
@@ -320,6 +331,7 @@ public final class InkSession {
 
     @discardableResult
     public func undo() -> Bool {
+        cancelSelection()
         guard canEdit, let entry = undoStack.popLast() else { return false }
         commit(href: entry.href, before: entry.after, after: entry.before, focus: nil)
         redoStack.append(entry)
@@ -329,6 +341,7 @@ public final class InkSession {
 
     @discardableResult
     public func redo() -> Bool {
+        cancelSelection()
         guard canEdit, let entry = redoStack.popLast() else { return false }
         commit(href: entry.href, before: entry.before, after: entry.after, focus: nil)
         undoStack.append(entry)
@@ -512,7 +525,9 @@ public final class InkSession {
         switch answer.kind {
             case "note":
                 guard let anchor = suggestion.anchor else { return false }
-                return apply(.reanchorNote(href: href, noteID: answer.id, anchor: anchor, at: now()))
+                return apply(
+                    .reanchorNote(href: href, noteID: answer.id, anchor: anchor, at: now())
+                )
             case "mark":
                 guard let start = suggestion.start, let end = suggestion.end else { return false }
                 return apply(.reanchorMark(href: href, markID: answer.id, start: start, end: end))
@@ -548,6 +563,186 @@ public final class InkSession {
         }
         guard current.marks.contains(where: { $0.id == id }) else { return false }
         return apply(.erase(href: href, strokes: [], markIDs: [id], at: now()))
+    }
+
+    // MARK: - Lasso editing
+
+    public var isSelectingInk = false {
+        didSet {
+            guard isSelectingInk != oldValue else { return }
+            if !isSelectingInk { cancelSelection() }
+            onSelectionModeChanged?()
+        }
+    }
+    public var onSelectionModeChanged: (() -> Void)?
+    public private(set) var selection: InkSelectionDraft?
+    public private(set) var selectionMessage = "Draw around handwriting to select it."
+    public var onSelectionChanged: (() -> Void)?
+    private var selectionGeneration: UInt64 = 0
+    private var previewRevision: UInt64 = 0
+
+    public func selectInk(lasso: [[Double]]) async {
+        cancelSelection()
+        let request = selectionGeneration
+        let renderer = rendererGeneration
+        guard canEdit, isSelectingInk, let engine else { return }
+        await strokeTail?.value
+        let before = ink
+        do {
+            let hit = try await engine.inkSelect(lasso: lasso)
+            guard request == selectionGeneration, renderer == rendererGeneration, isSelectingInk,
+                canEdit, let href = hit.section, let picked = hit.selection,
+                picked.bounds.isValid, picked.viewportBounds.isValid,
+                picked.scale.isFinite, picked.scale > 0,
+                let note = section(href).notes.first(where: { $0.id == picked.noteId }),
+                before.sections[href]?.notes.first(where: { $0.id == picked.noteId }) == note,
+                !picked.indexes.isEmpty, Set(picked.indexes).count == picked.indexes.count,
+                picked.indexes.allSatisfy({ note.strokes.indices.contains($0) })
+            else {
+                if request == selectionGeneration {
+                    selectionMessage =
+                        "No handwriting selected. Draw around the strokes of one note."
+                    onSelectionChanged?()
+                }
+                return
+            }
+            selection = InkSelectionDraft(
+                href: href,
+                selected: picked,
+                transform: InkStrokeTransform(),
+                original: note
+            )
+            selectionMessage =
+                "Drag to move. Drag the corner to resize. Done saves; Cancel keeps the original."
+            onSelectionChanged?()
+        } catch {
+            guard request == selectionGeneration else { return }
+            selectionMessage = "Couldn't select handwriting. Try again."
+            onSelectionChanged?()
+        }
+    }
+
+    @discardableResult
+    public func previewSelection(_ transform: InkStrokeTransform) -> InkStrokeTransform? {
+        guard var draft = selection, selectionIsCurrent(draft),
+            let applied = transform.clamped(
+                keeping: draft.selected.indexes.map { draft.original.strokes[$0] },
+                maximumWidth: draft.selected.noteWidth
+            )
+        else {
+            cancelSelection()
+            return nil
+        }
+        draft.transform = applied
+        selection = draft
+        queueSelectionPreview(draft, transform: applied)
+        onSelectionChanged?()
+        return applied
+    }
+
+    private func selectionIsCurrent(_ draft: InkSelectionDraft) -> Bool {
+        canEdit
+            && section(draft.href).notes.first(where: { $0.id == draft.selected.noteId })
+                == draft.original
+    }
+
+    private func queueSelectionPreview(_ draft: InkSelectionDraft, transform: InkStrokeTransform) {
+        previewRevision += 1
+        let preview = previewRevision
+        let previous = renderTail
+        let renderer = rendererGeneration
+        renderTail = Task { [weak self] in
+            await previous?.value
+            guard let self, renderer == self.rendererGeneration, let engine = self.engine else {
+                return
+            }
+            guard transform.isIdentity || preview == self.previewRevision else { return }
+            do {
+                let shown = try await engine.inkPreviewSelection(
+                    href: draft.href,
+                    noteID: draft.selected.noteId,
+                    indexes: draft.selected.indexes,
+                    transform: transform
+                )
+                if !shown && !transform.isIdentity {
+                    self.cancelSelection()
+                    self.selectionMessage = "The page changed. Select the handwriting again."
+                    self.onSelectionChanged?()
+                }
+            } catch {
+                self.selectionMessage = "Preview unavailable. Cancel and try again."
+                self.onSelectionChanged?()
+            }
+        }
+    }
+
+    public func cancelSelection() {
+        selectionGeneration += 1
+        if let selection { queueSelectionPreview(selection, transform: InkStrokeTransform()) }
+        selection = nil
+        selectionMessage = "Draw around handwriting to select it."
+        onSelectionChanged?()
+    }
+
+    @discardableResult
+    public func commitSelection() -> Bool {
+        guard let draft = selection, selectionIsCurrent(draft) else {
+            cancelSelection()
+            return false
+        }
+        cancelSelection()
+        return apply(
+            .transformStrokes(
+                href: draft.href,
+                noteID: draft.selected.noteId,
+                indexes: draft.selected.indexes,
+                transform: draft.transform,
+                at: now()
+            )
+        )
+    }
+
+    @discardableResult
+    public func deleteSelection() -> Bool {
+        guard let draft = selection, selectionIsCurrent(draft) else {
+            cancelSelection()
+            return false
+        }
+        cancelSelection()
+        return apply(
+            .erase(
+                href: draft.href,
+                strokes: draft.selected.indexes.map {
+                    InkStrokeRef(noteId: draft.selected.noteId, index: $0)
+                },
+                markIDs: [],
+                at: now()
+            )
+        )
+    }
+
+    /// Copies into a new note at the same explicit passage, with a new stable identity.
+    @discardableResult
+    public func duplicateSelection() -> Bool {
+        guard let draft = selection, selectionIsCurrent(draft) else {
+            cancelSelection()
+            return false
+        }
+        let strokes = draft.selected.indexes.map { index in
+            var stroke = draft.original.strokes[index]
+            stroke.points = draft.transform.apply(to: stroke.points)
+            return stroke
+        }
+        let copy = InkNote(
+            id: makeID(),
+            anchor: draft.original.anchor,
+            strokes: strokes,
+            createdAt: now(),
+            placement: draft.original.placement,
+            refWidth: draft.original.refWidth
+        )
+        cancelSelection()
+        return apply(.addNote(href: draft.href, note: copy))
     }
 
     // MARK: - Strokes
@@ -734,4 +929,18 @@ public enum InkSessionPersistenceState: Equatable, Sendable {
     case saving
     case failed(String)
     case recovery(String)
+}
+
+extension InkEngineCalling {
+    public func inkSelect(lasso: [[Double]]) async throws -> InkSelectionHit {
+        throw ReaderCommsBridgeError.jsNotAvailable
+    }
+    public func inkPreviewSelection(
+        href: String,
+        noteID: String,
+        indexes: [Int],
+        transform: InkStrokeTransform
+    ) async throws -> Bool {
+        throw ReaderCommsBridgeError.jsNotAvailable
+    }
 }

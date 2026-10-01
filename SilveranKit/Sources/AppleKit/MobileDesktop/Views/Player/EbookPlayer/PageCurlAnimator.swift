@@ -295,7 +295,9 @@ final class PageCurlAnimator: NSObject, PageTurnAnimating {
         if bridge?.isNarrationPlaying() == true { return false }
         if textSelectionActive { return false }
         // A resting palm must not start a curl under the Pencil.
-        if bridge?.inkSession.isWriting == true { return false }
+        if bridge?.inkSession.isWriting == true || bridge?.inkSession.isSelectingInk == true {
+            return false
+        }
         return activeCurl == nil && tapTurnsInFlight == 0
     }
 
@@ -396,7 +398,11 @@ final class PageCurlAnimator: NSObject, PageTurnAnimating {
         }
         return await withCheckedContinuation { continuation in
             pendingDragNavigations.append(
-                PendingNavigation(direction: direction, requestedAt: now, continuation: continuation)
+                PendingNavigation(
+                    direction: direction,
+                    requestedAt: now,
+                    continuation: continuation
+                )
             )
             bridge.sendSwiftMarginClickNav(
                 MarginClickNavMessage(direction: direction.rawValue, source: "drag")

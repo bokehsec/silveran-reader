@@ -488,7 +488,9 @@ private func makeWebViewConfiguration2(
     if UserDefaults.standard.bool(forKey: "SilveranInkSelfTest") {
         debugGlobals.append("window.__silveranInkSelfTest = true;")
     }
-    if let demo = UserDefaults.standard.string(forKey: "SilveranInkDemoStroke"), !demo.isEmpty, demo != "NO" {
+    if let demo = UserDefaults.standard.string(forKey: "SilveranInkDemoStroke"), !demo.isEmpty,
+        demo != "NO"
+    {
         debugGlobals.append("window.__silveranInkDemoStroke = \(String(reflecting: demo));")
     }
     if !debugGlobals.isEmpty {
@@ -724,6 +726,11 @@ private struct WebViewRepresentable2: PlatformViewRepresentable {
                     host: wkWebView.superview ?? wkWebView,
                 )
                 ink.tools = tools
+                bridge.selectInkWithLasso = { [weak tools] in tools?.selectLasso() }
+                wkWebView.onSizeChange = { [weak animator, weak ink] in
+                    animator?.cancel()
+                    ink?.cancelSelectionForLayoutChange()
+                }
                 bridge.toggleInkTools = { [weak tools] in tools?.toggle() }
                 bridge.hideInkTools = { [weak tools] in tools?.hide() }
                 context.coordinator.inkInputController = ink

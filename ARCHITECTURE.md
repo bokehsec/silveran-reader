@@ -124,3 +124,9 @@ Build and run helpers live in [`scripts`](https://github.com/kyonifer/silveran-r
 - [`nodebuild`](https://github.com/kyonifer/silveran-reader/blob/main/scripts/nodebuild) builds the Node addon.
 
 See [`CONTRIBUTING.md`](https://github.com/kyonifer/silveran-reader/blob/main/CONTRIBUTING.md) for local setup, build commands, and formatting expectations.
+
+### Library placement inspection and ink selection
+
+Library placement repair uses `AnnotationBookInspector` (AppleKit) and detached chapter parsing in `AnnotationInspection.js`. The inspector has its own nonpersistent WebKit lifecycle and bounded/cancellable calls; it never joins renderer navigation or owns durable data. `AnnotationPlacementReview` (Kit) captures the existing protected owners' snapshots and confirms repairs through them. Ink joins the live book's `InkSession` (including pending edits and undo), while typed repair compares the inspected annotation atomically inside FilesystemActor before replacing it. Missing chapters and uncertain targets remain explicit recovery states.
+
+Lasso geometry is an ephemeral renderer projection. Kit owns the selection draft and transform, validates stale note/index references, and serializes preview/reset before one normal durable mutation. AppleKit owns the Pencil/finger gesture, outline/handles and accessible controls. JavaScript measures both inline DOM notes and the separate margin SVG layer and previews shapes without changing its cached authoritative payload or pagination. Selection geometry is discarded on renderer/layout/navigation changes; no new persistence or cloud path is introduced.

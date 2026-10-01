@@ -158,6 +158,20 @@ export class MarkLayer {
     this.#overlayer.redraw();
   }
 
+  /** A tap targets the words as well as the painted shape. Underlines/brackets sit outside
+   * the text box; an ordinary tap in the middle of their words must not turn the page. Fresh
+   * range boxes also follow reflow before the next scheduled SVG redraw. Erasing still uses
+   * hitTest's narrower painted geometry. */
+  contains(x, y, slop = 12) {
+    for (const range of this.#ranges.values()) {
+      for (const r of range.getClientRects()) {
+        if (r.width <= 0 || r.height <= 0) continue;
+        if (x >= r.left - slop && x <= r.right + slop && y >= r.top - slop && y <= r.bottom + slop) return true;
+      }
+    }
+    return this.hitTest([[x, y]], slop).length > 0;
+  }
+
   /** Ids of marks the path (section-document coordinates) touches. */
   hitTest(path, radius = 10) {
     const hits = [];
