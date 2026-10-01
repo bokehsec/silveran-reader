@@ -45,7 +45,11 @@ export const inspectChapter = (doc, { href, cfi }, section, highlights) => {
     try { if (oldCFI) old = rangeFromCFI(oldCFI, doc); } catch { /* unresolved is kept */ }
     const quote = h.text ?? "";
     // Bookmarks with no words can only be validated by their locator; never guess a passage.
-    if (old && (!comparableText(quote) || comparableText(old.toString()) === comparableText(quote))) continue;
+    // Typed placement is validated by the native edition owner; a coincidental CFI match
+    // must not bypass changed-edition/account evidence.
+    const legacyMatches = !h.placement && old && (!comparableText(quote) || comparableText(old.toString()) === comparableText(quote));
+    const verificationRequired = Boolean(legacyMatches && comparableText(quote) && (h.color || h.note));
+    if (legacyMatches && !verificationRequired) continue;
     const near = old ? index.offsetOf(old.startContainer, old.startOffset) : -1;
     const found = comparableText(quote) ? suggestQuoteOffsets(text, quote, near ?? -1) : null;
     let suggestion = null;
@@ -53,10 +57,11 @@ export const inspectChapter = (doc, { href, cfi }, section, highlights) => {
       const anchors = makeMarkAnchors(text, found.start, found.end);
       const newCFI = cfiAt(found.start, found.end);
       if (newCFI) suggestion = { href, cfi: newCFI, text: text.slice(found.start, found.end), ...anchors,
+        anchor: makeAnchor(text, found.start, found.end - found.start), anchorVersion: 1,
         score: found.score, matchedBy: found.matchedBy, candidates: found.candidates,
         excerpt: excerptAround(text, found.start, found.end) };
     }
-    items.push({ id: h.id, kind: "highlight", href, highlight: { id: h.id, suggestion } });
+    items.push({ id: h.id, kind: "highlight", href, verificationRequired, highlight: { id: h.id, suggestion } });
   }
   return items;
 };
@@ -72,7 +77,9 @@ export class AnnotationInspection {
     const section = this.#book.sections[index];
     const doc = await section.createDocument();
     if (!doc) throw new Error("The chapter could not be read.");
-    return { missing: false, items: inspectChapter(doc, { href, cfi: section.cfi ?? CFI.fake.fromIndex(index) }, payload.ink ?? {}, payload.highlights ?? []) };
+    return { missing: false, normalizationVersion: 1,
+      normalizedText: buildTextIndex(doc.body || doc.documentElement).text,
+      items: inspectChapter(doc, { href, cfi: section.cfi ?? CFI.fake.fromIndex(index) }, payload.ink ?? {}, payload.highlights ?? []) };
   }
   close() { this.#book?.destroy?.(); this.#book = null; }
 }

@@ -42,6 +42,69 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-045 — Margin badges and ink captions entered book-text projections
+
+- Date: 2026-10-01
+- Status: Fixed; automated/native projection verification passes, interaction acceptance pending
+- Platforms: shared EPUB JavaScript renderer on Apple; Android/Linux runtime unverified
+- Components: InkMargin, InkAnchoring, SpanHighlighter, typed measurement
+- Related links: [ADR 011](docs/decisions/011-active-typed-anchors-and-edition-evidence.md)
+
+#### Symptom and root cause
+
+A counted margin group added its SVG badge text (for example “2”) to normalized chapter words. Opening/focusing a margin could change offsets and section fingerprints without changing the book. Text-color highlights also wrapped private ink SVG captions and hidden script/style text. The exclusion contract recognized inline ink but not the owned margin overlay, and SpanHighlighter did not use that contract.
+
+#### Change and validation
+
+Mark only the app-owned margin root as an annotation overlay and exclude it with inline ink throughout normalization, CFI filtering and text-color wrapping. Keep real book SVG text. Two new renderer regressions failed before the fix: badge text changed the measurement, and a private drawing caption acquired a highlight span. After the change both pass; the full web suite passes 169 tests. The real WebKit typed-projection integration validates Unicode words across ink, unchanged measurement after adding a counted margin badge, no wrapped ink caption and selection evidence decoded by Swift. Full/native results are in the canonical plan. Gestures, VoiceOver and hardware are not established by these tests.
+
+#### Compatibility
+
+No stored drawing mutation or anchor-version change: the intended version-1 contract already excludes app ink. Legacy misplaced offsets remain recoverable through explicit placement review; no silent rewrite. None known beyond pending platform acceptance.
+
+### BF-044 — Older highlight editors could undo a newer placement repair
+
+- Date: 2026-10-01
+- Status: Fixed; owner regression verification passes, interaction acceptance pending
+- Platforms: portable highlight owner; Apple reader editors
+- Components: HighlightMutation, BookmarkActor, EbookPlayerViewModel, AnnotationPlacementReview
+- Related links: [ADR 011](docs/decisions/011-active-typed-anchors-and-edition-evidence.md)
+
+#### Symptom and root cause
+
+Changing color or saving a note from an older editor snapshot replaced the whole highlight, including its previous locator/quotation and any note received since opening. A repair could therefore revert while the person only changed color. Loaded-chapter relocation also carried numeric position/progression from the old target into a new CFI.
+
+#### Change and validation
+
+Apply color/property commands atomically to the latest full record through the existing writer, retaining placement history and fields outside the requested edit. Confirm repairs with compare-and-replace, refusing queued edits, stale originals and deleted records. Failed repair proposals stay available for explicit retry/recheck, without queuing an unconditional replacement. Both repair paths use the same locator projection, clearing stale numeric positions and DOM selectors and retaining passage context.
+
+The before property-edit regression failed three expectations (old locator, words and note were restored); the corrected test preserves the repaired target, arriving note and full typed history. Fault injection verifies retained/retryable property commands, pending-edit refusal, stale confirmation and exact original bytes on failed repair. Review tests verify current-edition rechecking, failed-save retry, original raw quotation/locator history, stable note/color/date and refusal to downgrade verified placement. Commands: scripts/test --filter 'HighlightPropertyEditTests|AnnotationPlacementReviewTests'; full/native results in the canonical plan. Native editor usability remains pending.
+
+#### Compatibility
+
+No owner/storage-engine change. Existing property command retries remain explicit; annotations never go to a book server. New typed evidence has the device-upgrade requirement in ADR 011/BF-043.
+
+
+### BF-043 — Received highlights could silently discard unsupported fields
+
+- Date: 2026-10-01
+- Status: Fixed; full regression and native component verification pass
+- Platforms: portable annotation sync; Apple cloud adapter uses this shared codec
+- Components: `SyncPayloadCodec.highlight`, protected highlight owner codec
+- Related links: [ADR 011](docs/decisions/011-active-typed-anchors-and-edition-evidence.md)
+
+#### Symptom and root cause
+
+A newer received highlight containing unknown creative fields could be accepted after those fields were lost. The sync codec first used ordinary decoding, then encoded the resulting known model and validated that reduced object. Unknown top-level, locator and location fields had already disappeared before the owner's protection checks. The new regression reproduces all three variants: the old codec returned a reduced highlight when refusal was required.
+
+#### Change and validation
+
+Wrap the original received JSON object in the owner's array format and validate its complete raw fields before returning a decoded model. Known legacy payloads retain their behavior; unsupported payloads use the existing retained/unapplied sync recovery path. New placement/evidence fields are validated recursively, including previous targets. The before run of `scripts/test --filter HighlightSyncCodecTests` failed with three issues. Real sync-engine fixtures retain the complete unsupported raw payload across restart and leave local creative work unchanged; verified typed history also transfers to another test device. Final full/native results are in the canonical plan; signed iCloud delivery remains unverified.
+
+#### Compatibility
+
+No cloud record format or authority change. Older/future unreadable data remains retained rather than downgraded by re-encoding. No annotations are sent to a book server.
+
 ### BF-042 — Replaced EPUBs could reuse old extracted chapters when metadata matched
 
 - Date: 2026-10-01

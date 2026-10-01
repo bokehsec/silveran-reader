@@ -297,7 +297,7 @@ struct AnnotationsBrowserView: View {
                 }
                 if let count = placementCounts[book.bookID], count > 0 {
                     Label(
-                        "Last check: \(count) annotation(s) need placement",
+                        "Last check: \(count) annotation(s) need placement review",
                         systemImage: "exclamationmark.triangle"
                     )
                     .font(.caption).foregroundStyle(.orange).textCase(nil)

@@ -1,3 +1,4 @@
+import { measureTypedSection } from "./TypedHighlightPlacement.js";
 import { debugLog } from "./DebugConfig.js";
 import {
   INK_TAG, buildTextIndex, resolveAnchor, resolveMarkOffsets, anchorForBoundary, makeAnchor, makeMarkAnchors,
@@ -88,7 +89,8 @@ export default class InkEngine {
     const cached = this.#sections.get(href);
     // No relayout here: foliate lays the section out when its load event finishes.
     if (cached) this.#draw(index, doc, cached, null, { relayout: false });
-    this.#post("InkSectionReady", { href });
+    const { index: measured, measurementID } = measureTypedSection(doc);
+    this.#post("InkSectionReady", { href, normalizedText: measured.text, measurementID });
   }
 
   /** Draws a section's ink (idempotent). `focusId` names a note to bring into view. */

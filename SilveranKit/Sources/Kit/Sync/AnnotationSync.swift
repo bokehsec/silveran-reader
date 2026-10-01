@@ -102,12 +102,17 @@ enum SyncPayloadCodec {
 
     /// Strictly decodes a highlight with the same rules as the owner's file.
     static func highlight(_ data: Data, bookID: BookID) throws -> Highlight {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let value = try decoder.decode(Highlight.self, from: data)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        _ = try HighlightsCodec.decode(encoder.encode([value]), bookID: bookID)
+        // Validate the received object before decoding/re-encoding can erase future fields.
+        let raw = try JSONSerialization.jsonObject(with: data)
+        let records = try HighlightsCodec.decode(
+            JSONSerialization.data(withJSONObject: [raw]),
+            bookID: bookID
+        )
+        guard let value = records.first else {
+            throw AnnotationPersistenceFailure(
+                message: "Received annotation data requires recovery."
+            )
+        }
         return value
     }
 

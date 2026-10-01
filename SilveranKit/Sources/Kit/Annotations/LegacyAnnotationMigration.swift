@@ -261,10 +261,13 @@ public enum LegacyAnnotationMigrationPlanner {
             case .highlightsV2:
                 return try HighlightsCodec.decode(bytes, bookID: scope.bookID).map {
                     guard !$0.locator.href.isEmpty else { throw invalid() }
-                    // Preserve the original locator. A renderer-verified normalized selector and
-                    // edition must be assigned separately; this migration cannot invent them.
+                    // Carry existing verified targets, but never invent or weaken account ownership.
+                    if let placement = $0.placement, placement.current.edition?.scope != scope {
+                        throw invalid()
+                    }
                     return AnnotationDocument(
-                        target: AnnotationTarget(href: $0.locator.href, locator: $0.locator),
+                        target: $0.placement?.current.target
+                            ?? AnnotationTarget(href: $0.locator.href, locator: $0.locator),
                         payload: .highlight($0)
                     )
                 }

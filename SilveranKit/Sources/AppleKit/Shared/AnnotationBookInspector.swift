@@ -12,8 +12,12 @@ final class AnnotationBookInspector {
     }
     struct Result: Decodable {
         let missing: Bool
-        let items: [AnnotationPlacementIssue]
+        var items: [AnnotationPlacementIssue]
+        let normalizedText: String?
+        let normalizationVersion: Int?
     }
+    private var annotationScope: AnnotationScope?
+    private var assetFingerprint: AnnotationContentFingerprint?
     private let resourceDirectory: URL?
     init(resourceDirectory: URL? = nil) { self.resourceDirectory = resourceDirectory }
     private var webView: WKWebView?
@@ -31,11 +35,22 @@ final class AnnotationBookInspector {
                 message: "Placement repair currently supports EPUB books."
             )
         }
-        return try await open(directory: prepared.readerURL)
+        return try await open(
+            directory: prepared.readerURL,
+            annotationScope: AnnotationScope(
+                bookID: prepared.bookID,
+                accountID: prepared.accountScopeID
+            ),
+            assetFingerprint: prepared.contentFingerprint
+        )
     }
 
     /// The injected resource root is used by integration fixtures; production uses the owned install.
-    func open(directory: URL) async throws -> [Chapter] {
+    func open(
+        directory: URL,
+        annotationScope: AnnotationScope? = nil,
+        assetFingerprint: AnnotationContentFingerprint? = nil
+    ) async throws -> [Chapter] {
         close()
         let resources: URL
         if let resourceDirectory {
@@ -79,7 +94,10 @@ final class AnnotationBookInspector {
             arguments: ["path": directory.path]
         )
         try Task.checkCancellation()
-        return try JSONDecoder().decode([Chapter].self, from: Data(result.utf8))
+        let chapters = try JSONDecoder().decode([Chapter].self, from: Data(result.utf8))
+        self.annotationScope = annotationScope
+        self.assetFingerprint = assetFingerprint
+        return chapters
     }
 
     func inspect(href: String, ink: SectionInk, highlights: [Highlight]) async throws -> Result {
@@ -98,7 +116,54 @@ final class AnnotationBookInspector {
             arguments: ["href": href, "payload": json]
         )
         try Task.checkCancellation()
-        return try JSONDecoder().decode(Result.self, from: Data(result.utf8))
+        var answer = try JSONDecoder().decode(Result.self, from: Data(result.utf8))
+        if let scope = annotationScope, let asset = assetFingerprint, !answer.missing {
+            guard answer.normalizationVersion == AnnotationAnchorResolver.version,
+                let text = answer.normalizedText
+            else {
+                throw AnnotationPersistenceFailure(
+                    message:
+                        "The chapter's text could not be verified. Your annotations are preserved."
+                )
+            }
+            var issues: [AnnotationPlacementIssue] = []
+            for var issue in answer.items {
+                if issue.kind == "highlight",
+                    let original = highlights.first(where: { $0.id.uuidString == issue.id })
+                {
+                    if let placement = original.placement,
+                        placement.resolve(
+                            scope: scope,
+                            asset: asset,
+                            href: href,
+                            normalizedText: text
+                        ).anchor.offset != nil
+                    {
+                        continue
+                    }
+                    if var suggestion = issue.highlight?.suggestion {
+                        suggestion.placement = nil
+                        if let anchor = suggestion.anchor,
+                            suggestion.anchorVersion == AnnotationAnchorResolver.version
+                        {
+                            suggestion.placement = try HighlightPlacement.capture(
+                                scope: scope,
+                                asset: asset,
+                                locator: suggestion.replacementLocator(for: original),
+                                selection: AnnotationSelectionEvidence(
+                                    anchor: anchor,
+                                    normalizedText: text
+                                )
+                            )
+                        }
+                        issue.highlight?.suggestion = suggestion
+                    }
+                }
+                issues.append(issue)
+            }
+            answer.items = issues
+        }
+        return answer
     }
 
     private func call(_ body: String, arguments: [String: Any] = [:]) async throws -> String {
@@ -152,6 +217,8 @@ final class AnnotationBookInspector {
         for id in Array(pending.keys) { finish(id, result: .failure(CancellationError())) }
         webView?.stopLoading()
         webView = nil
+        annotationScope = nil
+        assetFingerprint = nil
     }
 }
 #endif

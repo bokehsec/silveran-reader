@@ -118,6 +118,7 @@ public struct TextSelectionMessage: Codable {
     public let endCssSelector: String
     public let endTextNodeIndex: Int
     public let endCharOffset: Int
+    public var evidence: AnnotationSelectionEvidence? = nil
 }
 
 /// Sent from JS when a selection-toolbar swatch is tapped (mirrors TextSelectionMessage + colorId)
@@ -133,6 +134,7 @@ public struct SelectionHighlightMessage: Codable {
     public let endCssSelector: String
     public let endTextNodeIndex: Int
     public let endCharOffset: Int
+    public var evidence: AnnotationSelectionEvidence? = nil
     public let colorId: String
 
     public var selection: TextSelectionMessage {
@@ -148,6 +150,7 @@ public struct SelectionHighlightMessage: Codable {
             endCssSelector: endCssSelector,
             endTextNodeIndex: endTextNodeIndex,
             endCharOffset: endCharOffset,
+            evidence: evidence,
         )
     }
 }
@@ -172,9 +175,13 @@ public struct HighlightSetColorMessage: Codable {
 /// Sent from JS when a section has loaded and is ready to have its Apple Pencil ink drawn.
 public struct InkSectionReadyMessage: Codable {
     public let href: String
+    public let normalizedText: String?
+    public let measurementID: String?
 
-    public init(href: String) {
+    public init(href: String, normalizedText: String? = nil, measurementID: String? = nil) {
         self.href = href
+        self.normalizedText = normalizedText
+        self.measurementID = measurementID
     }
 }
 

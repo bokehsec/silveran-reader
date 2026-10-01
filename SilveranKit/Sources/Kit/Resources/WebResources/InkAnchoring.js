@@ -16,7 +16,8 @@
 
 export const INK_TAG = "silveran-ink";
 
-export const isInkElement = node => node?.nodeType === 1 && node.localName === INK_TAG;
+export const isInkElement = node => node?.nodeType === 1 && (node.localName === INK_TAG ||
+  node.getAttribute?.("data-silveran-annotation-overlay") === "true");
 
 /** Characters of context kept on each side of an anchor. */
 export const CONTEXT_LENGTH = 32;
@@ -27,6 +28,14 @@ export const EXACT_LENGTH = 32;
 export const MARK_EXACT_LENGTH = 200;
 
 const SKIPPED = new Set(["script", "style", "noscript", "template", INK_TAG]);
+
+/** Same exclusion contract for normalized text and text-color projection. */
+export const isExcludedAnnotationTextNode = node => {
+  for (let parent = node?.parentElement; parent; parent = parent.parentElement) {
+    if (SKIPPED.has(parent.localName) || isInkElement(parent)) return true;
+  }
+  return false;
+};
 
 // Elements that start and end a line: text on either side is never joined into one word.
 const BLOCKS = new Set([
@@ -193,7 +202,7 @@ export function buildTextIndex(root) {
         visitText(child);
       } else if (child.nodeType === 1) {
         const name = child.localName;
-        if (SKIPPED.has(name)) continue;
+        if (SKIPPED.has(name) || isInkElement(child)) continue;
         const block = BLOCKS.has(name);
         if (block && lastText) noteSeparator(lastText, lastText.data.length);
         walk(child);

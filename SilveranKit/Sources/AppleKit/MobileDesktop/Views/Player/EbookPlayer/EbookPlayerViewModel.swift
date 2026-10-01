@@ -355,36 +355,68 @@ class EbookPlayerViewModel {
     @discardableResult
     func relocateHighlight(id: UUID, to suggestion: HighlightRepairSuggestion) async -> Bool {
         guard let bookID = bookData?.metadata.id,
-            let existing = highlights.first(where: { $0.id == id })
+            let existing = highlights.first(where: { $0.id == id }),
+            let expectedSession = session, let scope = expectedSession.preparedAnnotationScope,
+            let asset = expectedSession.preparedAssetFingerprint, let bridge = commsBridge,
+            let sectionIndex = findSectionIndex(
+                for: suggestion.href ?? existing.locator.href,
+                in: bookStructure
+            )
         else { return false }
-        let old = existing.locator
-        let locator = BookLocator(
-            href: old.href,
-            type: old.type,
-            title: old.title,
-            locations: BookLocator.Locations(
-                fragments: [suggestion.cfi],
-                progression: old.locations?.progression,
-                position: old.locations?.position,
-                totalProgression: old.locations?.totalProgression,
-                cssSelector: nil,
-                partialCfi: suggestion.cfi,
-                domRange: nil,
-            ),
-            text: BookLocator.Text(after: nil, before: nil, highlight: suggestion.text),
-        )
-        let updated = Highlight(
-            id: existing.id,
-            bookID: existing.bookID,
-            locator: locator,
-            text: suggestion.text,
-            color: existing.color,
-            note: existing.note,
-            createdAt: existing.createdAt,
-        )
-        guard await applyHighlightMutation(.update(updated), bookID: bookID) else { return false }
-        await sendHighlightsToJS()
-        return true
+        do {
+            guard
+                let measured = try await bridge.sendJsMeasureTypedSection(
+                    sectionIndex: sectionIndex
+                ),
+                measured.href == existing.locator.href, let text = measured.normalizedText,
+                let anchor = suggestion.anchor,
+                suggestion.anchorVersion == AnnotationAnchorResolver.version
+            else {
+                throw AnnotationPersistenceFailure(
+                    message: "This passage changed. Check placement again before attaching it."
+                )
+            }
+            let locator = suggestion.replacementLocator(for: existing)
+            let proposed = try HighlightPlacement.capture(
+                scope: scope,
+                asset: asset,
+                locator: locator,
+                selection: AnnotationSelectionEvidence(anchor: anchor, normalizedText: text)
+            )
+            try await BookServiceActor.shared.verifyAnnotationPlacement(
+                proposed,
+                bookID: bookID,
+                category: expectedSession.category
+            )
+            guard session === expectedSession, commsBridge === bridge,
+                highlights.first(where: { $0.id == id }) == existing
+            else {
+                throw AnnotationPersistenceFailure(
+                    message: "This annotation changed. Check placement again."
+                )
+            }
+            let updated = Highlight(
+                id: existing.id,
+                bookID: existing.bookID,
+                locator: locator,
+                text: suggestion.text,
+                color: existing.color,
+                note: existing.note,
+                createdAt: existing.createdAt,
+                placement: try proposed.confirmingRepair(of: existing)
+            )
+            guard
+                await applyHighlightMutation(
+                    .repair(expected: existing, replacement: updated),
+                    bookID: bookID
+                )
+            else { return false }
+            await sendHighlightsToJS()
+            return true
+        } catch {
+            highlightPersistenceError = error.localizedDescription
+            return false
+        }
     }
 
     func handleChapterSelection(_ chapter: ChapterItem) {
@@ -659,6 +691,9 @@ class EbookPlayerViewModel {
         }
         session.onViewEarlyTextReady = { [weak self] in
             self?.applyInitialReaderStyles()
+        }
+        session.onViewSectionMeasurement = { [weak self] in
+            await self?.sendHighlightsToJS()
         }
         session.onViewStructureReady = { [weak self] in
             guard let self else { return }
@@ -966,6 +1001,24 @@ class EbookPlayerViewModel {
             case .add(let highlight): result = await BookmarkActor.shared.addHighlight(highlight)
             case .update(let highlight):
                 result = await BookmarkActor.shared.updateHighlight(highlight)
+            case .repair(let expected, let replacement):
+                result = await BookmarkActor.shared.confirmHighlightRepair(
+                    expected: expected,
+                    replacement: replacement
+                )
+            case .recolor(let id, let color):
+                result = await BookmarkActor.shared.recolorHighlight(
+                    id: id,
+                    color: color,
+                    bookID: bookID
+                )
+            case .editProperties(let id, let color, let note):
+                result = await BookmarkActor.shared.editHighlightProperties(
+                    id: id,
+                    color: color,
+                    note: note,
+                    bookID: bookID
+                )
             case .delete(let id):
                 result = await BookmarkActor.shared.deleteHighlight(id: id, bookID: bookID)
             case .deleteAll: result = await BookmarkActor.shared.deleteAllHighlights(bookID: bookID)
@@ -979,6 +1032,9 @@ class EbookPlayerViewModel {
                 await loadHighlights()
                 return true
             case .failure(let error):
+                hasPendingHighlightChanges = await BookmarkActor.shared.hasPendingChanges(
+                    bookID: bookID
+                )
                 highlightPersistenceError = error.message
                 return false
         }
@@ -1009,7 +1065,29 @@ class EbookPlayerViewModel {
         color: HighlightColor?,
         note: String? = nil,
     ) async {
-        guard let bookID = bookData?.metadata.id else { return }
+        guard let bookID = bookData?.metadata.id, let expectedSession = session,
+            let scope = expectedSession.preparedAnnotationScope,
+            let asset = expectedSession.preparedAssetFingerprint,
+            let expectedBridge = commsBridge, let evidence = selection.evidence,
+            let measurementID = evidence.measurementID,
+            findSectionIndex(for: selection.href, in: bookStructure) == selection.sectionIndex
+        else {
+            highlightPersistenceError =
+                "The passage couldn't be verified. Select the words again; your existing annotations are preserved."
+            return
+        }
+        do {
+            let currentScope = try await BookServiceActor.shared.annotationScope(for: bookID)
+            guard session === expectedSession, commsBridge === expectedBridge, currentScope == scope
+            else {
+                highlightPersistenceError =
+                    "The book or account changed. Reopen the book before adding this annotation."
+                return
+            }
+        } catch {
+            highlightPersistenceError = error.localizedDescription
+            return
+        }
 
         let locator = BookLocator(
             href: selection.href,
@@ -1042,12 +1120,31 @@ class EbookPlayerViewModel {
             ),
         )
 
+        let placement: HighlightPlacement
+        do {
+            placement = try HighlightPlacement.capture(
+                scope: scope,
+                asset: asset,
+                locator: locator,
+                selection: evidence
+            )
+        } catch {
+            highlightPersistenceError = error.localizedDescription
+            return
+        }
+        expectedSession.recordSectionMeasurement(
+            href: selection.href,
+            normalizedText: evidence.normalizedText,
+            measurementID: measurementID
+        )
+
         let highlight = Highlight(
             bookID: bookID,
             locator: locator,
             text: selection.text,
             color: color,
             note: note,
+            placement: placement,
         )
 
         guard await applyHighlightMutation(.add(highlight), bookID: bookID) else { return }
@@ -1154,9 +1251,12 @@ class EbookPlayerViewModel {
 
         let coloredOnly = highlights.filter { !$0.isBookmark }
         let renderData = coloredOnly.compactMap { highlight -> HighlightRenderData? in
-            guard let cfi = highlight.locator.locations?.partialCfi,
-                let color = highlight.color
-            else { return nil }
+            guard let color = highlight.color else { return nil }
+            let cfi =
+                highlight.locator.locations?.partialCfi
+                ?? highlight.locator.locations?.fragments?.first(where: { $0.hasPrefix("epubcfi(") }
+                ) ?? ""
+            guard !cfi.isEmpty || highlight.placement != nil else { return nil }
 
             guard
                 let sectionIndex = findSectionIndex(
@@ -1165,12 +1265,34 @@ class EbookPlayerViewModel {
                 )
             else { return nil }
 
+            let measured = session?.sectionMeasurements[highlight.locator.href]
+            let mode: HighlightProjectionMode?
+            if let placement = highlight.placement {
+                if let scope = session?.preparedAnnotationScope,
+                    let asset = session?.preparedAssetFingerprint,
+                    let measured
+                {
+                    mode = placement.projectionMode(
+                        scope: scope,
+                        asset: asset,
+                        section: measured.identity
+                    )
+                } else {
+                    mode = .unresolved
+                }
+            } else {
+                mode = nil
+            }
             return HighlightRenderData(
                 id: highlight.id.uuidString,
                 sectionIndex: sectionIndex,
                 cfi: cfi,
                 color: settingsVM.hexColor(for: color),
                 text: highlight.text,
+                anchor: highlight.placement?.current.target.text,
+                anchorVersion: highlight.placement?.current.target.anchorVersion,
+                placementMode: mode,
+                measurementID: measured?.measurementID,
             )
         }
 
@@ -1188,23 +1310,12 @@ class EbookPlayerViewModel {
     }
 
     func handleHighlightSetColor(id: String, colorId: String) async {
-        guard let bookID = bookData?.metadata.id,
-            let uuid = UUID(uuidString: id),
-            let existing = highlights.first(where: { $0.id == uuid }),
+        guard let bookID = bookData?.metadata.id, let uuid = UUID(uuidString: id),
             let color = HighlightColor(rawValue: colorId)
         else { return }
-
-        let updated = Highlight(
-            id: existing.id,
-            bookID: existing.bookID,
-            locator: existing.locator,
-            text: existing.text,
-            color: color,
-            note: existing.note,
-            createdAt: existing.createdAt,
-        )
-
-        guard await applyHighlightMutation(.update(updated), bookID: bookID) else { return }
+        guard await applyHighlightMutation(.recolor(id: uuid, color: color), bookID: bookID) else {
+            return
+        }
         await sendHighlightsToJS()
     }
 
@@ -1224,16 +1335,12 @@ class EbookPlayerViewModel {
 
     func saveEditedHighlight(_ original: Highlight, color: HighlightColor?, note: String?) async {
         guard let bookID = bookData?.metadata.id else { return }
-        let updated = Highlight(
-            id: original.id,
-            bookID: original.bookID,
-            locator: original.locator,
-            text: original.text,
-            color: color,
-            note: note,
-            createdAt: original.createdAt,
-        )
-        guard await applyHighlightMutation(.update(updated), bookID: bookID) else { return }
+        guard
+            await applyHighlightMutation(
+                .editProperties(id: original.id, color: color, note: note),
+                bookID: bookID
+            )
+        else { return }
         await sendHighlightsToJS()
         pendingEditHighlight = nil
     }

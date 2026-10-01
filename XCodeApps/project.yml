@@ -49,6 +49,12 @@ targets:
       - path: SilveranKit/Tests/SilveranTests
         includes:
           - AnnotationBookInspectorTests.swift
+          - AnnotationPlacementReviewTests.swift
+          - HighlightPlacementTests.swift
+          - HighlightSyncCodecTests.swift
+          - HighlightPropertyEditTests.swift
+          - BookSourceAccountIdentityTests.swift
+          - TypedHighlightWebKitTests.swift
           - AnnotationEditionTests.swift
           - EbookContentIdentityTests.swift
           - AnnotationPDFExportTests.swift

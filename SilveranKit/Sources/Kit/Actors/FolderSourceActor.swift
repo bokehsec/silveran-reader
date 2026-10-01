@@ -54,6 +54,8 @@ public actor FolderSourceActor: BookSourceActor {
         sourceRecordValue
     }
 
+    public var accountScopeID: String? { "local-source:" + sourceRecordValue.id }
+
     public var connectionStatus: ConnectionStatus {
         .connected
     }
@@ -474,7 +476,8 @@ public actor FolderSourceActor: BookSourceActor {
         }
     }
 
-    public func updateRating(forBook bookID: String, to rating: Double?) async -> RatingUpdateResult {
+    public func updateRating(forBook bookID: String, to rating: Double?) async -> RatingUpdateResult
+    {
         do {
             let resolved = try await resolvedFolderURL()
             defer { stopAccessing(resolved) }

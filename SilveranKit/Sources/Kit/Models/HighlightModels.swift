@@ -20,6 +20,7 @@ public struct Highlight: Codable, Sendable, Hashable, Identifiable {
     public let color: HighlightColor?
     public let note: String?
     public let createdAt: Date
+    public let placement: HighlightPlacement?
 
     public var isBookmark: Bool {
         color == nil
@@ -46,6 +47,7 @@ public struct Highlight: Codable, Sendable, Hashable, Identifiable {
         color: HighlightColor?,
         note: String? = nil,
         createdAt: Date = Date(),
+        placement: HighlightPlacement? = nil,
     ) {
         self.id = id
         self.bookID = bookID
@@ -54,6 +56,7 @@ public struct Highlight: Codable, Sendable, Hashable, Identifiable {
         self.color = color
         self.note = note
         self.createdAt = createdAt
+        self.placement = placement
     }
 }
 
@@ -64,13 +67,31 @@ public struct HighlightRenderData: Codable, Sendable {
     public let color: String
     /// The highlighted words, so the page can tell when the CFI no longer lands on them.
     public let text: String?
+    public let anchor: TextAnchor?
+    public let anchorVersion: Int?
+    public let placementMode: HighlightProjectionMode?
+    public let measurementID: String?
 
-    public init(id: String, sectionIndex: Int, cfi: String, color: String, text: String? = nil) {
+    public init(
+        id: String,
+        sectionIndex: Int,
+        cfi: String,
+        color: String,
+        text: String? = nil,
+        anchor: TextAnchor? = nil,
+        anchorVersion: Int? = nil,
+        placementMode: HighlightProjectionMode? = nil,
+        measurementID: String? = nil
+    ) {
         self.id = id
         self.sectionIndex = sectionIndex
         self.cfi = cfi
         self.color = color
         self.text = text
+        self.anchor = anchor
+        self.anchorVersion = anchorVersion
+        self.placementMode = placementMode
+        self.measurementID = measurementID
     }
 }
 
@@ -89,6 +110,28 @@ public struct HighlightRepairSuggestion: Codable, Sendable, Hashable {
     public var matchedBy: String?
     public var candidates: Int
     public var excerpt: InkRepairExcerpt
+    public var anchor: TextAnchor? = nil
+    public var anchorVersion: Int? = nil
+    /// Native verified proposal; the existing owner appends repair history only on confirmation.
+    public var placement: HighlightPlacement? = nil
+
+    public func replacementLocator(for original: Highlight) -> BookLocator {
+        BookLocator(
+            href: href ?? original.locator.href,
+            type: original.locator.type,
+            title: original.locator.title,
+            locations: BookLocator.Locations(
+                fragments: [cfi],
+                progression: nil,
+                position: nil,
+                totalProgression: nil,
+                cssSelector: nil,
+                partialCfi: cfi,
+                domRange: nil
+            ),
+            text: BookLocator.Text(after: excerpt.after, before: excerpt.before, highlight: text)
+        )
+    }
 
     public var isRepeatedPassage: Bool { candidates > 1 }
 }

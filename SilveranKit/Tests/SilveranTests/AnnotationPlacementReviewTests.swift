@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 @testable import SilveranKit
@@ -195,4 +196,72 @@ struct AnnotationPlacementReviewTests {
         }
         #expect(try await fs.loadHighlights(bookID: book)?.isEmpty != false)
     }
+    @Test(
+        "Verified typed repairs recheck the edition, preserve originals and retry without stale queued replacement"
+    )
+    func verifiedTypedRepair() async throws {
+        let root = directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = RepairWriteGate()
+        let fs = FilesystemActor(applicationSupportDirectory: root, writeHighlights: gate.write)
+        let owner = BookmarkActor(store: fs)
+        let session = InkSession(store: InkActor(directory: root.appendingPathComponent("ink")))
+        let original = typed()
+        try await fs.saveHighlights(bookID: book, highlights: [original])
+        var issue = typedIssue(original)
+        var suggestion = try #require(issue.highlight?.suggestion)
+        let proposal = try HighlightPlacement.capture(
+            scope: AnnotationScope(bookID: book, accountID: "fixture"),
+            asset: AnnotationContentFingerprint(data: Data("current EPUB".utf8)),
+            locator: suggestion.replacementLocator(for: original),
+            selection: AnnotationSelectionEvidence(
+                anchor: TextAnchor(offset: 0, exact: "new words"),
+                normalizedText: "new words"
+            )
+        )
+        suggestion.placement = proposal
+        issue.highlight?.suggestion = suggestion
+        let valid = Mutex(false)
+        let checks = Mutex(0)
+        let review = AnnotationPlacementReview(
+            bookID: book,
+            category: .synced,
+            session: session,
+            filesystem: fs,
+            bookmarks: owner,
+            verifyPlacement: { checkedBook, category, placement in
+                #expect(checkedBook == original.bookID)
+                #expect(category == .synced)
+                #expect(placement == proposal)
+                checks.withLock { $0 += 1 }
+                guard valid.withLock({ $0 }) else {
+                    throw AnnotationPersistenceFailure(message: "Edition changed; check again.")
+                }
+            }
+        )
+        try await review.prepare()
+        await #expect(throws: AnnotationPersistenceFailure.self) { try await review.accept(issue) }
+        #expect(try await fs.loadHighlights(bookID: book) == [original])
+        valid.withLock { $0 = true }
+        gate.setFailure(true)
+        await #expect(throws: AnnotationPersistenceFailure.self) { try await review.accept(issue) }
+        #expect(try await fs.loadHighlights(bookID: book) == [original])
+        #expect(!(await owner.hasPendingChanges(bookID: book)))
+        #expect(review.pendingRepairID == nil)
+        gate.setFailure(false)
+        try await review.accept(issue)
+        let saved = try #require(try await fs.loadHighlights(bookID: book)?.first)
+        #expect(saved.note == original.note)
+        #expect(saved.createdAt == original.createdAt)
+        #expect(saved.placement?.current.provenance == .userConfirmed)
+        #expect(saved.placement?.previous.first?.target.locator == original.locator)
+        #expect(saved.placement?.previous.first?.originalQuotation == original.text)
+        #expect(checks.withLock { $0 } == 3)
+        // A proposal without edition evidence cannot downgrade a now-verified annotation.
+        await #expect(throws: AnnotationPersistenceFailure.self) {
+            try await review.accept(typedIssue(saved))
+        }
+        #expect(try await fs.loadHighlights(bookID: book) == [saved])
+    }
+
 }

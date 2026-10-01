@@ -181,7 +181,11 @@ const engineFor = section => {
 test("a section that loads reports itself to Swift", () => {
   const { doc, engine, posted } = engineFor(ebookChapter());
   engine.setupSection(0, doc);
-  assert.deepEqual(posted, [{ name: "InkSectionReady", payload: { href: "OEBPS/ch1.xhtml" } }]);
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].name, "InkSectionReady");
+  assert.equal(posted[0].payload.href, "OEBPS/ch1.xhtml");
+  assert.equal(posted[0].payload.normalizedText, buildTextIndex(doc.body).text);
+  assert.ok(posted[0].payload.measurementID);
   assert.ok(doc.getElementById("silveran-ink-style"));
 });
 

@@ -841,18 +841,7 @@ public actor FilesystemActor {
     /// cannot overwrite a note/color edit or deletion that arrived after its snapshot.
     public func repairHighlight(expected: Highlight, replacement: Highlight, bookID: BookID) throws
     {
-        let current = try loadHighlights(bookID: bookID) ?? []
-        guard expected.id == replacement.id, expected.bookID == bookID,
-            replacement.bookID == bookID,
-            let latest = current.first(where: { $0.id == expected.id }),
-            try HighlightsCodec.equivalent(latest, expected)
-        else {
-            throw AnnotationPersistenceFailure(
-                message:
-                    "This annotation changed since inspection. Check it again before repairing."
-            )
-        }
-        try mutateHighlights(.update(replacement), bookID: bookID)
+        try mutateHighlights(.repair(expected: expected, replacement: replacement), bookID: bookID)
     }
 
     public func saveHighlights(bookID: BookID, highlights: [Highlight]) throws {

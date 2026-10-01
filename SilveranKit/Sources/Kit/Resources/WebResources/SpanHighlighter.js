@@ -1,3 +1,4 @@
+import { isExcludedAnnotationTextNode } from "./InkAnchoring.js";
 import { debugLog } from "./DebugConfig.js";
 
 const HIGHLIGHT_CLASS = "silveran-highlight";
@@ -57,7 +58,7 @@ export class SpanHighlighter {
       NodeFilter.SHOW_TEXT,
       {
         acceptNode: (node) => {
-          if (!node.nodeValue?.trim()) return NodeFilter.FILTER_REJECT;
+          if (!node.nodeValue?.trim() || isExcludedAnnotationTextNode(node)) return NodeFilter.FILTER_REJECT;
 
           const nodeRange = doc.createRange();
           nodeRange.selectNodeContents(node);

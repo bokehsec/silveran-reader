@@ -1053,10 +1053,43 @@ public actor BookServiceActor {
         return pathsByBookID
     }
 
+    public func annotationScope(for bookID: BookID) async throws -> AnnotationScope {
+        await ensureSourceRegistryLoaded()
+        guard let source = sourceActor(for: bookID.sourceID) else {
+            throw AnnotationPersistenceFailure(
+                message: "This book's source is unavailable. Your annotations are preserved."
+            )
+        }
+        return AnnotationScope(bookID: bookID, accountID: await source.accountScopeID)
+    }
+
+    public func verifyAnnotationPlacement(
+        _ placement: HighlightPlacement,
+        bookID: BookID,
+        category: LocalMediaCategory
+    ) async throws {
+        let media = try await prepareEbookForReading(bookID: bookID, category: category)
+        guard
+            placement.current.edition?.scope
+                == AnnotationScope(bookID: bookID, accountID: media.accountScopeID),
+            placement.current.edition?.assetFingerprint == media.contentFingerprint
+        else {
+            throw AnnotationPersistenceFailure(
+                message:
+                    "The book or account changed since inspection. Check placement again; your originals are preserved."
+            )
+        }
+    }
+
     public func prepareEbookForReading(
         bookID: BookID,
         category: LocalMediaCategory,
     ) async throws -> PreparedEbookMedia {
+        await ensureSourceRegistryLoaded()
+        guard let source = sourceActor(for: bookID.sourceID) else {
+            throw LocalMediaError.importFailed("This book's source is unavailable.")
+        }
+        let accountScopeID = await source.accountScopeID
         guard
             let resolved = await resolveLocalMedia(
                 for: bookID,
@@ -1073,6 +1106,13 @@ public actor BookServiceActor {
             category: resolved.category,
         )
 
+        let verifiedScopeID = await source.accountScopeID
+        guard sourceActor(for: bookID.sourceID) === source, verifiedScopeID == accountScopeID else {
+            throw AnnotationPersistenceFailure(
+                message:
+                    "The book's account changed while opening. Reopen the book; your annotations are preserved."
+            )
+        }
         return PreparedEbookMedia(
             bookID: resolved.bookID,
             category: resolved.category,
@@ -1080,6 +1120,7 @@ public actor BookServiceActor {
             readerURL: content.readerURL,
             locationKind: resolved.kind,
             contentFingerprint: content.fingerprint,
+            accountScopeID: accountScopeID,
         )
     }
 

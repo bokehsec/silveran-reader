@@ -56,6 +56,12 @@ struct LibraryAnnotationRepairView: View {
                                                 ? "Ink mark" : "Highlight or bookmark"
                                     )
                                     .font(.headline)
+                                    if issue.verificationRequired == true {
+                                        Text(
+                                            "This older annotation has no verified edition. Confirm its passage to preserve verified placement for future editions."
+                                        )
+                                        .font(.subheadline).foregroundStyle(.secondary)
+                                    }
                                     if let original = book.entries.first(where: {
                                         $0.id == issue.id || $0.id.hasSuffix(issue.id)
                                     }) {
@@ -86,7 +92,10 @@ struct LibraryAnnotationRepairView: View {
                                             )
                                             .font(.subheadline).foregroundStyle(.orange)
                                         }
-                                        Button("Attach to This Passage") {
+                                        Button(
+                                            issue.verificationRequired == true
+                                                ? "Confirm This Passage" : "Attach to This Passage"
+                                        ) {
                                             Task { await accept(issue) }
                                         }
                                         .disabled(saving != nil)
@@ -146,7 +155,7 @@ struct LibraryAnnotationRepairView: View {
         total = 0
         errorMessage = nil
         issues = []
-        let owner = review ?? AnnotationPlacementReview(bookID: book.bookID)
+        let owner = review ?? AnnotationPlacementReview(bookID: book.bookID, category: category)
         review = owner
         do {
             try await owner.prepare()

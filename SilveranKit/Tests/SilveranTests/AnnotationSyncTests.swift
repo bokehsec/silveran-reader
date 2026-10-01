@@ -173,6 +173,77 @@ struct AnnotationSyncTests {
         return (names.map { SyncDevice($0, cloud: cloud, clock: clock) }, clock)
     }
 
+    @Test("Typed edition evidence and repair history reach another device losslessly")
+    func typedPlacementRoundTrip() async throws {
+        let (all, clock) = devices(["placed-ipad", "placed-phone"])
+        defer { for device in all { try? FileManager.default.removeItem(at: device.root) } }
+        let original = highlight(note: "retained")
+        let placement = try HighlightPlacement.capture(
+            scope: AnnotationScope(bookID: book, accountID: "configured-fixture"),
+            asset: AnnotationContentFingerprint(data: Data("ebook".utf8)),
+            locator: original.locator,
+            selection: AnnotationSelectionEvidence(
+                anchor: TextAnchor(offset: 0, exact: original.text),
+                normalizedText: original.text
+            )
+        ).confirmingRepair(of: original)
+        let placed = Highlight(
+            id: original.id,
+            bookID: book,
+            locator: original.locator,
+            text: original.text,
+            color: original.color,
+            note: original.note,
+            createdAt: original.createdAt,
+            placement: placement
+        )
+        try await all[0].bookmarks.addHighlight(placed).get()
+        await settle(all, clock: clock)
+        #expect(await all[1].highlights(book) == [placed])
+        #expect(
+            await all[1].highlights(book).first?.placement?.previous.first?.target.locator
+                == original.locator
+        )
+    }
+
+    @Test(
+        "Unsupported received highlight bytes are retained across restart without changing local work"
+    )
+    func unsupportedReceivedHighlight() async throws {
+        let (all, clock) = devices(["future-receiver"])
+        let device = all[0]
+        defer { try? FileManager.default.removeItem(at: device.root) }
+        let original = highlight(note: "local original")
+        try await device.bookmarks.addHighlight(original).get()
+        await device.engine.reconcileAll()
+        var raw = try #require(
+            JSONSerialization.jsonObject(with: SyncPayloadCodec.encode(original)) as? [String: Any]
+        )
+        raw["futureCreativePayload"] = ["text": "irreplaceable future work"]
+        let bytes = try JSONSerialization.data(withJSONObject: raw)
+        let remote = AnnotationSyncRecord(
+            bookID: book,
+            kind: .highlight,
+            annotationID: original.id.uuidString,
+            href: nil,
+            clock: SyncClock(millis: 3_000_000_000_000, counter: 0, device: "future-device"),
+            deleted: false,
+            payload: bytes
+        )
+        await device.engine.receive(remote)
+        #expect(await device.highlights(book) == [original])
+        #expect(await device.engine.recoveredVersions().contains { $0.record.payload == bytes })
+        let restarted = AnnotationSyncEngine(
+            ink: device.ink,
+            bookmarks: device.bookmarks,
+            filesystem: FilesystemActor(applicationSupportDirectory: device.root),
+            directory: device.root.appendingPathComponent("Sync"),
+            deviceID: "future-receiver",
+            now: { clock.now }
+        )
+        #expect(await restarted.recoveredVersions().contains { $0.record.payload == bytes })
+    }
+
     @Test("Highlights and handwriting created, edited and deleted on one device reach the others")
     func propagation() async throws {
         let (all, clock) = devices(["ipad", "iphone", "mac"])

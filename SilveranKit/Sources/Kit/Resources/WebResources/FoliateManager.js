@@ -1690,6 +1690,10 @@ class FoliateManager {
   }
 
   /** Suggested places for typed highlights that lost their words; see BookmarkManager.suggestRepairs. */
+  measureTypedSection(sectionIndex) {
+    return this.#bookmarkManager.measureSection(sectionIndex);
+  }
+
   suggestHighlightRepairs(sectionIndex, itemsJSON) {
     return JSON.stringify(this.#bookmarkManager.suggestRepairs(sectionIndex, JSON.parse(itemsJSON)));
   }

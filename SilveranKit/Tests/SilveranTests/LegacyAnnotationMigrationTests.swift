@@ -102,6 +102,63 @@ struct LegacyAnnotationMigrationTests {
         ])
     }
 
+    @Test("Staging carries active typed targets and refuses to weaken their recorded account scope")
+    func activePlacement() async throws {
+        let directory = try root()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = highlights()[0]
+        let placement = try HighlightPlacement.capture(
+            scope: scope,
+            asset: AnnotationContentFingerprint(data: Data("EPUB".utf8)),
+            locator: original.locator,
+            selection: AnnotationSelectionEvidence(
+                anchor: TextAnchor(offset: 0, exact: original.text),
+                normalizedText: original.text
+            )
+        )
+        let placed = Highlight(
+            id: original.id,
+            bookID: original.bookID,
+            locator: original.locator,
+            text: original.text,
+            color: original.color,
+            note: original.note,
+            createdAt: original.createdAt,
+            placement: placement
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let bytes = try encoder.encode([placed])
+        func capture(_ scope: AnnotationScope) -> LegacyAnnotationCapture {
+            LegacyAnnotationCapture(files: [
+                LegacyAnnotationFile(
+                    id: "placed",
+                    scope: scope,
+                    format: .highlightsV2,
+                    content: .present(bytes)
+                )
+            ])
+        }
+        let repository = try AnnotationRepository(
+            url: directory.appendingPathComponent("typed.sqlite")
+        )
+        let captured = capture(scope)
+        try await repository.captureLegacyForStaging(captured)
+        #expect(try await repository.resumeLegacyStaging(id: captured.id).allCapturedFilesDecoded)
+        let document = try #require(
+            try await repository.heads(scope: scope).first?.command.document
+        )
+        #expect(document.target == placement.current.target)
+        #expect(document.payload == .highlight(placed))
+        let unverified = capture(AnnotationScope(bookID: scope.bookID))
+        let refused = try AnnotationRepository(
+            url: directory.appendingPathComponent("unverified.sqlite")
+        )
+        try await refused.captureLegacyForStaging(unverified)
+        #expect(!(try await refused.resumeLegacyStaging(id: unverified.id).allCapturedFilesDecoded))
+        #expect(try await refused.legacyCapture(id: unverified.id) == unverified)
+    }
+
     @Test("Staging preserves original bytes and every typed payload with source/account ownership")
     func payloadEquality() async throws {
         let directory = try root()

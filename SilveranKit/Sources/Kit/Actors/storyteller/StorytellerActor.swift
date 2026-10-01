@@ -46,6 +46,7 @@ public actor StorytellerActor {
 
     private var username: String?
     private var password: String?
+    public private(set) var accountScopeID: String?
     private var apiBaseURL: URL?
     private var accessToken: AccessToken?
     private(set) public var libraryMetadata: [BookMetadata] = []
@@ -490,6 +491,10 @@ public actor StorytellerActor {
         username: String,
         password: String,
     ) async -> Bool {
+        accountScopeID = BookSourceAccountIdentity.configuredPrincipal(
+            namespace: baseURLString,
+            principal: username
+        )
         self.username = username
         self.password = password
         self.accessToken = nil

@@ -53,7 +53,7 @@ test('chapter inspection reports missing chapters and preserves spine order with
   assert.deepEqual(owner.structure().map(s => s.href), ['ch10.xhtml', 'ch2.xhtml']);
   assert.deepEqual(await owner.chapter('removed.xhtml', {}), { missing: true, items: [] });
   assert.equal(loads, 0);
-  assert.deepEqual(await owner.chapter('ch10.xhtml', {}), { missing: false, items: [] });
+  assert.deepEqual(await owner.chapter('ch10.xhtml', {}), { missing: false, normalizationVersion: 1, normalizedText: 'Words here', items: [] });
   assert.equal(loads, 1);
   await assert.rejects(owner.chapter('ch2.xhtml', {}), /unreadable/);
   owner.close();
@@ -68,4 +68,29 @@ test('repeated passages remain an explicit confirmation choice and unmatched mar
   const issues = inspectChapter(doc, section, { marks: [mark] }, [typed]);
   assert.equal(issues.find(i => i.id === 'h').highlight.suggestion.candidates, 2);
   assert.equal(issues.find(i => i.id === 'm').ink.suggestion, null);
+});
+
+test('typed placement still needs native edition validation when its legacy CFI happens to match', () => {
+  const { doc } = loadSection(chapter('A repeated phrase. A repeated phrase.'));
+  const index = buildTextIndex(doc.body);
+  const cfi = CFI.joinIndir(section.cfi, CFI.fromRange(index.rangeFor(doc, 0, 'A repeated phrase'.length)));
+  const h = { id: 'typed', text: 'A repeated phrase', locator: { locations: { partialCfi: cfi } }, placement: { version: 1 } };
+  const issues = inspectChapter(doc, section, {}, [h]);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].highlight.suggestion.anchor.exact, 'A repeated phrase');
+  assert.equal(issues[0].highlight.suggestion.anchorVersion, 1);
+  assert.equal(issues[0].highlight.suggestion.candidates, 2);
+});
+
+test('valid older colored annotations offer explicit verification without silently upgrading them', () => {
+  const { doc } = loadSection(chapter('Élodie keeps the ledger.'));
+  const index = buildTextIndex(doc.body);
+  const cfi = CFI.joinIndir(section.cfi, CFI.fromRange(index.rangeFor(doc, 0, index.text.length)));
+  const h = { id: 'legacy', text: index.text, color: 'yellow', locator: { locations: { partialCfi: cfi } } };
+  const original = JSON.stringify(h);
+  const issues = inspectChapter(doc, section, {}, [h]);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].verificationRequired, true);
+  assert.equal(issues[0].highlight.suggestion.anchor.exact, h.text);
+  assert.equal(JSON.stringify(h), original);
 });

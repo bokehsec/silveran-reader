@@ -124,6 +124,7 @@ export class MarginLayer {
     // would be placed in the multi-column flow's own coordinates instead.)
     this.#root = doc.createElementNS(SVG_NS, "svg");
     this.#root.setAttribute("class", "silveran-margin-layer");
+    this.#root.setAttribute("data-silveran-annotation-overlay", "true");
     this.#root.setAttribute("aria-hidden", "true");
     Object.assign(this.#root.style, {
       position: "absolute", left: "0", top: "0", width: "100%", height: "100%",

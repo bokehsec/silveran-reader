@@ -86,6 +86,7 @@ public final class ReaderCommsBridge {
 
     /// Notifies when an existing highlight is deleted from the toolbar
     public var onHighlightDelete: ((HighlightDeleteMessage) -> Void)?
+    public var onSectionMeasurement: ((InkSectionReadyMessage) -> Void)?
     public var onHighlightOrphaned: ((HighlightOrphanedMessage) -> Void)?
 
     /// Notifies when an existing highlight should be edited (color/note) from the toolbar
@@ -579,6 +580,7 @@ public final class ReaderCommsBridge {
     public func sendSwiftInkSectionReady(_ message: InkSectionReadyMessage) {
         debugLog("[ReaderCommsBridge] sendSwiftInkSectionReady - \(message.href)")
         guard inkSession.engine === self else { return }
+        onSectionMeasurement?(message)
         Task { @SilveranUIActor in
             guard inkSession.engine === self else { return }
             await inkSession.sectionReady(href: message.href)
@@ -601,6 +603,16 @@ public final class ReaderCommsBridge {
     }
 
     /// Suggested places for typed highlights that lost their words, for the person to confirm.
+    public func sendJsMeasureTypedSection(sectionIndex: Int) async throws -> InkSectionReadyMessage?
+    {
+        guard let js else { throw ReaderCommsBridgeError.jsNotAvailable }
+        let result = try await js.callAsync(
+            "return JSON.stringify(window.foliateManager.measureTypedSection(\(sectionIndex)));"
+        )
+        guard let result else { return nil }
+        return try JSONDecoder().decode(InkSectionReadyMessage?.self, from: Data(result.utf8))
+    }
+
     public func sendJsSuggestHighlightRepairs(
         sectionIndex: Int,
         items: [(id: String, text: String, cfi: String)]

@@ -2,8 +2,9 @@ import { Overlayer } from "./foliate-js/overlayer.js";
 import { SpanHighlighter } from "./SpanHighlighter.js";
 import { debugLog } from "./DebugConfig.js";
 import { SelectionToolbar } from "./SelectionToolbar.js";
+import { typedSelectionEvidence, typedHighlightRange, measureTypedSection } from "./TypedHighlightPlacement.js";
 import { logicalTextPosition } from "./InkFilters.js";
-import { buildTextIndex, comparableText, suggestQuoteOffsets, makeMarkAnchors, excerptAround } from "./InkAnchoring.js";
+import { buildTextIndex, comparableText, suggestQuoteOffsets, makeMarkAnchors, makeAnchor, excerptAround } from "./InkAnchoring.js";
 
 console.log("[BookmarkManager] Module loaded");
 
@@ -250,6 +251,7 @@ class BookmarkManager {
       sectionIndex,
       cfi,
       text,
+      evidence: typedSelectionEvidence(doc, range),
       href,
       title,
       startCssSelector: this.#getCssSelector(startContainer.parentElement || startContainer),
@@ -420,8 +422,8 @@ class BookmarkManager {
       if (highlight.sectionIndex !== sectionIndex) continue;
 
       try {
-        const range = this.#createRangeFromCFI(highlight.cfi, sectionIndex, doc);
-        if (!range || !this.#rangeMatches(range, highlight)) {
+        const range = this.#rangeForHighlight(highlight, sectionIndex, doc);
+        if (!range || (highlight.placementMode == null && !this.#rangeMatches(range, highlight))) {
           // Not drawn: in another edition the position may now fall on different words.
           debugLog("BookmarkManager", `Highlight ${id} no longer finds its words`);
           orphaned.push(id);
@@ -450,7 +452,7 @@ class BookmarkManager {
         for (const [id, highlight] of this.#userHighlights) {
           if (highlight.sectionIndex !== sectionIndex || orphaned.includes(id)) continue;
           try {
-            const range = this.#createRangeFromCFI(highlight.cfi, sectionIndex, doc);
+            const range = this.#rangeForHighlight(highlight, sectionIndex, doc);
             if (range) {
               spanHighlighter.add(id, range.cloneRange(), highlight.color);
             }
@@ -463,6 +465,11 @@ class BookmarkManager {
       this.#renderedSpanState.set(sectionIndex, currentSpanState);
     }
     window.webkit?.messageHandlers?.HighlightOrphaned?.postMessage({ sectionIndex, ids: orphaned });
+  }
+
+  #rangeForHighlight(highlight, sectionIndex, doc) {
+    if (highlight.placementMode != null) return typedHighlightRange(doc, highlight);
+    return this.#createRangeFromCFI(highlight.cfi, sectionIndex, doc);
   }
 
   /** True when the words at `range` are the highlight's words (letters and digits compared). */
@@ -478,6 +485,13 @@ class BookmarkManager {
    * `{ id, suggestion? }` with the new CFI, the words, their anchors (to show them), score, how it
    * was found and an excerpt.
    */
+  measureSection(sectionIndex) {
+    const content = (this.#view?.renderer?.getContents?.() || []).find(c => c.index === sectionIndex && c.doc);
+    if (!content) return null;
+    const { index, measurementID } = measureTypedSection(content.doc);
+    return { href: this.#view?.book?.sections?.[sectionIndex]?.id ?? "", normalizedText: index.text, measurementID };
+  }
+
   suggestRepairs(sectionIndex, items) {
     const content = (this.#view?.renderer?.getContents?.() || []).find(c => c.index === sectionIndex && c.doc);
     if (!content) return [];
@@ -506,6 +520,7 @@ class BookmarkManager {
       const { start, end } = makeMarkAnchors(text, found.start, found.end);
       return { id, suggestion: {
         href, cfi: newCFI, text: text.slice(found.start, found.end), start, end,
+        anchor: makeAnchor(text, found.start, found.end - found.start), anchorVersion: 1,
         score: found.score, matchedBy: found.matchedBy, candidates: found.candidates,
         excerpt: excerptAround(text, found.start, found.end),
       } };
@@ -583,6 +598,10 @@ class BookmarkManager {
         cfi: hl.cfi,
         color: hl.color,
         text: hl.text ?? null,
+        anchor: hl.anchor,
+        anchorVersion: hl.anchorVersion,
+        placementMode: hl.placementMode,
+        measurementID: hl.measurementID,
       });
     }
 

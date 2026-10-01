@@ -160,6 +160,7 @@ public struct PreparedEbookMedia: Sendable, Hashable {
     public let readerURL: URL
     public let locationKind: LocalMediaLocationKind
     public let contentFingerprint: AnnotationContentFingerprint?
+    public let accountScopeID: String?
 
     public var sourceID: BookSourceID { bookID.sourceID }
 
@@ -170,6 +171,7 @@ public struct PreparedEbookMedia: Sendable, Hashable {
         readerURL: URL,
         locationKind: LocalMediaLocationKind,
         contentFingerprint: AnnotationContentFingerprint? = nil,
+        accountScopeID: String? = nil,
     ) {
         self.bookID = bookID
         self.category = category
@@ -177,6 +179,7 @@ public struct PreparedEbookMedia: Sendable, Hashable {
         self.readerURL = readerURL
         self.locationKind = locationKind
         self.contentFingerprint = contentFingerprint
+        self.accountScopeID = accountScopeID
     }
 }
 
@@ -329,6 +332,9 @@ public func normalizedUserRating(_ rating: Double?) -> Double? {
 public protocol BookSourceActor: Actor {
     var sourceRecord: BookSourceRecord { get async }
     var connectionStatus: ConnectionStatus { get async }
+    /// Stable local ownership or conservative configured-principal namespace; nil stays unverified.
+    /// Backends expose identity through this contract without leaking credentials to shared owners.
+    var accountScopeID: String? { get async }
 
     func fetchLibraryInformation() async -> [BookMetadata]?
 
@@ -411,6 +417,8 @@ public protocol BookSourceActor: Actor {
 }
 
 extension BookSourceActor {
+    public var accountScopeID: String? { nil }
+
     /// Categories whose media is resolvable locally without a network round-trip.
     public func locallyAvailableMedia(for bookID: String) async -> Set<LocalMediaCategory> {
         var result: Set<LocalMediaCategory> = []

@@ -5,6 +5,7 @@ public struct AnnotationPlacementIssue: Codable, Sendable, Identifiable, Hashabl
     public var id: String
     public var kind: String
     public var href: String
+    public var verificationRequired: Bool? = nil
     public var missingChapter: Bool?
     public var ink: InkRepairAnswer?
     public var highlight: HighlightRepairAnswer?
@@ -27,14 +28,44 @@ public final class AnnotationPlacementReview {
     public private(set) var pendingRepairID: String?
     private let session: InkSession
     private let filesystem: FilesystemActor
+    private let bookmarks: BookmarkActor
+    private let category: LocalMediaCategory
+    private let verifyPlacement:
+        @Sendable (BookID, LocalMediaCategory, HighlightPlacement) async throws -> Void
 
-    public init(bookID: BookID, session: InkSession? = nil, filesystem: FilesystemActor = .shared) {
+    public init(
+        bookID: BookID,
+        category: LocalMediaCategory = .ebook,
+        session: InkSession? = nil,
+        filesystem: FilesystemActor = .shared,
+        bookmarks: BookmarkActor? = nil,
+        verifyPlacement:
+            @escaping @Sendable (BookID, LocalMediaCategory, HighlightPlacement) async throws ->
+            Void = { bookID, category, placement in
+                try await BookServiceActor.shared.verifyAnnotationPlacement(
+                    placement,
+                    bookID: bookID,
+                    category: category
+                )
+            }
+    ) {
         self.bookID = bookID
+        self.category = category
         self.session = session ?? ReadingSessionStore.shared.inkSession(for: bookID)
         self.filesystem = filesystem
+        self.bookmarks =
+            bookmarks
+            ?? (filesystem === FilesystemActor.shared ? .shared : BookmarkActor(store: filesystem))
+        self.verifyPlacement = verifyPlacement
     }
 
     public func prepare() async throws {
+        guard !(await bookmarks.hasPendingChanges(bookID: bookID)) else {
+            throw AnnotationPersistenceFailure(
+                message:
+                    "Highlights have unsaved changes. Retry saving them in the reader before checking placement."
+            )
+        }
         await session.open(bookID: bookID)
         guard session.canEdit, await session.flush() else {
             throw AnnotationPersistenceFailure(
@@ -76,26 +107,15 @@ public final class AnnotationPlacementReview {
                 original.locator.href == issue.href,
                 suggestion.href == nil || suggestion.href == issue.href
             else { throw changed() }
-            let old = original.locator
-            let locator = BookLocator(
-                href: old.href,
-                type: old.type,
-                title: old.title,
-                locations: BookLocator.Locations(
-                    fragments: [suggestion.cfi],
-                    progression: nil,
-                    position: nil,
-                    totalProgression: nil,
-                    cssSelector: nil,
-                    partialCfi: suggestion.cfi,
-                    domRange: nil
-                ),
-                text: BookLocator.Text(
-                    after: suggestion.excerpt.after,
-                    before: suggestion.excerpt.before,
-                    highlight: suggestion.text
-                )
-            )
+            let locator = suggestion.replacementLocator(for: original)
+            let placement: HighlightPlacement?
+            if let proposed = suggestion.placement {
+                try await verifyPlacement(bookID, category, proposed)
+                placement = try proposed.confirmingRepair(of: original)
+            } else {
+                guard original.placement == nil else { throw changed() }
+                placement = nil
+            }
             let updated = Highlight(
                 id: original.id,
                 bookID: bookID,
@@ -103,13 +123,11 @@ public final class AnnotationPlacementReview {
                 text: suggestion.text,
                 color: original.color,
                 note: original.note,
-                createdAt: original.createdAt
+                createdAt: original.createdAt,
+                placement: placement
             )
-            try await filesystem.repairHighlight(
-                expected: original,
-                replacement: updated,
-                bookID: bookID
-            )
+            try await bookmarks.confirmHighlightRepair(expected: original, replacement: updated)
+                .get()
             highlights = try await filesystem.loadHighlights(bookID: bookID) ?? []
         } else {
             guard !session.isWriting, session.selection == nil, await session.flush(),

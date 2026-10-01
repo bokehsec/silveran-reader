@@ -174,6 +174,10 @@ public final class ReadingSession {
     public var bookStructure: [SectionInfo] = []
     public var tocEntries: [TocEntry] = []
     public var hasAudioNarration = false
+    public private(set) var preparedAnnotationScope: AnnotationScope?
+    public private(set) var preparedAssetFingerprint: AnnotationContentFingerprint?
+    public private(set) var sectionMeasurements: [String: AnnotationSectionMeasurement] = [:]
+    @ObservationIgnored public var onViewSectionMeasurement: (() async -> Void)?
     public var extractedEbookPath: URL?
     public var ebookFileFormat: EbookFileFormat = .epub
     public var isJoiningExistingSession = false
@@ -225,6 +229,9 @@ public final class ReadingSession {
         debugLog("[ReadingSession] Preparing local ebook file")
         let needsNativeAudio = category == .synced
         isNativeLoadingFinished = false
+        preparedAnnotationScope = nil
+        preparedAssetFingerprint = nil
+        sectionMeasurements = [:]
         nativeLoadingTask = Task { @SilveranUIActor in
             defer { self.isNativeLoadingFinished = true }
             do {
@@ -237,6 +244,11 @@ public final class ReadingSession {
                 debugLog(
                     "[RestoreTrace][BookOpen] prepareEbookForReading deltaMs=\(String(format: "%.1f", afterPrepare.timeIntervalSince(prepStarted) * 1000))"
                 )
+                self.preparedAnnotationScope = AnnotationScope(
+                    bookID: prepared.bookID,
+                    accountID: prepared.accountScopeID
+                )
+                self.preparedAssetFingerprint = prepared.contentFingerprint
                 self.ebookFileFormat = EbookFileFormat(fileURL: prepared.originalURL)
                 self.extractedEbookPath = prepared.readerURL
                 debugLog(
@@ -462,6 +474,7 @@ public final class ReadingSession {
 
     public func attachBridge(_ bridge: ReaderCommsBridge, isRecovery: Bool) {
         commsBridge = bridge
+        sectionMeasurements = [:]
         isViewAttached = true
 
         if audioAttachmentID == nil {
@@ -506,7 +519,37 @@ public final class ReadingSession {
         }
     }
 
+    @discardableResult
+    public func recordSectionMeasurement(
+        href: String,
+        normalizedText: String,
+        measurementID: String
+    ) -> Bool {
+        guard !href.isEmpty, !measurementID.isEmpty, preparedAssetFingerprint != nil else {
+            return false
+        }
+        sectionMeasurements[href] = AnnotationSectionMeasurement(
+            identity: AnnotationSectionIdentity(href: href, normalizedText: normalizedText),
+            measurementID: measurementID
+        )
+        return true
+    }
+
     private func installBridgeCallbacks(_ bridge: ReaderCommsBridge) {
+        bridge.onSectionMeasurement = { [weak self, weak bridge] message in
+            guard let self, let bridge, self.commsBridge === bridge,
+                let text = message.normalizedText, let measurementID = message.measurementID,
+                self.recordSectionMeasurement(
+                    href: message.href,
+                    normalizedText: text,
+                    measurementID: measurementID
+                )
+            else { return }
+            Task { @SilveranUIActor [weak self, weak bridge] in
+                guard let self, let bridge, self.commsBridge === bridge else { return }
+                await self.onViewSectionMeasurement?()
+            }
+        }
         bridge.isNarrationPlaying = { [weak self] in
             self?.mediaOverlayManager?.isPlaying ?? false
         }
@@ -817,6 +860,7 @@ public final class ReadingSession {
         onReadaloudAvailabilityChanged = nil
         onViewStructureReady = nil
         onViewEarlyTextReady = nil
+        onViewSectionMeasurement = nil
         onIncomingServerPosition = nil
     }
 

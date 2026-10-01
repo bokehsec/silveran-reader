@@ -122,9 +122,91 @@ struct AnnotationBookInspectorTests {
             highlights: [highlight(cfi: repairedCFI)]
         )
         #expect(
-            valid.items.isEmpty,
-            "the real WebKit-produced repair CFI resolves to the intended passage"
+            valid.items.first?.verificationRequired == true,
+            "A valid older highlight can explicitly adopt verified edition evidence"
         )
+        let scope = AnnotationScope(bookID: bookID, accountID: "fixture-account")
+        let originalAsset = AnnotationContentFingerprint(data: Data("original EPUB".utf8))
+        let changedAsset = AnnotationContentFingerprint(data: Data("changed EPUB".utf8))
+        let legacy = highlight(cfi: repairedCFI)
+        let placement = try HighlightPlacement.capture(
+            scope: scope,
+            asset: originalAsset,
+            locator: legacy.locator,
+            selection: AnnotationSelectionEvidence(
+                anchor: TextAnchor(offset: 0, exact: legacy.text),
+                normalizedText: legacy.text
+            )
+        )
+        let placed = Highlight(
+            id: legacy.id,
+            bookID: bookID,
+            locator: legacy.locator,
+            text: legacy.text,
+            color: legacy.color,
+            createdAt: legacy.createdAt,
+            placement: placement
+        )
+        _ = try await inspector.open(
+            directory: book,
+            annotationScope: scope,
+            assetFingerprint: originalAsset
+        )
+        #expect(
+            try await inspector.inspect(
+                href: legacy.locator.href,
+                ink: SectionInk(),
+                highlights: [placed]
+            ).items.isEmpty
+        )
+        _ = try await inspector.open(
+            directory: book,
+            annotationScope: scope,
+            assetFingerprint: changedAsset
+        )
+        #expect(
+            try await inspector.inspect(
+                href: legacy.locator.href,
+                ink: SectionInk(),
+                highlights: [placed]
+            ).items.isEmpty,
+            "Unchanged normalized sections form verified finite ebook/readaloud mappings"
+        )
+        let oldText = "Before. " + legacy.text
+        let oldPlacement = try HighlightPlacement.capture(
+            scope: scope,
+            asset: originalAsset,
+            locator: legacy.locator,
+            selection: AnnotationSelectionEvidence(
+                anchor: TextAnchor(offset: 8, prefix: "Before. ", exact: legacy.text),
+                normalizedText: oldText
+            )
+        )
+        let stale = Highlight(
+            id: legacy.id,
+            bookID: bookID,
+            locator: legacy.locator,
+            text: legacy.text,
+            color: legacy.color,
+            createdAt: legacy.createdAt,
+            placement: oldPlacement
+        )
+        let changed = try await inspector.inspect(
+            href: legacy.locator.href,
+            ink: SectionInk(),
+            highlights: [stale]
+        )
+        let proposed = try #require(changed.items.first?.highlight?.suggestion?.placement)
+        #expect(proposed.current.edition?.assetFingerprint == changedAsset)
+        #expect(
+            try proposed.confirmingRepair(of: stale).previous.last?.target
+                == oldPlacement.current.target
+        )
+        #expect(
+            changed.items.count == 1,
+            "A coincidentally matching CFI cannot authorize a changed-section attachment"
+        )
+
         let missing = try await inspector.inspect(
             href: "OEBPS/missing.xhtml",
             ink: SectionInk(notes: [note]),

@@ -48,6 +48,52 @@ public actor BookmarkActor {
     > {
         await perform(.update(highlight), bookID: highlight.bookID)
     }
+    public func recolorHighlight(id: UUID, color: HighlightColor, bookID: BookID) async -> Result<
+        Void, AnnotationPersistenceFailure
+    > {
+        await perform(.recolor(id: id, color: color), bookID: bookID)
+    }
+
+    public func editHighlightProperties(
+        id: UUID,
+        color: HighlightColor?,
+        note: String?,
+        bookID: BookID
+    ) async -> Result<Void, AnnotationPersistenceFailure> {
+        await perform(.editProperties(id: id, color: color, note: note), bookID: bookID)
+    }
+
+    /// Confirm through the existing writer, refuse queued edits and notify only after persistence.
+    /// Failed/stale placement proposals stay in their review UI for retry/rechecking; they never
+    /// become an unconditional queued replacement that could overwrite an arriving edit.
+    public func confirmHighlightRepair(expected: Highlight, replacement: Highlight) async -> Result<
+        Void, AnnotationPersistenceFailure
+    > {
+        guard !hasPendingChanges(bookID: expected.bookID) else {
+            return .failure(
+                AnnotationPersistenceFailure(
+                    message: "Save pending highlight edits before repairing placement."
+                )
+            )
+        }
+        do {
+            try await store.mutateHighlights(
+                .repair(expected: expected, replacement: replacement),
+                bookID: expected.bookID
+            )
+            await notifyObservers()
+            return .success(())
+        } catch {
+            if let failure = error as? AnnotationPersistenceFailure { return .failure(failure) }
+            return .failure(
+                AnnotationPersistenceFailure(
+                    message:
+                        "The placement repair couldn't be saved. Original annotations are preserved; retry this repair or check placement again. \(error.localizedDescription)"
+                )
+            )
+        }
+    }
+
     @discardableResult
     public func deleteHighlight(id: UUID, bookID: BookID) async -> Result<
         Void, AnnotationPersistenceFailure
