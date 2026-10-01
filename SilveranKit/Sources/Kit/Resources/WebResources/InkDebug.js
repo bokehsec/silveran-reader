@@ -6,8 +6,34 @@
  *    each section the reader opens and logs `[InkSelfTest] PASS|FAIL`.
  *  - `-SilveranInkDemoStroke <kinds>` -> window.__silveranInkDemoStroke: writes synthetic strokes
  *    on the first page shown, one per comma-separated kind (the simulator has no Pencil): note
- *    (or YES), underline, strike, circle, bracket, highlight, erase, erase-highlight.
+ *    (or YES), underline, strike, circle, bracket, highlight, erase, erase-highlight, and word
+ *    (the word "testing" as ten strokes, one finishing every 350 ms, as a person writes;
+ *    `word@0.8` writes it 80% of the way down the page).
  */
+
+/** The word "testing" as ten pen strokes over the middle of the page, in web view coordinates. */
+export function wordStrokes(x0 = window.innerWidth * 0.15, y0 = window.innerHeight * 0.47, h = 40) {
+  const line = (ax, ay, bx, by, n = 14) => Array.from({ length: n }, (_, i) => {
+    const t = i / (n - 1); return [ax + (bx - ax) * t, ay + (by - ay) * t, 0.5];
+  });
+  const arc = (cx, cy, rx, ry, a0, a1, n = 18) => Array.from({ length: n }, (_, i) => {
+    const a = a0 + (a1 - a0) * (i / (n - 1)); return [cx + rx * Math.cos(a), cy + ry * Math.sin(a), 0.5];
+  });
+  let x = x0;
+  const out = [];
+  const t = () => {
+    out.push(line(x + 12, y0 - h * 0.6, x + 12, y0 + h * 0.5), line(x, y0 - h * 0.15, x + 26, y0 - h * 0.2));
+    x += 32;
+  };
+  t();
+  out.push([...line(x, y0 + 4, x + 22, y0 + 2, 6), ...arc(x + 11, y0 + 4, 11, 14, 0, Math.PI * 1.8)]); x += 30;
+  out.push([...arc(x + 10, y0 - 4, 10, 8, -0.2, Math.PI * 1.1), ...arc(x + 10, y0 + 12, 10, 8, -Math.PI * 0.9, Math.PI * 0.6)]); x += 28;
+  t();
+  out.push(line(x + 6, y0 - 4, x + 6, y0 + h * 0.5), line(x + 5, y0 - h * 0.45, x + 7, y0 - h * 0.42, 4)); x += 18;
+  out.push([...line(x, y0 + h * 0.5, x, y0 - 4, 8), ...arc(x + 11, y0 + 6, 11, 10, Math.PI, Math.PI * 2), ...line(x + 22, y0 + 6, x + 22, y0 + h * 0.5, 8)]); x += 30;
+  out.push([...arc(x + 10, y0 + 6, 10, 10, 0, Math.PI * 2), ...line(x + 20, y0, x + 20, y0 + h, 10), ...arc(x + 10, y0 + h, 10, 8, 0, Math.PI)]);
+  return out.map(points => ({ tool: "pen", color: "#111111", width: 2.2, points }));
+}
 
 const selfTestDone = new Set();
 
@@ -70,6 +96,19 @@ export function maybeRunInkDebug(foliateManager, detail, view) {
     window.__silveranInkDemoStroke = false;
     const kinds = String(requested).split(",").map(k => (k === "true" || k === "YES" ? "note" : k));
     kinds.forEach((kind, i) => setTimeout(() => {
+      if (kind.startsWith("word")) {
+        // "word@0.8" writes it 80% of the way down the page; "word@0.8@200" finishes a stroke
+        // every 200 ms instead of 350.
+        const [, place, pace] = kind.split("@");
+        const at = parseFloat(place);
+        const gap = Number.isFinite(parseFloat(pace)) ? parseFloat(pace) : 350;
+        const y = Number.isFinite(at) ? window.innerHeight * at : undefined;
+        wordStrokes(undefined, y).forEach((stroke, j) => setTimeout(() => {
+          window.webkit?.messageHandlers?.InkDebugStroke?.postMessage(stroke);
+        }, j * gap));
+        console.log("[InkSelfTest] demo word sent");
+        return;
+      }
       const demo = demoStroke(kind, view);
       if (!demo) return;
       // Swift runs it through the real pipeline (InkSession); DEBUG builds only.

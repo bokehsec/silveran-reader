@@ -481,7 +481,7 @@ private func makeWebViewConfiguration2(
     // section the reader opens (results are logged as "[InkSelfTest]").
     // `-SilveranInkDemoStroke <kinds>` writes synthetic strokes on the first page shown (the
     // simulator has no Pencil): comma-separated note, underline, strike, circle, bracket,
-    // highlight, erase, erase-highlight (see InkDebug.js).
+    // highlight, erase, erase-highlight, word (see InkDebug.js).
     contentController.add(coordinator, name: "InkDebugStroke")
     contentController.add(coordinator, name: "InkDebugErase")
     var debugGlobals: [String] = []

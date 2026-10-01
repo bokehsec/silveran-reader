@@ -931,16 +931,18 @@ public final class InkSession {
         guard !isDetaching else { return }
         acceptedWork += 1
         let previous = strokeTail
+        let queued = ContinuousClock.now
         let task = Task { [weak self] in
             await previous?.value
-            await self?.process(stroke)
+            await self?.process(stroke, queuedAt: queued)
         }
         strokeTail = task
         await task.value
     }
 
-    private func process(_ stroke: InkStrokeInput) async {
+    private func process(_ stroke: InkStrokeInput, queuedAt: ContinuousClock.Instant) async {
         guard canEdit, let engine else { return }
+        let started = ContinuousClock.now
         let proposal: InkProposal
         do {
             proposal = try await engine.inkPropose(stroke)
@@ -994,8 +996,15 @@ public final class InkSession {
             case .none:
                 debugLog("[InkSession] Stroke ignored: \(proposal.reason ?? "no reason")")
         }
+        let proposed = ContinuousClock.now
         // The caller removes its live stroke once the page has drawn the result.
         await renderTail?.value
+        // Stroke latency: waiting behind earlier strokes, the page deciding, then redrawing. The
+        // live stroke stays on screen for all three (docs/OBSERVED_ODDITIES.md OD-021).
+        let ms = { (d: Duration) in Int(d / .milliseconds(1)) }
+        debugLog(
+            "[InkSession] Stroke \(proposal.op) waited \(ms(started - queuedAt))ms, placed \(ms(proposed - started))ms, drawn \(ms(ContinuousClock.now - proposed))ms"
+        )
     }
 
     // MARK: - Writing lock
