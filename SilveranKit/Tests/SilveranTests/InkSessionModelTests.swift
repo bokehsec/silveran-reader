@@ -1127,4 +1127,135 @@ struct InkSessionModelTests {
         #expect(await session.flush())
     }
 
+    @Test("Copied strokes paste only after passage confirmation, preserve pressure and undo once")
+    func clipboardPaste() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine, ids: ["pasted"])
+        var original = note("selected", strokes: 2)
+        original.placement = .margin
+        original.refWidth = 90
+        original.strokes[0].points = [[40, 60, 0.2], [50, 70, 0.8]]
+        #expect(session.apply(.addNote(href: "ch1", note: original)))
+        engine.selectionHit = InkSelectionHit(
+            section: "ch1",
+            selection: InkSelectedStrokes(
+                noteId: "selected",
+                indexes: [0],
+                bounds: InkSelectionBounds(left: 40, top: 60, right: 50, bottom: 70),
+                viewportBounds: InkSelectionBounds(left: 100, top: 100, right: 110, bottom: 110),
+                scale: 1
+            )
+        )
+        session.isSelectingInk = true
+        await session.selectInk(lasso: [])
+        #expect(session.copySelection())
+        #expect(session.section("ch1").notes == [original])
+        #expect(!session.isSelectingInk)
+        session.isSelectingInk = true
+        engine.pageAnchor = InkPageAnchor(section: "ch2", anchor: anchor(88))
+        await session.preparePasteToCurrentPage()
+        #expect(session.pasteTarget?.anchor == anchor(88))
+        #expect(session.section("ch2").isEmpty)
+        #expect(await session.confirmPaste())
+        let pasted = session.section("ch2").notes[0]
+        #expect(pasted.id == "pasted")
+        #expect(pasted.anchor == anchor(88))
+        #expect(pasted.placement == .margin && pasted.refWidth == 90)
+        #expect(pasted.strokes[0].points == [[8, 8, 0.2], [18, 18, 0.8]])
+        #expect(pasted.strokes[0].color == original.strokes[0].color)
+        #expect(session.undo())
+        #expect(session.section("ch2").isEmpty)
+        #expect(session.redo())
+        #expect(await session.flush())
+        let reopened = await openSession(directory: directory, engine: FakeEngine())
+        #expect(reopened.section("ch2").notes == [pasted])
+        #expect(reopened.clipboard == nil)
+    }
+
+    @Test("Changed, cancelled and missing paste destinations never insert copied strokes")
+    func clipboardStaleTarget() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        #expect(session.apply(.addNote(href: "ch1", note: note("n"))))
+        engine.selectionHit = InkSelectionHit(
+            section: "ch1",
+            selection: InkSelectedStrokes(
+                noteId: "n",
+                indexes: [0],
+                bounds: InkSelectionBounds(left: 0, top: 0, right: 20, bottom: 20),
+                viewportBounds: InkSelectionBounds(left: 0, top: 0, right: 20, bottom: 20),
+                scale: 1
+            )
+        )
+        session.isSelectingInk = true
+        await session.selectInk(lasso: [])
+        #expect(session.copySelection())
+        session.isSelectingInk = true
+        await session.preparePasteToCurrentPage()
+        #expect(session.pasteTarget == nil)
+        #expect(!(await session.confirmPaste()))
+        engine.pageAnchor = InkPageAnchor(section: "ch2", anchor: anchor(9))
+        await session.preparePasteToCurrentPage()
+        engine.pageAnchor = InkPageAnchor(section: "ch3", anchor: anchor(9))
+        #expect(!(await session.confirmPaste()))
+        #expect(session.section("ch2").isEmpty && session.section("ch3").isEmpty)
+        await session.preparePasteToCurrentPage()
+        session.cancelSelection()
+        #expect(!(await session.confirmPaste()))
+        await session.preparePasteToCurrentPage()
+        session.engine = FakeEngine()
+        #expect(!(await session.confirmPaste()))
+        #expect(session.ink.sections.count == 1)
+    }
+
+    @Test(
+        "Classification correction retains identity, passage and original pressure samples across undo and reopen"
+    )
+    func classificationCorrection() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = await openSession(directory: directory, engine: FakeEngine())
+        var original = mark("m")
+        original.stroke.points = [[8, 8, 0.2], [20, 12, 0.8]]
+        #expect(session.apply(.addMark(href: "c1", mark: original)))
+        #expect(session.correctMark(href: "c1", expected: original, kind: .circle))
+        let corrected = session.section("c1").marks[0]
+        #expect(corrected.kind == .circle && corrected.stroke == original.stroke)
+        #expect(corrected.start == original.start && corrected.end == original.end)
+        #expect(corrected.id == original.id && corrected.createdAt == original.createdAt)
+        #expect(corrected.geometry.points.count == 65)
+        #expect(!session.correctMark(href: "c1", expected: original, kind: nil))
+        #expect(session.undo())
+        #expect(session.section("c1").marks == [original])
+        #expect(session.correctMark(href: "c1", expected: original, kind: nil))
+        #expect(session.section("c1").marks.isEmpty)
+        let converted = session.section("c1").notes[0]
+        #expect(converted.id == original.id && converted.anchor == original.start)
+        #expect(converted.strokes == [original.stroke] && converted.createdAt == original.createdAt)
+        #expect(session.undo())
+        #expect(session.section("c1").notes.isEmpty && session.section("c1").marks == [original])
+        #expect(session.redo())
+        #expect(await session.flush())
+        let reopened = await openSession(directory: directory, engine: FakeEngine())
+        #expect(reopened.section("c1").notes == [converted])
+    }
+
+    @Test("Older marks without samples cannot be restored as invented handwriting")
+    func legacyClassification() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = await openSession(directory: directory, engine: FakeEngine())
+        var legacy = mark("old")
+        legacy.stroke.points = []
+        #expect(session.apply(.addMark(href: "c1", mark: legacy)))
+        #expect(!session.correctMark(href: "c1", expected: legacy, kind: nil))
+        #expect(session.section("c1").marks == [legacy])
+        #expect(session.correctMark(href: "c1", expected: legacy, kind: .strike))
+        #expect(session.section("c1").marks[0].geometry.points == [[0, 0], [1, 0]])
+    }
+
 }

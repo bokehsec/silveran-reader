@@ -8,6 +8,35 @@ Maintainers and contributors must add or update an entry for every bugfix. See [
 
 Copy this template for each new bugfix and add the completed entry at the top of `## Entries`.
 
+### BF-033 — Classifying a stroke as a text mark discarded its original handwriting
+
+- Date: 2026-09-30
+- Status: Needs validation (native interaction and Pencil acceptance pending)
+- Platforms: Shared EPUB renderer and ink model; Apple annotation browser correction UI
+- Components: `InkGeometry.proposeStroke`, `InkOperation`, `InkSession.correctMark`, `InkClassificationView`
+- Related links: [ADR 008](docs/decisions/008-portable-ink-model-and-native-drawing.md), [Phase 5 backlog](docs/PHASE5_EXECUTION_BACKLOG.md)
+
+#### Symptom and reproduction
+
+Draw handwriting that the heuristic interprets as an underline, circle or another text mark. The semantic shape is saved, but the original stroke samples were replaced with an empty array. The drawing could not be recovered as handwriting, even though classification can be mistaken.
+
+#### Root cause
+
+The mark proposal retained normalized semantic geometry but explicitly returned `stroke.points: []`. That geometry has already discarded pressure and layout-independent original coordinates, so it is not an editable original drawing.
+
+#### Change
+
+New mark proposals preserve every original sample and pressure in a standalone canvas normalized to an eight-point origin; tool, color and width remain unchanged. Semantic mark rendering still follows word anchors. Correction joins the existing protected ink owner, validates the observed mark, and commits one undoable mark-type change or conversion to a note with the same identity, original samples, date and starting passage. Explicit type correction generates a clean shape for that type; undo restores the entire previous mark. Legacy marks without samples explain the loss and refuse conversion instead of inventing handwriting. Pending writes remain recoverable and retry through the existing session writer.
+
+#### Validation
+
+`node --test SilveranKit/Tests/WebHarness/inkEngine.test.mjs` passes, including an actual proposal from laid-out synthetic text with varying pressure. `scripts/test --filter InkSessionModelTests` passes 40 tests, covering stale correction refusal, one-step undo/redo, original geometry/date/identity/anchors, persisted conversion/reopen and legacy refusal. Full `scripts/test` passed 383 tests in 37 suites and `npm test` in WebHarness passed 154. Unsigned `scripts/macbuild` and `scripts/iosbuild` passed with the preceding plan increment's recorded environment/destination. Scoped strict formatting lint and `git diff --check` passed. Native picker, correction/retry interaction and real Pencil remain pending while the Mac UI is locked.
+
+#### Compatibility and migration
+
+No schema key/version change: `InkMark.stroke.points` already stores portable samples and old builds decode the retained samples. Previously discarded samples cannot be recovered by migration. Existing semantic shapes remain unchanged until a person explicitly corrects them. Annotations continue through the same sync/backup participants; no server payload changes.
+
+
 ```markdown
 ### BF-### — Short description
 

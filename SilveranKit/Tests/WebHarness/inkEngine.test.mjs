@@ -369,3 +369,28 @@ test("redrawing when a section loads again does not relayout in the middle of th
   assert.deepEqual(inkIds(fresh.doc), ["a"], "drawn from what was last rendered, before Swift replies");
   assert.equal(view.renderer.renders, rendersBefore);
 });
+
+test("classified marks retain original pressure samples for editable handwriting correction", () => {
+  const { doc, window } = loadSection('<html xmlns="http://www.w3.org/1999/xhtml"><head/><body><p>Hello brave world</p></body></html>');
+  globalThis.window = window;
+  const text = doc.querySelector('p').firstChild;
+  const rect = (start = 0, end = text.length) => ({ left: 40 + start * 8, right: 40 + end * 8, top: 100, bottom: 120, width: (end - start) * 8, height: 20 });
+  window.Element.prototype.getBoundingClientRect = () => rect();
+  window.Range.prototype.getClientRects = function () { return [rect(this.startOffset, this.endOffset)]; };
+  doc.caretRangeFromPoint = x => {
+    const range = doc.createRange();
+    range.setStart(text, Math.max(0, Math.min(text.length, Math.round((x - 40) / 8))));
+    range.collapse(true);
+    return range;
+  };
+  const engine = new InkEngine();
+  engine.setView(fakeView(doc));
+  const points = [[40, 122, 0.2], [60, 122.5, 0.5], [78, 122, 0.8]];
+  const proposal = engine.propose({ points, tool: "pen", color: "#123456", width: 2.3 });
+  assert.equal(proposal.op, "mark");
+  assert.equal(proposal.markKind, "underline");
+  assert.deepEqual(proposal.stroke.points, [[8, 8, 0.2], [28, 8.5, 0.5], [46, 8, 0.8]]);
+  assert.equal(proposal.stroke.width, 2.3);
+  assert.equal(proposal.stroke.color, "#123456");
+  assert.equal(doc.querySelector('p').textContent, 'Hello brave world');
+});

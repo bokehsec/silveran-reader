@@ -311,6 +311,8 @@ public struct InkMark: Codable, Sendable, Hashable, Identifiable {
     public var kind: InkMarkKind
     public var start: TextAnchor
     public var end: TextAnchor
+    /// Original samples in a standalone canvas, for classification correction. Old marks may
+    /// have no samples; their semantic shape remains usable but original handwriting is lost.
     public var stroke: InkStroke
     public var geometry: InkMarkGeometry
     public var createdAt: Date
@@ -393,6 +395,27 @@ public struct InkMarkGeometry: Codable, Sendable, Hashable {
         self.refH = refH
         self.lines = lines
         self.side = side
+    }
+
+    /// Explicit correction uses a clean semantic shape, retaining original samples in stroke.
+    public static func standard(for kind: InkMarkKind) -> InkMarkGeometry {
+        switch kind {
+            case .underline, .strike: return InkMarkGeometry(points: [[0, 0], [1, 0]])
+            case .highlight: return InkMarkGeometry()
+            case .bracket:
+                return InkMarkGeometry(
+                    points: [[-4, 0], [-8, 0], [-8, 1], [-4, 1]],
+                    side: "left"
+                )
+            case .circle:
+                return InkMarkGeometry(
+                    points: (0...64).map { index in
+                        let angle = Double(index) * 2 * Double.pi / 64
+                        return [0.5 + 0.55 * cos(angle), 0.5 + 0.6 * sin(angle)]
+                    },
+                    lines: 1
+                )
+        }
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {

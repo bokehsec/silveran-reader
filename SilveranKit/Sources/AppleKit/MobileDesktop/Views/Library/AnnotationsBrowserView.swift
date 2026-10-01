@@ -23,6 +23,7 @@ struct AnnotationsBrowserView: View {
     @State private var pdfTask: Task<Void, Never>?
     @State private var pdfPreview: PreparedPDF?
     @State private var pdfToSave: PreparedPDF?
+    @State private var classificationEntry: AnnotationEntry?
     @State private var repairBook: AnnotationBookSummary?
     @State private var placementCounts: [BookID: Int] = [:]
     @State private var chapter: ChapterChoice?
@@ -47,6 +48,9 @@ struct AnnotationsBrowserView: View {
             .task { await reload() }
             .refreshable { await reload() }
             .onDisappear { pdfTask?.cancel() }
+            .sheet(item: $classificationEntry, onDismiss: { Task { await reload() } }) { entry in
+                InkClassificationView(entry: entry)
+            }
             .sheet(item: $repairBook, onDismiss: { Task { await reload() } }) { book in
                 LibraryAnnotationRepairView(
                     book: book,
@@ -181,6 +185,14 @@ struct AnnotationsBrowserView: View {
                                 .buttonStyle(.plain)
                                 .accessibilityHint("Show this annotation in its book")
                                 .contextMenu {
+                                    if entry.kind == .inkMark {
+                                        Button(
+                                            "Correct Handwriting Type",
+                                            systemImage: "pencil.and.outline"
+                                        ) {
+                                            classificationEntry = entry
+                                        }
+                                    }
                                     Button("Show in Book") { show(entry) }
                                         .disabled(metadata(for: entry.bookID) == nil)
                                 }
@@ -245,7 +257,7 @@ struct AnnotationsBrowserView: View {
                 }
                 if let count = placementCounts[book.bookID], count > 0 {
                     Label(
-                        "\(count) annotation(s) need placement",
+                        "Last check: \(count) annotation(s) need placement",
                         systemImage: "exclamationmark.triangle"
                     )
                     .font(.caption).foregroundStyle(.orange).textCase(nil)

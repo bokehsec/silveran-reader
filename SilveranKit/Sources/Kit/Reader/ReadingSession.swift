@@ -65,7 +65,8 @@ public final class ReadingSessionStore {
         inkSessions[bookID] = session
     }
 
-    func releaseInkIfSaved(for bookID: BookID, session: InkSession) {
+    /// Releases a library editor only when the existing owner is saved and detached.
+    public func releaseInkIfSaved(for bookID: BookID, session: InkSession) {
         guard inkSessions[bookID] === session, !session.hasPendingChanges, session.engine == nil
         else { return }
         // A replacement view may hold this session before creating/attaching its bridge.

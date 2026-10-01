@@ -14,6 +14,9 @@ final class InkSelectionOverlay: UIView {
     private var doneButton: UIButton!
     private var duplicateButton: UIButton!
     private var deleteButton: UIButton!
+    private var copyButton: UIButton!
+    private var pasteButton: UIButton!
+    private var pasteBusy = false
 
     init(session: InkSession) {
         self.session = session
@@ -75,6 +78,13 @@ final class InkSelectionOverlay: UIView {
             actions.addArrangedSubview(b)
             return b
         }
+        copyButton = button("Copy") { [weak self] in
+            guard let self, self.session.copySelection() else { return }
+            UIAccessibility.post(
+                notification: .announcement,
+                argument: self.session.selectionMessage
+            )
+        }
         _ = button("Cancel") { [weak session] in session?.isSelectingInk = false }
         duplicateButton = button("Duplicate") { [weak session] in _ = session?.duplicateSelection()
         }
@@ -84,7 +94,18 @@ final class InkSelectionOverlay: UIView {
             _ = session?.commitSelection()
             session?.isSelectingInk = false
         }
+        // Two short rows keep controls readable at narrow widths and large text sizes.
+        let editing = UIStackView(arrangedSubviews: [copyButton, duplicateButton, deleteButton])
+        editing.axis = .horizontal
+        editing.spacing = 6
+        editing.distribution = .fillEqually
+        panel.addArrangedSubview(editing)
         panel.addArrangedSubview(actions)
+        pasteButton = UIButton(type: .system)
+        pasteButton.configuration = .borderedProminent()
+        pasteButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        pasteButton.addAction(UIAction { [weak self] _ in self?.paste() }, for: .touchUpInside)
+        panel.addArrangedSubview(pasteButton)
         addSubview(panel)
         // Accessible alternatives to the precision corner/drag gestures.
         box.accessibilityCustomActions = [
@@ -121,6 +142,15 @@ final class InkSelectionOverlay: UIView {
     func refresh() {
         isHidden = !session.isSelectingInk
         instructions.text = session.selectionMessage
+        if session.selection == nil, session.pasteTarget == nil, session.clipboard != nil {
+            instructions.text =
+                "Draw around handwriting to select it, or paste your copied strokes on this page."
+        }
+        pasteButton.isHidden = session.clipboard == nil || session.selection != nil
+        pasteButton.configuration?.title =
+            session.pasteTarget == nil ? "Choose This Page for Paste" : "Confirm Paste"
+        pasteButton.isEnabled = !pasteBusy
+        copyButton.isEnabled = session.selection != nil
         box.isHidden = session.selection == nil
         corner.isHidden = box.isHidden
         doneButton.isEnabled = session.selection != nil
@@ -201,6 +231,22 @@ final class InkSelectionOverlay: UIView {
             t.dy += Double(delta.y) / draft.selected.scale
         }
         _ = session.previewSelection(t)
+    }
+
+    private func paste() {
+        guard !pasteBusy else { return }
+        pasteBusy = true
+        refresh()
+        Task { [weak self] in
+            guard let self else { return }
+            if self.session.pasteTarget == nil {
+                await self.session.preparePasteToCurrentPage()
+            } else {
+                _ = await self.session.confirmPaste()
+            }
+            self.pasteBusy = false
+            self.refresh()
+        }
     }
 
     private func nudge(dx: Double, dy: Double) {

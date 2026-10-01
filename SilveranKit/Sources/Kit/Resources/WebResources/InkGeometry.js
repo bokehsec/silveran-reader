@@ -164,7 +164,9 @@ export const proposeStroke = ({ doc, href, stroke, viewportWidth }) => {
     const { start, end } = makeMarkAnchors(index.text, mark.start, mark.end);
     return {
       op: "mark", section: href, markKind: mark.kind, start, end, geometry: mark.geometry,
-      stroke: { tool, color, width, points: [] },
+      // Keep the original pressure-aware drawing, normalized to a new canvas origin.
+      // Marks still render from their anchored geometry; these samples allow correction.
+      stroke: { tool, color, width, points: local({ left: bb.left - 8, top: bb.top - 8 }, 1) },
     };
   }
 

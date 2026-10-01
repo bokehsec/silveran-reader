@@ -565,6 +565,19 @@ public final class InkSession {
         return apply(.erase(href: href, strokes: [], markIDs: [id], at: now()))
     }
 
+    /// Corrects a classification through this book's existing writer and undo scope.
+    /// Nil means handwriting. Legacy marks without original stroke samples cannot be restored.
+    @discardableResult
+    public func correctMark(href: String, expected: InkMark, kind: InkMarkKind?) -> Bool {
+        guard canEdit, !isWriting, selection == nil,
+            section(href).marks.first(where: { $0.id == expected.id }) == expected
+        else { return false }
+        if let kind {
+            return apply(.reclassifyMark(href: href, markID: expected.id, kind: kind))
+        }
+        return apply(.convertMarkToNote(href: href, markID: expected.id, at: now()))
+    }
+
     // MARK: - Lasso editing
 
     public var isSelectingInk = false {
@@ -578,6 +591,9 @@ public final class InkSession {
     public private(set) var selection: InkSelectionDraft?
     public private(set) var selectionMessage = "Draw around handwriting to select it."
     public var onSelectionChanged: (() -> Void)?
+    public private(set) var clipboard: InkClipboard?
+    public private(set) var pasteTarget: InkPasteTarget?
+    private var clipboardRevision: UInt64 = 0
     private var selectionGeneration: UInt64 = 0
     private var previewRevision: UInt64 = 0
 
@@ -678,6 +694,7 @@ public final class InkSession {
 
     public func cancelSelection() {
         selectionGeneration += 1
+        pasteTarget = nil
         if let selection { queueSelectionPreview(selection, transform: InkStrokeTransform()) }
         selection = nil
         selectionMessage = "Draw around handwriting to select it."
@@ -743,6 +760,105 @@ public final class InkSession {
         )
         cancelSelection()
         return apply(.addNote(href: draft.href, note: copy))
+    }
+
+    /// Copy does not mutate saved ink or add an undo step. The same book session owns the copy.
+    @discardableResult
+    public func copySelection() -> Bool {
+        guard let draft = selection, selectionIsCurrent(draft) else { return false }
+        var strokes = draft.selected.indexes.map { index in
+            var stroke = draft.original.strokes[index]
+            stroke.points = draft.transform.apply(to: stroke.points)
+            return stroke
+        }
+        // A new canvas starts near its origin, independent of the source canvas's whitespace.
+        let x = strokes.flatMap(\.points).map { $0[0] }.min() ?? 0
+        let y = strokes.flatMap(\.points).map { $0[1] }.min() ?? 0
+        let padding = max(8, (strokes.map(\.width).max() ?? 2) / 2)
+        let shift = InkStrokeTransform(dx: padding - x, dy: padding - y)
+        for index in strokes.indices {
+            strokes[index].points = shift.apply(to: strokes[index].points)
+        }
+        clipboard = InkClipboard(
+            strokes: strokes,
+            placement: draft.original.placement,
+            refWidth: draft.original.refWidth
+        )
+        clipboardRevision += 1
+        isSelectingInk = false
+        selectionMessage =
+            "Copied. Go to the destination page, then open Select Handwriting to paste."
+        onSelectionChanged?()
+        return true
+    }
+
+    /// Shows the exact first words of this page for confirmation. Nothing is inserted yet.
+    public func preparePasteToCurrentPage() async {
+        cancelSelection()
+        let generation = selectionGeneration
+        let renderer = rendererGeneration
+        let revision = clipboardRevision
+        guard canEdit, isSelectingInk, clipboard != nil, let engine else { return }
+        do {
+            let page = try await engine.inkPageStartAnchor()
+            guard generation == selectionGeneration, renderer == rendererGeneration,
+                revision == clipboardRevision, isSelectingInk, canEdit
+            else { return }
+            guard let href = page.section, let anchor = page.anchor, !anchor.exact.isEmpty else {
+                selectionMessage = "No visible words to attach to. Cancel and choose a text page."
+                onSelectionChanged?()
+                return
+            }
+            pasteTarget = InkPasteTarget(
+                href: href,
+                anchor: anchor,
+                renderer: renderer,
+                clipboardRevision: revision
+            )
+            selectionMessage = "Paste before these words: “\(anchor.exact)”"
+            onSelectionChanged?()
+        } catch {
+            guard generation == selectionGeneration else { return }
+            selectionMessage = "Couldn't read this page. Cancel and try again."
+            onSelectionChanged?()
+        }
+    }
+
+    /// Rechecks the confirmed page, then creates one new identity and one undo step.
+    @discardableResult
+    public func confirmPaste() async -> Bool {
+        guard canEdit, isSelectingInk, let target = pasteTarget, let copy = clipboard,
+            target.renderer == rendererGeneration, target.clipboardRevision == clipboardRevision,
+            let engine
+        else { return false }
+        let generation = selectionGeneration
+        do {
+            let page = try await engine.inkPageStartAnchor()
+            guard generation == selectionGeneration, pasteTarget == target, canEdit,
+                target.renderer == rendererGeneration,
+                target.clipboardRevision == clipboardRevision,
+                page.section == target.href, page.anchor == target.anchor
+            else {
+                cancelSelection()
+                selectionMessage = "The destination changed. Choose this page again before pasting."
+                onSelectionChanged?()
+                return false
+            }
+            let note = InkNote(
+                id: makeID(),
+                anchor: target.anchor,
+                strokes: copy.strokes,
+                createdAt: now(),
+                placement: copy.placement,
+                refWidth: copy.refWidth
+            )
+            isSelectingInk = false
+            return apply(.addNote(href: target.href, note: note))
+        } catch {
+            selectionMessage = "Couldn't verify the destination. Try again."
+            onSelectionChanged?()
+            return false
+        }
     }
 
     // MARK: - Strokes

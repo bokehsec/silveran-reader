@@ -310,6 +310,8 @@ public enum InkOperation: Sendable, Equatable {
     case addNote(href: String, note: InkNote)
     case appendToNote(href: String, noteID: String, stroke: InkStroke, at: Date)
     case addMark(href: String, mark: InkMark)
+    case reclassifyMark(href: String, markID: String, kind: InkMarkKind)
+    case convertMarkToNote(href: String, markID: String, at: Date)
     /// Removes strokes from notes (a note left with no strokes goes too) and whole marks.
     case erase(href: String, strokes: [InkStrokeRef], markIDs: [String], at: Date)
     /// Moves and/or resizes strokes of one note (P5.3). The transform is limited to keep the
@@ -334,7 +336,8 @@ public enum InkOperation: Sendable, Equatable {
             case .addNote(let href, _), .appendToNote(let href, _, _, _), .addMark(let href, _),
                 .erase(let href, _, _, _), .transformStrokes(let href, _, _, _, _),
                 .replaceSection(let href, _), .reanchorNote(let href, _, _, _),
-                .reanchorMark(let href, _, _, _):
+                .reanchorMark(let href, _, _, _), .reclassifyMark(let href, _, _),
+                .convertMarkToNote(let href, _, _):
                 href
         }
     }
@@ -353,6 +356,7 @@ public enum InkOperation: Sendable, Equatable {
             case .addMark(_, let mark): mark.id
             case .reanchorNote(_, let noteID, _, _): noteID
             case .reanchorMark(_, let markID, _, _): markID
+            case .reclassifyMark(_, let markID, _), .convertMarkToNote(_, let markID, _): markID
             case .erase, .replaceSection: nil
         }
     }
@@ -376,6 +380,31 @@ public enum InkOperation: Sendable, Equatable {
             case .addMark(_, let mark):
                 guard !section.marks.contains(where: { $0.id == mark.id }) else { return false }
                 section.marks.append(mark)
+                return true
+
+            case .reclassifyMark(_, let markID, let kind):
+                guard let index = section.marks.firstIndex(where: { $0.id == markID }),
+                    section.marks[index].kind != kind
+                else { return false }
+                section.marks[index].kind = kind
+                section.marks[index].geometry = .standard(for: kind)
+                return true
+
+            case .convertMarkToNote(_, let markID, let at):
+                guard let index = section.marks.firstIndex(where: { $0.id == markID }),
+                    !section.marks[index].stroke.points.isEmpty,
+                    !section.notes.contains(where: { $0.id == markID })
+                else { return false }
+                let mark = section.marks.remove(at: index)
+                section.notes.append(
+                    InkNote(
+                        id: mark.id,
+                        anchor: mark.start,
+                        strokes: [mark.stroke],
+                        createdAt: mark.createdAt,
+                        updatedAt: at
+                    )
+                )
                 return true
 
             case .erase(_, let strokes, let markIDs, let at):

@@ -57,3 +57,18 @@ public struct InkSelectionDraft: Sendable, Equatable {
     /// A changed note invalidates the selection instead of applying stale stroke indexes.
     let original: InkNote
 }
+
+/// Session-local handwriting copy. Never exported to the system clipboard or another account.
+public struct InkClipboard: Sendable, Equatable {
+    public let strokes: [InkStroke]
+    public let placement: InkNotePlacement?
+    public let refWidth: Double?
+}
+
+/// Visible passage proposed for a paste. Renderer and clipboard generations prevent stale use.
+public struct InkPasteTarget: Sendable, Equatable {
+    public let href: String
+    public let anchor: TextAnchor
+    let renderer: UInt64
+    let clipboardRevision: UInt64
+}

@@ -27,3 +27,10 @@ The plan asked for the drawing approach to be settled before the Phase 2 schema 
 - Phase 2 cutover and the Phase 3 archive can proceed on the current payloads.
 - Phase 5 must measure conversion fidelity (points, pressure, width, color, ordering) on a real iPad before a PencilKit canvas ships, and record any lossy fields.
 - Reversal cost: low until a PencilKit surface ships; afterwards, existing portable originals remain valid either way.
+
+
+## Phase 5 original-sample retention (2026-09-30)
+
+Classified text marks now retain the input's original pressure samples in their existing `stroke.points`, translated to a standalone canvas origin. Their separate normalized `geometry` still drives semantic reflow; retaining samples does not make viewport coordinates an anchor or introduce a second persistence path. Explicit correction to a different semantic kind replaces its normalized shape; conversion to handwriting uses the retained samples with the same annotation identity and starting word anchor. Existing undo keeps the complete prior payload.
+
+The alternative of reconstructing handwriting from normalized mark geometry was rejected: pressure and original proportions have already been lost. Legacy marks with empty original samples remain valid semantic annotations and cannot claim restoration of their original drawing. No schema migration or engine replacement occurs. Old readers already accept nonempty samples; rollback leaves them available for future correction. Validation covers pressure-preserving proposals, stale edits, identity/anchor/date retention, undo and reopen. Apple controls and hardware fidelity remain separate acceptance gates.
