@@ -10,7 +10,7 @@ import { ensureInkStyle, placeNotes, clearNotes } from "./InkLayout.js";
 import { proposeStroke, proposeGroup, hitTestNotes, visibleWidth, pageStartOffset, toDoc } from "./InkGeometry.js";
 import { selectInLasso, transformPoints } from "./InkSelection.js";
 import { strokeAttributes } from "./InkStrokeShape.js";
-import { MarginLayer, proposeMarginStroke, isMarginNote } from "./InkMargin.js";
+import { MarginLayer, proposeMarginStroke, proposeMarginGroup, isMarginNote } from "./InkMargin.js";
 
 /**
  * InkEngine - the page's half of Apple Pencil ink (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.1).
@@ -256,24 +256,23 @@ export default class InkEngine {
   }
 
   /**
-   * What strokes written without pausing mean, together (see InkGeometry.proposeGroup). Null when
-   * they must be proposed one at a time instead: some are written in the open wide margin, where
-   * each stroke is placed beside its line (margin notes don't move the text).
+   * What strokes written without pausing mean, together: margin writing when the wide margin is
+   * open and they qualify (InkMargin.proposeMarginGroup), otherwise InkGeometry.proposeGroup.
    */
   proposeGroup(strokes) {
     if (strokes.length === 1) return [this.propose(strokes[0])];
     const contents = this.#currentContents();
     if (!contents) return [{ op: "none", reason: "no-section" }];
+    const href = this.#href(contents.index);
     if (this.#marginExpanded) {
-      const href = this.#href(contents.index);
-      const layer = this.#marginLayers.get(contents.doc) ?? null;
-      const notes = this.#sections.get(href)?.notes ?? [];
-      const inMargin = strokes.some(stroke => stroke.points?.length && proposeMarginStroke({
-        doc: contents.doc, href, stroke, viewportWidth: window.innerWidth, layer, notes,
-      }));
-      if (inMargin) return null;
+      const margin = proposeMarginGroup({
+        doc: contents.doc, href, strokes, viewportWidth: window.innerWidth,
+        layer: this.#marginLayers.get(contents.doc) ?? null,
+        notes: this.#sections.get(href)?.notes ?? [],
+      });
+      if (margin) return [margin];
     }
-    return proposeGroup({ doc: contents.doc, href: this.#href(contents.index), strokes, viewportWidth: window.innerWidth });
+    return proposeGroup({ doc: contents.doc, href, strokes, viewportWidth: window.innerWidth });
   }
 
   /** What the eraser path touches on the current page. */

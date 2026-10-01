@@ -23,8 +23,9 @@ struct InkMarginWebKitTests {
             <style>html{margin:0;padding:0 82px;box-sizing:border-box;width:656px;height:1100px;column-width:492px;column-gap:164px;
             column-fill:auto;}body{margin:0;font:22px Georgia,serif;line-height:1.45;}</style>
             </head><body><p>\(words)</p><script type="module">
-            import { proposeMarginStroke } from './InkMargin.js';
-            window.propose = proposeMarginStroke; window.ready = true;
+            import { proposeMarginStroke, proposeMarginGroup } from './InkMargin.js';
+            window.propose = proposeMarginStroke; window.proposeGroup = proposeMarginGroup;
+            window.ready = true;
             </script></body></html>
             """
         let file = root.appendingPathComponent("first-margin.html")
@@ -55,6 +56,29 @@ struct InkMarginWebKitTests {
             contentWorld: .page
         )
         #expect(answer as? String == "note:margin")
+
+        // Margin writing has leeway into the text; text writing drifting into the margin stays.
+        let cases = try await view.callAsyncJavaScript(
+            """
+            const word = (from, to, y = 200) => Array.from({ length: 6 }, (_, i) => {
+              const x = from + (to - from) * i / 6;
+              return { tool: 'pen', color: '#111111', width: 2,
+                points: [[x, y], [x + (to - from) / 12, y + 24], [x + (to - from) / 6 - 2, y + 4]] };
+            });
+            const ask = strokes => {
+              const p = window.proposeGroup({ doc: document, href: 'ch', strokes, viewportWidth: innerWidth, layer: null, notes: [] });
+              if (!p) return 'text';
+              const minX = Math.min(...p.strokes.flatMap(s => s.points.map(q => q[0])));
+              return `${p.placement}:${minX < 0 ? 'overlaps' : 'inside'}`;
+            };
+            // Column 82…574, margin 574…656; 30% of the column is 148 points.
+            return [ask(word(586, 650)), ask(word(540, 650)), ask(word(410, 650)), ask(word(300, 620))].join(',');
+            """,
+            arguments: [:],
+            in: nil,
+            contentWorld: .page
+        )
+        #expect(cases as? String == "margin:inside,margin:overlaps,text,text")
     }
 
     @Test("WebKit lays out a reachable counted margin icon in a scrolling phone width")

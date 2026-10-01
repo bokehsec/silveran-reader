@@ -195,6 +195,9 @@ export class MarginLayer {
     const left = gutter.left + MARGIN_INSET;
     const top = line.top;
     const height = Number.isFinite(box.bottom) ? (box.bottom + 8) * scale : 0;
+    // Ink may reach into the text or past the gutter (MARGIN_REACH): taps there are on the note.
+    const inkLeft = Number.isFinite(box.left) ? Math.min(0, box.left * scale) : 0;
+    const inkRight = Number.isFinite(box.right) ? Math.max(width, box.right * scale) : width;
     const g = this.#doc.createElementNS(SVG_NS, "g");
     g.setAttribute("transform", `translate(${left} ${top}) scale(${scale})`);
     g.dataset.id = note.id;
@@ -206,7 +209,7 @@ export class MarginLayer {
       g.appendChild(path);
     }
     this.#root.appendChild(g);
-    this.#placed.set(note.id, { left, top, scale, width, height, icon: false });
+    this.#placed.set(note.id, { left, top, scale, width, height, icon: false, inkLeft, inkRight });
   }
 
   #drawIcon(note, gutter, line, ids = [note.id], above = false) {
@@ -262,7 +265,9 @@ export class MarginLayer {
   /** True when (x, y) is on a drawn margin note or icon. */
   contains(x, y, slop = 12) {
     for (const p of this.#placed.values()) {
-      if (x >= p.left - slop && x <= p.left + p.width + slop && y >= p.top - slop && y <= p.top + p.height + slop) return true;
+      const from = p.left + (p.inkLeft ?? 0);
+      const to = p.left + (p.inkRight ?? p.width);
+      if (x >= from - slop && x <= to + slop && y >= p.top - slop && y <= p.top + p.height + slop) return true;
     }
     return false;
   }
@@ -301,27 +306,52 @@ export class MarginLayer {
   }
 }
 
+/** Writing counts as a margin note when more than this share of its ink is in the margin... */
+export const MARGIN_SHARE = 0.5;
+/** ...and it reaches no further into the text than this share of the column's width. */
+export const MARGIN_REACH = 0.3;
+
 /**
- * What a finished stroke written in the expanded margin means, or null when it is not in a
- * margin. `stroke.points` are in the web view's viewport. Returns:
- *  - `append` to a margin note drawn just above or around where the pen started;
- *  - `note` with `placement: "margin"`: a new margin note beside the line at the top of the stroke.
+ * The margin writing area beside the column holding `x` (section-document coordinates): the
+ * gutter, up to the edge of the screen. The page ends at the gutter's right edge (the reader's
+ * own outer margin beyond it is outside the section document, where ink could not be drawn).
  */
-export const proposeMarginStroke = ({ doc, href, stroke, viewportWidth, layer, notes }) => {
+export const marginZone = (frame, x, screenRight) => {
+  const gutter = gutterAt(frame, x);
+  return { gutter, left: gutter.left, right: Math.min(screenRight, gutter.left + gutter.width) };
+};
+
+/**
+ * What strokes written together in the expanded margin mean, or null when they are not margin
+ * writing. More than `MARGIN_SHARE` of its ink must be in the margin, and it may begin or reach
+ * at most `MARGIN_REACH` of the column's width into the text (people write left to right, so
+ * margin writing often starts just inside the text); that part is drawn where it was written.
+ * Text writing that drifts into the margin keeps most of its ink in the text and stays there. `strokes` points are in the web view's viewport. Returns:
+ *  - `append` to a margin note drawn just above or around where the writing started;
+ *  - `note` with `placement: "margin"`: a new margin note beside the line at the top of the writing.
+ * Both carry `strokes`, in the note's own coordinates.
+ */
+export const proposeMarginGroup = ({ doc, href, strokes, viewportWidth, layer, notes }) => {
   const frame = columnFrame(doc);
   // No layer yet just means no margin notes to continue: the first one is written here (BF-052).
   if (!frame) return null;
-  const pts = stroke.points.map(p => toDoc(doc, p));
-  const bb = bbox(pts);
-  const cx = (bb.left + bb.right) / 2;
-  const gutter = gutterAt(frame, bb.left);
-  // Mostly in the gutter to the right of a column.
-  if (cx < gutter.left || cx > gutter.left + gutter.width) return null;
+  const written = strokes.filter(s => s.points?.length).map(s => ({ ...s, pts: s.points.map(p => toDoc(doc, p)) }));
+  if (!written.length) return null;
+  const [startX] = written[0].pts[0];
+  const screenRight = toDoc(doc, [viewportWidth, 0])[0];
+  const zone = marginZone(frame, startX, screenRight);
+  const all = written.flatMap(s => s.pts);
+  // Ink right of the column counts as margin ink, even past the page's edge (OD-022).
+  if (all.filter(([x]) => x >= zone.left).length <= MARGIN_SHARE * all.length) return null;
+  const bb = bbox(all);
+  if (bb.left < zone.left - MARGIN_REACH * frame.columnWidth) return null;
+  const { gutter } = zone;
   const width = drawingWidth(gutter.width);
   if (width < ICON_SIZE * 2) return null;
-  const { tool = "pen", color, width: lineWidth } = stroke;
-  const local = (left, top, scale) => pts.map(([x, y, ...rest]) =>
-    [round1((x - left) / scale), round1((y - top) / scale), ...rest]);
+  const local = (left, top, scale) => written.map(({ tool = "pen", color, width: lineWidth, pts }) => ({
+    tool, color, width: lineWidth,
+    points: pts.map(([x, y, ...rest]) => [round1((x - left) / scale), round1((y - top) / scale), ...rest]),
+  }));
 
   // Next to (or just under) a margin note already here: continue it.
   for (const note of notes.filter(n => n.placement === "margin")) {
@@ -329,14 +359,11 @@ export const proposeMarginStroke = ({ doc, href, stroke, viewportWidth, layer, n
     if (!p || Math.abs(p.left - (gutter.left + MARGIN_INSET)) > 1) continue;
     const bottom = p.top + Math.max(p.height, 24);
     if (bb.top >= p.top - 12 && bb.top <= bottom + 24) {
-      return {
-        op: "append", section: href, noteId: note.id,
-        stroke: { tool, color, width: lineWidth, points: local(p.left, p.top, p.scale) },
-      };
+      return { op: "append", section: href, noteId: note.id, strokes: local(p.left, p.top, p.scale) };
     }
   }
 
-  // Otherwise a new note beside the line the pen started on.
+  // Otherwise a new note beside the line at the top of the writing.
   const lines = columnLines(visibleLines(doc, viewportWidth), { left: gutter.left - 2, right: gutter.left - 1 })
     .filter(L => L.right <= gutter.left + 1);
   const line = lines.find(L => L.bottom > bb.top + 2) ?? lines[lines.length - 1];
@@ -346,6 +373,14 @@ export const proposeMarginStroke = ({ doc, href, stroke, viewportWidth, layer, n
   if (!anchor) return { op: "none", reason: "no-text" };
   return {
     op: "note", section: href, anchor, placement: "margin", refWidth: round1(width),
-    stroke: { tool, color, width: lineWidth, points: local(gutter.left + MARGIN_INSET, line.top, 1) },
+    strokes: local(gutter.left + MARGIN_INSET, line.top, 1),
   };
+};
+
+/** One stroke in the expanded margin: `proposeMarginGroup` for a single stroke, with `stroke`. */
+export const proposeMarginStroke = args => {
+  const proposal = proposeMarginGroup({ ...args, strokes: [args.stroke] });
+  if (!proposal?.strokes) return proposal;
+  const { strokes, ...rest } = proposal;
+  return { ...rest, stroke: strokes[0] };
 };
