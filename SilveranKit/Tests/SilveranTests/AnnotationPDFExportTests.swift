@@ -217,5 +217,24 @@ struct AnnotationPDFExportTests {
             }
         }
     }
+    @Test("PDF chapter groups follow inspected EPUB spine order")
+    func spineOrder() throws {
+        let entries = [
+            AnnotationLibrary.entry(highlight("TENTH-QUOTE", chapter: "ch10.xhtml")),
+            AnnotationLibrary.entry(highlight("SECOND-QUOTE", chapter: "ch2.xhtml")),
+        ]
+        let data = try AnnotationPDFExport.data(
+            title: "Spine",
+            author: nil,
+            entries: entries,
+            chapterOrder: ["ch2.xhtml", "ch10.xhtml"]
+        )
+        let pdf = try #require(PDFDocument(data: data))
+        let text = try #require(pdf.string)
+        let second = try #require(text.range(of: "SECOND-QUOTE"))
+        let tenth = try #require(text.range(of: "TENTH-QUOTE"))
+        #expect(second.lowerBound < tenth.lowerBound)
+    }
+
 }
 #endif

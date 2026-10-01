@@ -126,7 +126,8 @@ public enum AnnotationLibrary {
         title: String,
         author: String?,
         entries: [AnnotationEntry],
-        exportedAt: Date = Date()
+        exportedAt: Date = Date(),
+        chapterOrder: [String] = []
     ) -> String {
         var lines = ["# \(title)"]
         if let author, !author.isEmpty { lines.append("*\(author)*") }
@@ -135,10 +136,12 @@ public enum AnnotationLibrary {
             "Exported \(exportedAt.formatted(date: .long, time: .omitted)) · \(entries.count) annotation(s)"
         )
         var chapter: String?
-        let ordered = chapters(entries).flatMap { group in group.entries.map { (group.title, $0) } }
-        for (heading, entry) in ordered {
-            if heading != chapter {
-                chapter = heading
+        let ordered = chapters(entries, chapterOrder: chapterOrder).flatMap { group in
+            group.entries.map { (group.href, group.title, $0) }
+        }
+        for (href, heading, entry) in ordered {
+            if href != chapter {
+                chapter = href
                 lines += ["", "## \(heading)"]
             }
             lines.append("")
@@ -172,35 +175,7 @@ public enum AnnotationLibrary {
     /// Handwriting as a standalone SVG, scaled to fit its own bounds. Stroke colors and widths
     /// are kept; highlighter strokes are translucent.
     public static func svg(_ strokes: [InkStroke], maxWidth: Double = 320) -> String {
-        let points = strokes.flatMap(\.points).filter {
-            $0.count >= 2 && $0[0].isFinite && $0[1].isFinite
-        }
-        guard let minX = points.map({ $0[0] }).min(), let maxX = points.map({ $0[0] }).max(),
-            let minY = points.map({ $0[1] }).min(), let maxY = points.map({ $0[1] }).max()
-        else { return "" }
-        let pad = (strokes.map(\.width).max() ?? InkStroke.defaultWidth) + 2
-        let width = max(maxX - minX, 1) + pad * 2
-        let height = max(maxY - minY, 1) + pad * 2
-        let scale = min(1, maxWidth / width)
-        func number(_ value: Double) -> String { String(format: "%.1f", value) }
-        var paths: [String] = []
-        for stroke in strokes {
-            let coordinates = stroke.points.filter {
-                $0.count >= 2 && $0[0].isFinite && $0[1].isFinite
-            }
-            guard !coordinates.isEmpty else { continue }
-            let d = coordinates.enumerated().map { index, point in
-                "\(index == 0 ? "M" : "L")\(number(point[0] - minX + pad)) \(number(point[1] - minY + pad))"
-            }.joined(separator: " ")
-            let color = safeColor(stroke.color)
-            let opacity = stroke.tool == .highlighter ? " stroke-opacity=\"0.35\"" : ""
-            paths.append(
-                "<path d=\"\(d)\" fill=\"none\" stroke=\"\(color)\" stroke-width=\"\(number(max(stroke.width, 0.5)))\" stroke-linecap=\"round\" stroke-linejoin=\"round\"\(opacity)/>"
-            )
-        }
-        return
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 \(number(width)) \(number(height))\" width=\"\(number(width * scale))\" height=\"\(number(height * scale))\" role=\"img\" aria-label=\"Handwriting\">"
-            + paths.joined() + "</svg>"
+        InkVisualExport.drawing(strokes, maxWidth: maxWidth)?.svg ?? ""
     }
 
     /// A self-contained web page: quotations, typed notes and handwriting drawn as SVG.
@@ -209,7 +184,8 @@ public enum AnnotationLibrary {
         title: String,
         author: String?,
         entries: [AnnotationEntry],
-        exportedAt: Date = Date()
+        exportedAt: Date = Date(),
+        chapterOrder: [String] = []
     ) -> String {
         var body: [String] = []
         body.append("<h1>\(escape(title))</h1>")
@@ -218,10 +194,12 @@ public enum AnnotationLibrary {
             "<p class=\"meta\">Exported \(escape(exportedAt.formatted(date: .long, time: .omitted))) · \(entries.count) annotation(s)</p>"
         )
         var chapter: String?
-        let ordered = chapters(entries).flatMap { group in group.entries.map { (group.title, $0) } }
-        for (heading, entry) in ordered {
-            if heading != chapter {
-                chapter = heading
+        let ordered = chapters(entries, chapterOrder: chapterOrder).flatMap { group in
+            group.entries.map { (group.href, group.title, $0) }
+        }
+        for (href, heading, entry) in ordered {
+            if href != chapter {
+                chapter = href
                 body.append("<h2>\(escape(heading))</h2>")
             }
             var item = "<div class=\"entry \(entry.kind.rawValue)\">"
@@ -278,12 +256,20 @@ public enum AnnotationLibrary {
     /// Entries grouped by chapter in the projection's href order (spine metadata is unavailable),
     /// each chapter titled by any of its entries
     /// that knows the title (handwriting doesn't), else by the chapter file name.
-    public static func chapters(_ entries: [AnnotationEntry]) -> [(
+    public static func chapters(_ entries: [AnnotationEntry], chapterOrder: [String] = []) -> [(
         href: String, title: String, entries: [AnnotationEntry]
     )] {
         var order: [String] = []
+        var ranks: [String: Int] = [:]
+        for (index, href) in chapterOrder.enumerated() where ranks[href] == nil {
+            ranks[href] = index
+        }
         var grouped: [String: [AnnotationEntry]] = [:]
-        for entry in entries.sorted(by: readingOrder) {
+        for entry in entries.sorted(by: { left, right in
+            let a = ranks[left.href] ?? Int.max
+            let b = ranks[right.href] ?? Int.max
+            return a == b ? readingOrder(left, right) : a < b
+        }) {
             if grouped[entry.href] == nil { order.append(entry.href) }
             grouped[entry.href, default: []].append(entry)
         }
@@ -302,15 +288,6 @@ public enum AnnotationLibrary {
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")
             .replacingOccurrences(of: "'", with: "&#39;")
-    }
-
-    /// Only `#rgb`/`#rrggbb`; anything else draws in the default ink color.
-    private static func safeColor(_ value: String) -> String {
-        let hex = value.dropFirst()
-        guard value.hasPrefix("#"), hex.count == 3 || hex.count == 6,
-            hex.allSatisfy(\.isHexDigit)
-        else { return InkStroke.defaultColor }
-        return value
     }
 
     // MARK: Internals

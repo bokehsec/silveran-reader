@@ -179,7 +179,7 @@ struct AnnotationLibraryTests {
         #expect(html.contains("&lt;b&gt;bold&lt;/b&gt;"))
         #expect(!html.contains("<script>"))
         #expect(!html.contains("onload"))
-        #expect(html.contains("stroke=\"#123456\""))
+        #expect(html.contains("fill=\"#123456\""))
         #expect(html.contains("<svg"))
         #expect(AnnotationLibrary.svg([]) == "")
     }
@@ -215,4 +215,74 @@ struct AnnotationLibraryTests {
         #expect(markdown.components(separatedBy: "## Chapter Two").count == 2)
         #expect(!markdown.contains("## ch2.xhtml"))
     }
+    @Test("Provided EPUB spine order drives all exports and preserves unknown chapters")
+    func spineOrder() throws {
+        let entries = ["ch10.xhtml", "ch2.xhtml", "appendix.xhtml"].map { href in
+            AnnotationLibrary.entry(
+                Highlight(
+                    bookID: book,
+                    locator: BookLocator(
+                        href: href,
+                        type: "application/xhtml+xml",
+                        title: href,
+                        locations: nil,
+                        text: nil
+                    ),
+                    text: href,
+                    color: .yellow
+                )
+            )
+        }
+        let order = ["ch2.xhtml", "ch10.xhtml", "ch2.xhtml"]
+        let groups = AnnotationLibrary.chapters(entries, chapterOrder: order)
+        #expect(groups.map(\.href) == ["ch2.xhtml", "ch10.xhtml", "appendix.xhtml"])
+        let md = AnnotationLibrary.markdown(
+            title: "Spine",
+            author: nil,
+            entries: entries,
+            chapterOrder: order
+        )
+        let html = AnnotationLibrary.html(
+            title: "Spine",
+            author: nil,
+            entries: entries,
+            chapterOrder: order
+        )
+        for text in [md, html] {
+            let second = try #require(text.range(of: "ch2"))
+            let tenth = try #require(text.range(of: "ch10"))
+            #expect(second.lowerBound < tenth.lowerBound)
+            #expect(text.contains("appendix"))
+        }
+        #expect(
+            AnnotationLibrary.chapters(entries).map(\.href) == [
+                "appendix.xhtml", "ch10.xhtml", "ch2.xhtml",
+            ]
+        )
+    }
+
+    @Test("Different chapters with the same title still get separate export headings")
+    func repeatedChapterTitles() {
+        let entries = ["first.xhtml", "second.xhtml"].map { href in
+            AnnotationLibrary.entry(
+                Highlight(
+                    bookID: book,
+                    locator: BookLocator(
+                        href: href,
+                        type: "application/xhtml+xml",
+                        title: "Same Title",
+                        locations: nil,
+                        text: nil
+                    ),
+                    text: href,
+                    color: .yellow
+                )
+            )
+        }
+        let html = AnnotationLibrary.html(title: "Book", author: nil, entries: entries)
+        #expect(html.components(separatedBy: "<h2>Same Title</h2>").count == 3)
+        let md = AnnotationLibrary.markdown(title: "Book", author: nil, entries: entries)
+        #expect(md.components(separatedBy: "## Same Title").count == 3)
+    }
+
 }

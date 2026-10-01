@@ -8,6 +8,71 @@ Maintainers and contributors must add or update an entry for every bugfix. See [
 
 Copy this template for each new bugfix and add the completed entry at the top of `## Entries`.
 
+### BF-036 — Exports used filename order and merged distinct chapters with matching titles
+
+- Date: 2026-09-30
+- Status: Needs validation (native export flow pending)
+- Platforms: Shared Markdown/HTML and Apple PDF export
+- Components: `AnnotationLibrary.chapters/markdown/html`, `AnnotationPDFExport`, browser export preparation
+- Related links: [OD-014](docs/OBSERVED_ODDITIES.md), [Phase 5 backlog](docs/PHASE5_EXECUTION_BACKLOG.md)
+
+#### Symptom and cause
+
+For an EPUB with ch2 preceding ch10 in its spine, notes exported in lexical filename order instead. The annotations-only projection had no spine metadata. Markdown/HTML additionally used the chapter title as a grouping identity, omitting a heading for a second, distinct chapter with the same title.
+
+#### Change
+
+Export preparation inspects the downloaded EPUB's actual spine through the existing detached inspector, without opening reader pages or changing reading position. The portable export grouping accepts an explicit chapter order, retains unlisted/missing chapter annotations after known chapters, and handles duplicate order entries safely. Without a readable download, the existing deterministic filename fallback remains. Heading boundaries use href identity rather than title; PDF uses the same spine-aware groups. Background preparation remains cancellable and inspection failures are visible rather than claiming verified order.
+
+#### Validation
+
+Regression tests verify ch2-before-ch10 in Markdown, HTML and PDF; unknown chapters remain, and two distinct chapters with the same title get separate headings. The native WebKit EPUB inspector already verifies a nonlexical spine fixture. Full `scripts/test` passes 390 tests in 40 suites for the visual export increment. Native picker/cancel/reopen and unavailable/corrupt download flows remain pending while the Mac is locked.
+
+#### Compatibility
+
+No persistence or annotation identity change. Source/book boundaries and missing-book export remain intact. None known beyond pending UI acceptance.
+
+### BF-035 — Initial PNG share projection rendered at half its intended size
+
+- Date: 2026-09-30
+- Status: Fixed in the initial, unreleased image-export increment; native preview acceptance pending
+- Platforms: iOS/macOS Core Graphics image adapter
+- Components: `AnnotationImageExport`, `AnnotationImageExportTests`
+- Related links: [Phase 5 backlog](docs/PHASE5_EXECUTION_BACKLOG.md)
+
+#### Symptom and cause
+
+Visual inspection of the first synthetic 1224×1584 image showed the 612×792 PDF content centered at its original size, with excessive whitespace and small text. The PDF drawing transform used for that initial implementation did not scale up to the destination as assumed.
+
+#### Change and validation
+
+Translate each page into its destination slot, explicitly scale from its media-box dimensions to the raster page size, then translate the media-box origin before drawing. White background, page order and all-page retention remain. A pixel-bounds test checks ink starts near the intended left margin and spans the expected width; PNG decode/metadata/color tests pass. Re-generated `/tmp/silveran-visual-fixtures/handwriting.png` was visually inspected: title, Unicode quote, pressure stroke, dot and footer are readable at the intended scale. Original unscaled fixture was inspected before this fix; native preview remains pending.
+
+#### Compatibility
+
+Never released or committed in its incorrect form; no user data or migration affected. None known.
+
+### BF-034 — HTML/SVG handwriting sharing flattened pressure and lost single-point dots
+
+- Date: 2026-09-30
+- Status: Fixed in projection; native share acceptance pending
+- Platforms: Shared SVG/HTML export; Apple image previews
+- Components: `InkVisualExport`, `AnnotationLibrary.svg`
+- Related links: [ADR 008](docs/decisions/008-portable-ink-model-and-native-drawing.md)
+
+#### Symptom and cause
+
+The existing HTML export drew uniform centerline paths regardless of saved pressure. A single-point stroke emitted only a move command and could be invisible. This differed from the pressure outlines used by the live reader and PDF.
+
+#### Change
+
+Use the established portable `InkStrokeOutline` for filled pen outlines and dots; keep constant-width, flat-capped translucent highlighters. Measure complete painted bounds, use locale-independent SVG numbers and escape colors/text. Standalone SVG share cards retain complete quotation/provenance with wrapped Unicode text. Durable originals remain unchanged.
+
+#### Validation and compatibility
+
+Pressure-versus-uniform output, dot path presence, highlighter style, malicious text/color escaping, bounds and empty data tests pass. Actual Mac WebKit renders a long Unicode/wide-title card with no clipped text; its generated screenshot was visually inspected. Full Swift suite passes 390 tests in 40 suites. Apple native preview/save/cancel and hardware acceptance remain pending. No data migration; HTML's visual fidelity improves without changing editable payloads.
+
+
 ### BF-033 — Classifying a stroke as a text mark discarded its original handwriting
 
 - Date: 2026-09-30
@@ -117,7 +182,7 @@ The browser checked only `.ebook` in the source-neutral local-media cache. Read-
 
 #### Change
 
-Resolve a readable category from an ebook first, then a downloaded read-along edition. Use that decision for Show in Book and the new owned placement inspector. Explain both download choices when neither exists. This does not download anything or match a different source/book, and audio-only files still cannot be inspected as EPUB.
+Resolve a readable category from an ebook first, then a downloaded read-along edition. Use that decision for Show in Book, its `PlayerBookData` download path/category, and the new owned placement inspector. A follow-up review found the presentation payload still hard-coded `.ebook`; it now carries the resolved category through to the reader. Explain both download choices when neither exists. This does not download anything or match a different source/book, and audio-only files still cannot be inspected as EPUB.
 
 #### Validation
 

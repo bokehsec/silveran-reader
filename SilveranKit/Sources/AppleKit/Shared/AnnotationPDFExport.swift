@@ -12,7 +12,8 @@ public enum AnnotationPDFExport {
         title: String,
         author: String?,
         entries: [AnnotationEntry],
-        exportedAt: Date = Date()
+        exportedAt: Date = Date(),
+        chapterOrder: [String] = []
     ) throws -> Data {
         try Task.checkCancellation()
         let output = NSMutableData()
@@ -47,7 +48,7 @@ public enum AnnotationPDFExport {
             size: 10
         )
         if entries.isEmpty { try writer.text("No annotations in this book.") }
-        for group in AnnotationLibrary.chapters(entries) {
+        for group in AnnotationLibrary.chapters(entries, chapterOrder: chapterOrder) {
             try Task.checkCancellation()
             writer.ensureSpace(90)
             try writer.text(group.title, size: 17, bold: true)

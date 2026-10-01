@@ -22,6 +22,8 @@ struct AnnotationsBrowserView: View {
     @State private var preparingPDF = false
     @State private var pdfTask: Task<Void, Never>?
     @State private var pdfPreview: PreparedPDF?
+    @State private var visualPreview: PreparedVisual?
+    @State private var visualToSave: PreparedVisual?
     @State private var pdfToSave: PreparedPDF?
     @State private var classificationEntry: AnnotationEntry?
     @State private var repairBook: AnnotationBookSummary?
@@ -37,6 +39,13 @@ struct AnnotationsBrowserView: View {
         let id = UUID()
         let data: Data
         let filename: String
+    }
+    private struct PreparedVisual: Identifiable {
+        let id = UUID()
+        let data: Data
+        let type: UTType
+        let filename: String
+        let quote: String?
     }
     @State private var message: String?
     @State private var settings = SettingsViewModel()
@@ -58,6 +67,27 @@ struct AnnotationsBrowserView: View {
                     category: readableCategory(for: book.bookID) ?? .ebook
                 ) { count in
                     placementCounts[book.bookID] = count
+                }
+            }
+            .sheet(item: $visualPreview, onDismiss: savePreparedVisual) { prepared in
+                NavigationStack {
+                    AnnotationVisualPreview(
+                        data: prepared.data,
+                        type: prepared.type,
+                        quote: prepared.quote
+                    )
+                    .navigationTitle("Handwriting Export")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { visualPreview = nil }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Save \(prepared.type == .png ? "PNG" : "SVG")") {
+                                visualToSave = prepared
+                                visualPreview = nil
+                            }
+                        }
+                    }
                 }
             }
             .sheet(item: $pdfPreview, onDismiss: savePreparedPDF) { prepared in
@@ -126,10 +156,10 @@ struct AnnotationsBrowserView: View {
                 .padding(.horizontal).padding(.vertical, 10)
                 if preparingPDF {
                     HStack {
-                        ProgressView("Preparing PDF…")
+                        ProgressView("Preparing export…")
                         Spacer()
                         Button("Cancel") { pdfTask?.cancel() }
-                            .accessibilityLabel("Cancel PDF preparation")
+                            .accessibilityLabel("Cancel export preparation")
                     }.padding(.horizontal).padding(.vertical, 8)
                 }
                 if hasFilters {
@@ -185,6 +215,16 @@ struct AnnotationsBrowserView: View {
                                 .buttonStyle(.plain)
                                 .accessibilityHint("Show this annotation in its book")
                                 .contextMenu {
+                                    if !entry.strokes.isEmpty {
+                                        Button("Share Handwriting as SVG") {
+                                            exportVisual(entry, png: false)
+                                        }
+                                        .disabled(preparingPDF)
+                                        Button("Share Handwriting as PNG Image") {
+                                            exportVisual(entry, png: true)
+                                        }
+                                        .disabled(preparingPDF)
+                                    }
                                     if entry.kind == .inkMark {
                                         Button(
                                             "Correct Handwriting Type",
@@ -283,7 +323,9 @@ struct AnnotationsBrowserView: View {
                 Button("PDF (with handwriting)") { exportPDF(book) }
                     .disabled(preparingPDF)
                 Button("Web Page (with handwriting)") { exportNotes(book, asHTML: true) }
+                    .disabled(preparingPDF)
                 Button("Markdown Text") { exportNotes(book, asHTML: false) }
+                    .disabled(preparingPDF)
                 Text("Exports all notes in this book. Use a backup to keep editable data.")
             } label: {
                 Label("Export", systemImage: "square.and.arrow.up")
@@ -392,12 +434,12 @@ struct AnnotationsBrowserView: View {
                 "This book isn't in your library. Its annotations are kept and will reconnect if the book is added again."
             return
         }
-        guard readableCategory(for: book.id) != nil else {
+        guard let category = readableCategory(for: book.id) else {
             message = "Download the ebook or read-along edition to see this annotation in place."
             return
         }
         ReaderOpenRequest.shared.request(book.id, at: entry.locator)
-        let data = mediaViewModel.makePlayerBookData(for: book, category: .ebook)
+        let data = mediaViewModel.makePlayerBookData(for: book, category: category)
         #if os(iOS)
         PlayerPresenter.shared.present(data)
         #else
@@ -412,11 +454,13 @@ struct AnnotationsBrowserView: View {
         let author = metadata(for: book.bookID)?.authors?.first?.name
         pdfTask = Task {
             do {
+                let order = try await exportChapterOrder(book.bookID)
                 let generator = Task.detached(priority: .userInitiated) {
                     try AnnotationPDFExport.data(
                         title: title,
                         author: author,
-                        entries: book.entries
+                        entries: book.entries,
+                        chapterOrder: order
                     )
                 }
                 let data = try await withTaskCancellationHandler {
@@ -444,21 +488,103 @@ struct AnnotationsBrowserView: View {
         export = NotesExportDocument(data: prepared.data, contentType: .pdf)
     }
 
+    private func exportVisual(_ entry: AnnotationEntry, png: Bool) {
+        guard !preparingPDF else { return }
+        preparingPDF = true
+        let title = title(for: entry.bookID)
+        let author = metadata(for: entry.bookID)?.authors?.first?.name
+        pdfTask = Task {
+            do {
+                let generator = Task.detached(priority: .userInitiated) {
+                    if png {
+                        return try AnnotationImageExport.png(
+                            title: title,
+                            author: author,
+                            entry: entry
+                        )
+                    }
+                    return Data(
+                        try InkVisualExport.svg(title: title, author: author, entry: entry).utf8
+                    )
+                }
+                let data = try await withTaskCancellationHandler {
+                    try await generator.value
+                } onCancel: {
+                    generator.cancel()
+                }
+                try Task.checkCancellation()
+                visualPreview = PreparedVisual(
+                    data: data,
+                    type: png ? .png : .svg,
+                    filename: "\(title) — Handwriting.\(png ? "png" : "svg")",
+                    quote: entry.quote
+                )
+            } catch {
+                if !Task.isCancelled {
+                    message =
+                        "The handwriting export couldn't be prepared. \(error.localizedDescription)"
+                }
+            }
+            preparingPDF = false
+            pdfTask = nil
+        }
+    }
+
+    private func savePreparedVisual() {
+        guard let prepared = visualToSave else { return }
+        visualToSave = nil
+        exportName = prepared.filename
+        export = NotesExportDocument(data: prepared.data, contentType: prepared.type)
+    }
+
+    /// The detached inspector reads spine metadata without changing position or displaying pages.
+    private func exportChapterOrder(_ bookID: BookID) async throws -> [String] {
+        guard let category = readableCategory(for: bookID) else { return [] }
+        let inspector = AnnotationBookInspector()
+        defer { inspector.close() }
+        let chapters = try await inspector.open(bookID: bookID, category: category)
+        try Task.checkCancellation()
+        return chapters.map(\.href)
+    }
+
     private func exportNotes(_ book: AnnotationBookSummary, asHTML: Bool) {
+        guard !preparingPDF else { return }
+        preparingPDF = true
         let title = title(for: book.bookID)
         let author = metadata(for: book.bookID)?.authors?.first?.name
-        if asHTML {
-            let text = AnnotationLibrary.html(title: title, author: author, entries: book.entries)
-            exportName = "\(title) — Notes.html"
-            export = NotesExportDocument(text: text, contentType: .html)
-        } else {
-            let text = AnnotationLibrary.markdown(
-                title: title,
-                author: author,
-                entries: book.entries
-            )
-            exportName = "\(title) — Notes.md"
-            export = NotesExportDocument(text: text, contentType: .markdown)
+        pdfTask = Task {
+            do {
+                let order = try await exportChapterOrder(book.bookID)
+                let generator = Task.detached(priority: .userInitiated) {
+                    asHTML
+                        ? AnnotationLibrary.html(
+                            title: title,
+                            author: author,
+                            entries: book.entries,
+                            chapterOrder: order
+                        )
+                        : AnnotationLibrary.markdown(
+                            title: title,
+                            author: author,
+                            entries: book.entries,
+                            chapterOrder: order
+                        )
+                }
+                let text = await withTaskCancellationHandler {
+                    await generator.value
+                } onCancel: {
+                    generator.cancel()
+                }
+                try Task.checkCancellation()
+                exportName = "\(title) — Notes.\(asHTML ? "html" : "md")"
+                export = NotesExportDocument(text: text, contentType: asHTML ? .html : .markdown)
+            } catch {
+                if !Task.isCancelled {
+                    message = "The notes export couldn't be prepared. \(error.localizedDescription)"
+                }
+            }
+            preparingPDF = false
+            pdfTask = nil
         }
     }
 
@@ -492,6 +618,13 @@ private struct KeptVersionsView: View {
     let changed: () async -> Void
     @State private var versions: [AnnotationRecoveredVersion] = []
     @State private var restoring: AnnotationRecoveredVersion?
+    private struct PreparedVisual: Identifiable {
+        let id = UUID()
+        let data: Data
+        let type: UTType
+        let filename: String
+        let quote: String?
+    }
     @State private var message: String?
 
     var body: some View {
@@ -655,7 +788,7 @@ struct StrokeThumbnail: View {
 }
 
 struct NotesExportDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.markdown, .html, .plainText, .pdf] }
+    static var readableContentTypes: [UTType] { [.markdown, .html, .plainText, .pdf, .svg, .png] }
     let data: Data
     let contentType: UTType
     init(text: String, contentType: UTType) {
