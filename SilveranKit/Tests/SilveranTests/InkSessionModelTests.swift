@@ -79,8 +79,11 @@ private final class FakeEngine: InkEngineCalling {
     func inkPageStartAnchor() async throws -> InkPageAnchor { pageAnchor }
 
     var marginCalls: [(hasNotes: Bool?, open: Bool?)] = []
-    func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws {
+    /// What the page answers: by default, what was asked for.
+    var marginAnswer: ((_ open: Bool?) -> InkSession.MarginState)?
+    func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws -> InkSession.MarginState {
         marginCalls.append((hasNotes, open))
+        return marginAnswer?(open) ?? InkSession.MarginState(expanded: open ?? false)
     }
 }
 
@@ -857,12 +860,31 @@ struct InkSessionModelTests {
         let session = await openSession(directory: directory, engine: engine)
         await session.setMarginOpen(true)
         #expect(engine.marginCalls.last?.open == true)
+        #expect(session.marginState.expanded, "the page's answer opens the toolbar state")
         var changes = 0
         session.onMarginStateChanged = { changes += 1 }
-        session.setMarginState(.init(expanded: true, available: true))
-        session.setMarginState(.init(expanded: true, available: true))
+        session.setMarginState(.init(expanded: false, available: true))
+        session.setMarginState(.init(expanded: false, available: true))
         #expect(changes == 1)
-        #expect(session.marginState.expanded)
+        #expect(!session.marginState.expanded)
+    }
+
+    @Test("The margin state follows what the page shows, not what was asked (OD-028)")
+    func marginFollowsPage() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        // A narrow column: the page keeps the margin closed and says it can't open.
+        engine.marginAnswer = { _ in .init(expanded: false, available: false) }
+        await session.setMarginOpen(true)
+        #expect(session.marginState == .init(expanded: false, available: false))
+        // The page's own report was lost, but its answer still reaches the toolbar.
+        engine.marginAnswer = nil
+        await session.setMarginOpen(true)
+        #expect(session.marginState == .init(expanded: true, available: true))
+        await session.setMarginOpen(false)
+        #expect(session.marginState.expanded == false)
     }
 
     // MARK: Migration

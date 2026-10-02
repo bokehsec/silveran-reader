@@ -4,7 +4,7 @@ import { SpanHighlighter } from "./SpanHighlighter.js";
 import { debugLog } from "./DebugConfig.js";
 import BookmarkManager from "./BookmarkManager.js";
 import InkEngine from "./InkEngine.js";
-import { marginGap } from "./InkMargin.js";
+import { InkMarginControl } from "./InkMarginControl.js";
 import { runInkSelfTest } from "./InkSelfTest.js";
 import { InkTouchGuard } from "./InkTouchGuard.js";
 import { maybeRunInkDebug } from "./InkDebug.js";
@@ -1060,21 +1060,32 @@ class FoliateManager {
     this.#view.renderer.setAttribute("margin", `${marginPx}px`);
     debugLog("FoliateManager", `Set margin to ${marginPx}px`);
 
-    this.#view.renderer.setAttribute("gap", this.#inkGap());
     this.#updateMaxInlineSize();
 
     if (!this.#resizeHandler) {
-      this.#resizeHandler = () => this.#updateMaxInlineSize();
+      this.#resizeHandler = () => {
+        this.#updateMaxInlineSize();
+        // Rotation or a new window size can make the column too narrow for the wide margin
+        // (or wide enough again): the margin follows (OD-027).
+        this.#inkMargin.refresh();
+      };
       window.addEventListener("resize", this.#resizeHandler);
     }
 
-    this.#view.renderer.render?.();
+    // Sets the gap and renders; scrolling or column changes also close or reopen the wide
+    // margin, which a gap change alone would leave half applied (OD-027).
+    this.#inkMargin.apply();
   }
 
   // MARK: - Margin notes (P5.2)
 
-  /** Book has margin notes (from Swift) and whether the person has opened the wide margin. */
-  #inkMargin = { hasNotes: false, open: false };
+  /** The wide margin: its state from Swift and the layout, applied to the page (OD-027/028). */
+  #inkMargin = new InkMarginControl({
+    renderer: () => this.#view?.renderer ?? null,
+    engine: this.#inkEngine,
+    layout: () => ({ narrow: this.#isNarrowColumn(), scrolling: this.#scrollingMode }),
+    post: report => window.webkit?.messageHandlers?.InkMarginState?.postMessage(report),
+  });
 
   /**
    * One column is too narrow for a writable margin (iPhone): margin notes show only as icons,
@@ -1085,45 +1096,17 @@ class FoliateManager {
     return window.innerWidth / columns < 480;
   }
 
-  #marginIsExpanded() {
-    return this.#inkMargin.open && !this.#isNarrowColumn() && !this.#scrollingMode;
-  }
-
-  /** The paginator gap: none, a thin gutter for margin icons, or a wide margin to write in. */
-  #inkGap() {
-    return marginGap({ hasNotes: this.#inkMargin.hasNotes, expanded: this.#marginIsExpanded(),
-      narrow: this.#isNarrowColumn(), scrolling: this.#scrollingMode });
-  }
-
-  #applyInkMargin(focusId = null) {
-    const expanded = this.#marginIsExpanded();
-    debugLog("InkEngine", "margin", JSON.stringify({ ...this.#inkMargin, expanded, gap: this.#inkGap() }));
-    this.#view?.renderer?.setAttribute("gap", this.#inkGap());
-    this.#inkEngine.setMarginExpanded(expanded);
-    this.#view?.renderer?.render?.();
-    this.#inkEngine.redrawMarks();
-    // The text reflowed: keep the note that was tapped in view.
-    if (focusId) requestAnimationFrame(() => this.#inkEngine.revealMarginNote(focusId));
-    window.webkit?.messageHandlers?.InkMarginState?.postMessage({
-      expanded, available: !this.#isNarrowColumn() && !this.#scrollingMode,
-    });
-  }
-
-  /** Swift: `{ hasNotes?, open? }`. Opening the margin widens the gutter so notes can be written there. */
+  /**
+   * Swift: `{ hasNotes?, open? }`. Opening the margin widens the gutter so notes can be written
+   * there. Returns what the page shows, `{ expanded, available }`.
+   */
   inkSetMargin(jsonString) {
-    const next = { ...this.#inkMargin, ...JSON.parse(jsonString) };
-    if (next.hasNotes === this.#inkMargin.hasNotes && next.open === this.#inkMargin.open) {
-      return JSON.stringify({ expanded: this.#marginIsExpanded() });
-    }
-    this.#inkMargin = next;
-    this.#applyInkMargin();
-    return JSON.stringify({ expanded: this.#marginIsExpanded() });
+    return JSON.stringify(this.#inkMargin.set(JSON.parse(jsonString)));
   }
 
   async inkFocusMarginNote(href, id) {
     if (this.#isNarrowColumn() || this.#scrollingMode) return JSON.stringify({ shown: false });
-    this.#inkMargin = { ...this.#inkMargin, open: true };
-    this.#applyInkMargin();
+    this.#inkMargin.set({ open: true });
     await new Promise(resolve => requestAnimationFrame(resolve));
     return JSON.stringify({ shown: this.#inkEngine.revealMarginNote(id, href) });
   }
@@ -1136,8 +1119,9 @@ class FoliateManager {
       window.webkit?.messageHandlers?.InkMarginNoteTapped?.postMessage({ href, id, ids });
       return;
     }
-    this.#inkMargin = { ...this.#inkMargin, open: true };
-    this.#applyInkMargin(id);
+    this.#inkMargin.set({ open: true });
+    // The text reflowed: keep the note that was tapped in view.
+    requestAnimationFrame(() => this.#inkEngine.revealMarginNote(id));
   }
 
   #updateMaxInlineSize() {

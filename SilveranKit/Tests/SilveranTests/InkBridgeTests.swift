@@ -36,6 +36,24 @@ struct InkBridgeTests {
         suffix: ""
     )
 
+    @Test("Setting the margin returns what the page shows (OD-028)")
+    func setMargin() async throws {
+        let js = ScriptRecorder()
+        let bridge = ReaderCommsBridge(js: js)
+        js.result = #"{"expanded":false,"available":false}"#
+
+        let state = try await bridge.inkSetMargin(hasNotes: true, open: true)
+
+        let args = try js.arguments(of: "inkSetMargin")
+        let text = try #require(args[0] as? String)
+        let sent = try #require(
+            JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        )
+        #expect(sent["open"] as? Bool == true)
+        #expect(sent["hasNotes"] as? Bool == true)
+        #expect(state == InkSession.MarginState(expanded: false, available: false))
+    }
+
     @Test("Rendering passes the href as plain text and the section as JSON text")
     func render() async throws {
         let js = ScriptRecorder()

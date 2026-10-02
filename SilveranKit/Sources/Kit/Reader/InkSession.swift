@@ -28,8 +28,9 @@ public protocol InkEngineCalling: AnyObject {
     /// The first word on the page now showing.
     func inkPageStartAnchor() async throws -> InkPageAnchor
     /// Margin notes: whether the book has any (a thin gutter for their icons), and whether the
-    /// person has opened the wide margin. Nil leaves a value as it is.
-    func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws
+    /// person has opened the wide margin. Nil leaves a value as it is. Returns what the page then
+    /// shows, which can differ from the request (a narrow column, a failure partway).
+    func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws -> InkSession.MarginState
 }
 
 /// Apple Pencil ink for one open book (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.1).
@@ -482,7 +483,7 @@ public final class InkSession {
 
     /// The page's margin: `available` is false where a column is too narrow to write beside
     /// (margin notes then show as icons only).
-    public struct MarginState: Equatable, Sendable {
+    public struct MarginState: Equatable, Sendable, Codable {
         public var expanded = false
         public var available = true
         public init(expanded: Bool = false, available: Bool = true) {
@@ -510,12 +511,17 @@ public final class InkSession {
         onMarginStateChanged?()
     }
 
-    /// Opens or closes the wide margin to write margin notes in.
+    /// Opens or closes the wide margin to write margin notes in. The page's answer becomes the
+    /// margin state, so the toolbar follows the page even if its own report was lost (OD-028).
+    /// When the page fails partway it has already reported what it shows.
     public func setMarginOpen(_ open: Bool) async {
         debugLog("[InkSession] Margin \(open ? "open" : "closed") requested")
         guard let engine else { return }
+        let generation = rendererGeneration
         do {
-            try await engine.inkSetMargin(hasNotes: hasMarginNotes, open: open)
+            let state = try await engine.inkSetMargin(hasNotes: hasMarginNotes, open: open)
+            guard generation == rendererGeneration else { return }
+            setMarginState(state)
         } catch {
             debugLog("[InkSession] Setting the margin failed: \(error)")
         }
@@ -529,7 +535,10 @@ public final class InkSession {
         let generation = rendererGeneration
         Task { [weak self] in
             guard let self, generation == self.rendererGeneration else { return }
-            try? await engine.inkSetMargin(hasNotes: has, open: nil)
+            guard let state = try? await engine.inkSetMargin(hasNotes: has, open: nil),
+                generation == self.rendererGeneration
+            else { return }
+            self.setMarginState(state)
         }
     }
 

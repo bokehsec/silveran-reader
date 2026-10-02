@@ -42,6 +42,45 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-055 — The wide margin could stay open while the toolbar said Closed
+
+- Date: 2026-10-01
+- Status: Fixed; simulator checked on iPad; real-device rotation, Split View and scrolling-mode checks pending
+- Platforms: Shared EPUB renderer and Kit (`InkSession`); verified on iPadOS simulator and iOS component tests
+- Components: new `SilveranKit/Sources/Kit/Resources/WebResources/InkMarginControl.js`, `FoliateManager.js` (margin methods, style application, resize handler), `SilveranKit/Sources/Kit/Reader/InkSession.swift` (`InkEngineCalling.inkSetMargin` now returns `MarginState`; `setMarginOpen`, `reportMarginNotes`), `ReaderCommsBridge+Ink.swift`, tests `inkMarginControl.test.mjs`, `InkSessionModelTests.swift`, `InkBridgeTests.swift`, `InkWritingGroupTests.swift` (stub)
+- Related links: OD-027, OD-028, [patch review, margin closing investigation](docs/MARGIN_NOTE_PATCH_REVIEW.md#margin-closing-investigation), P5.2
+
+#### Symptom and root cause
+
+The owner reported the wide margin sometimes could not be closed. The review reproduced two causes:
+
+- **A failure partway through opening trapped the toggle (OD-028).** The page stored "open" and narrowed the text before rendering, and reported the new state to Swift only after rendering finished. If rendering threw, or the report was lost, the page stayed open while the toolbar still said Closed. The toolbar picks its next command from that report, so every tap sent "open" again. The page ignored a command identical to its stored request without re-applying or reporting, and Swift discarded the call's return value, so nothing repaired the mismatch.
+- **Mode and size changes left the margin half applied (OD-027).** A style change (for example switching to scrolling) changed the page gap but not the engine's margin state, leaving `data-silveran-margin="open"` text room in scrolling mode. A resize updated only the column width, so a column that became too narrow kept the wide margin and the toolbar kept offering it.
+
+#### Change
+
+- `InkMarginControl` (new, JS) owns the margin on the page: the person's choice (`open`), whether the book has margin notes, and the layout (narrow column, scrolling). It decides the gap and whether notes show as handwriting, applies both, renders, and reports `{ expanded, available }`. The report is always the engine's actual state, and it is sent even when applying throws, so the toolbar cannot keep a state the page has left. A failed apply is marked not applied, and the next command or layout change applies it again.
+- A repeated command no longer returns early. If the page already matches, it only reports again, without re-rendering. If it doesn't match, it applies again.
+- `FoliateManager` delegates to it: every style application applies the margin (replacing a bare gap change and render), and resize re-applies it only when the layout changed what the margin means. Opening from a tapped margin tile or the margin sheet goes through the same path.
+- Swift: `inkSetMargin` returns what the page shows (`InkSession.MarginState`, decoded from the call's result). `setMarginOpen` and `reportMarginNotes` make that the margin state, guarded by the renderer generation. The toolbar therefore follows the page even if the page's message is lost.
+
+Unchanged: the toolbar button and its "open if not expanded" rule, the gap percentages, the person's open choice surviving scrolling (switching back to pages reopens it), and margin-note layout (BF-054).
+
+#### Validation
+
+- `cd SilveranKit/Tests/WebHarness && node --test *.test.mjs`: **191 pass**, 0 fail. New `inkMarginControl.test.mjs` (6) covers the review's five state cases: ordinary open and close; closing with notes leaves the 6% icon gutter; switching to scrolling and back; a resize to a narrow column; recovery after an injected render failure. It also checks that a repeated command reports again without re-rendering. The review recorded the baseline failing three of those five (scrolling, resize, failure recovery).
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=C1412372-BC80-4B3A-882D-19EBD1575327' scripts/iostest`: **106/106 pass** on iPad Pro 11-inch (M5), iOS 26.2. The new "Setting the margin returns what the page shows (OD-028)" and "The margin state follows what the page shows, not what was asked (OD-028)" are present in the results.
+- Simulator, unsigned Debug build via `SilveranValidation.xcodeproj` on the BF-054 iPad clone (`B1CD09F6-F83C-4964-A721-64FD56EE1F56`), synthetic Ink Latency Fixture. `-SilveranInkDemoStroke` drove `InkSession.setMarginOpen`, the same call the toolbar button makes, through open, close, open, open. Pages went 175 → 126 → 175. The repeated open left the margin open, and the notes switched between handwriting and tiles each time. With the toolbar shown, the margin button was grey with the margin closed and highlighted after the native open.
+- Limitations:
+  - The toolbar button itself was not tapped: the bar hides before simulator taps arrive.
+  - Rotation, Split View narrowing and the scrolling-mode switch were not exercised in the app; they are covered by the JS tests only.
+  - `InkWritingGroupTests` (one-line stub change) is not in the iOS component host, and the macOS `scripts/test` build is broken by unrelated in-progress mini-player edits, so that file was not compiled.
+  - Debug-only: filler kinds in `-SilveranInkDemoStroke` are drawn as demo strokes, which added a few synthetic marks to the clone's fixture.
+
+#### Compatibility and follow-up
+
+No stored-data change. The JS call now returns `{ expanded, available }` instead of `{ expanded }`; app and reader scripts ship together. The owner's original stuck-open trigger was never captured, so real-device confirmation is still owed (rotate, Split View, toggle repeatedly, switch to scrolling and back).
+
 ### BF-054 — Margin notes hidden behind a count although they did not overlap
 
 - Date: 2026-10-01

@@ -90,14 +90,15 @@ extension ReaderCommsBridge: InkEngineCalling {
         return try decodeInkResult(Shown.self, from: result).shown
     }
 
-    public func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws {
+    public func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws -> InkSession.MarginState {
         struct Margin: Encodable {
             let hasNotes: Bool?
             let open: Bool?
         }
-        _ = try await callInk(
+        let result = try await callInk(
             "return await window.foliateManager.inkSetMargin(\(try jsLiteral(Margin(hasNotes: hasNotes, open: open))));"
         )
+        return try decodeInkResult(InkSession.MarginState.self, from: result)
     }
 
     private func callInk(_ body: String) async throws -> String? {

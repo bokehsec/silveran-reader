@@ -529,3 +529,9 @@ Final increment verification: the cancellation-aware build passed `scripts/test`
 - Code implemented; automated verification: WebHarness 185 pass; BF-053 review audit 5/5 pass; iOS component suite 104/104 on iPad Pro 11-inch (M5) iOS 26.2, including the new native crowded-margin WebKit test.
 - Simulator usability: checked on clones of the QA iPad and iPhone with the synthetic Ink Latency Fixture. Five real-pipeline margin words, including two side by side at one passage, are all shown. Synthetic overlapping copies are counted in a tile that covers no ink, and the tile opens the margin sheet. Focus editing, the closed margin and the iPhone narrow gutter also work. Details are in BF-054.
 - Still open: real Pencil writing beside shown notes, VoiceOver, signed-device acceptance (checklist 65), and margin open/close state recovery (OD-027/028). Phase 5 remains in progress.
+
+### 2026-10-01 — Margin open/close state follows the page (BF-055)
+
+- P5.2, OD-027/028: one page-side owner (`InkMarginControl`) applies the margin on every command, style change and resize, reports the actual state even after a partial failure, and returns it to `InkSession`, so the toolbar can no longer be stuck on Closed with the margin open.
+- Code implemented; automated verification: WebHarness 191 pass (the review's five state cases, three of which failed on the baseline); iOS component suite 106/106 on iPad Pro 11-inch (M5) iOS 26.2.
+- Simulator: the native open/close path (the call the toolbar button makes) and a repeated open were checked on the BF-054 iPad clone, and the toolbar button's appearance followed the page. The toolbar button tap itself, rotation, Split View and the scrolling switch still need checking on a device.

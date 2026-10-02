@@ -1,6 +1,6 @@
 # Margin-note patch review and closing investigation
 
-> **Outcome (2026-10-01, BF-054):** the replacement asked for in recommendation 1 is implemented. `InkMargin.layoutMarginColumn` is now the single description of what the margin shows, and drawing, tile taps, page-tap suppression and continued writing all read it. The five interaction cases in `review-evidence/audit.template.mjs` pass unchanged against it, and equivalent assertions are in `inkMargin.test.mjs` and `InkMarginWebKitTests`. Recommendation 2 (margin open/close state, OD-027/028) is still open.
+> **Outcome (2026-10-01, BF-054):** the replacement asked for in recommendation 1 is implemented. `InkMargin.layoutMarginColumn` is now the single description of what the margin shows, and drawing, tile taps, page-tap suppression and continued writing all read it. The five interaction cases in `review-evidence/audit.template.mjs` pass unchanged against it, and equivalent assertions are in `inkMargin.test.mjs` and `InkMarginWebKitTests`. Recommendation 2 (margin open/close state, OD-027/028) is implemented in BF-055 (`InkMarginControl`); the five state cases here pass as `inkMarginControl.test.mjs`.
 
 Date: 2026-10-01. Decision: **keep the saved BF-053 patch removed**. This review changes documentation only. The baseline is the current reader; the candidate is the exact saved patch at `/Users/rob/.codex/patches/silveran-margin-notes-2026-10-01/reapply.patch`, tested in a separate directory. Existing user changes and annotations are preserved.
 

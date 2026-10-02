@@ -48,7 +48,9 @@ private final class GroupEngine: InkEngineCalling {
     func inkMigrate(href: String, notes: [InkNote]) async throws -> [InkMigratedAnchor] { [] }
     func inkSuggestRepairs(href: String, ids: [String]) async throws -> [InkRepairAnswer] { [] }
     func inkPageStartAnchor() async throws -> InkPageAnchor { InkPageAnchor() }
-    func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws {}
+    func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws -> InkSession.MarginState {
+        InkSession.MarginState(expanded: open ?? false)
+    }
 }
 
 @Suite("Writing groups")
