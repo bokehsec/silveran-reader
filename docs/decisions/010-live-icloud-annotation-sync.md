@@ -28,6 +28,10 @@ Keep the protected per-book files (`InkActor`, `BookmarkActor`/`FilesystemActor`
 - **Tombstones** are kept for 180 days, then removed locally and from iCloud. A device offline for longer than that can bring a deleted annotation back; this is documented.
 - **One switch:** "Sync annotations and settings with iCloud" controls both this and the existing settings sync.
 
+## Known gap: book identity across devices (found 2026-10-02, BF-056)
+
+Records are keyed by `BookID(sourceID, uuid)`, and `sourceID` is a random UUID made when a device adds a book source. Two devices that each added the same Storyteller server have different `sourceID`s for the same book. A received annotation is therefore filed under a source the receiving device doesn't have and appears in no book there. The annotation is preserved, not lost. Confirmed on the owner's iPad and iPhone; the transport itself delivered every record. Settings > Sync Diagnostics now reports these "stranded" annotations. The fix (map foreign sources by a portable account identity, then re-home through the owners) changes annotation identity and needs its own ADR before implementation.
+
 ## Why not the ADR 003 repository
 
 The repository keeps a full causal history so concurrent edits can be kept side by side. The product choice ("latest wins, older kept in recovery", strokes combined) needs only current state, clocks, tombstones and a recovery copy. Using the repository would also require the reader cutover blocked by revision growth (ADR 003). The repository stays inactive; this ADR does not delete it.
