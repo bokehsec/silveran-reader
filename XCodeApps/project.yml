@@ -68,6 +68,8 @@ targets:
           - AnnotationSyncDurabilityTests.swift
           - AnnotationTransportCheckpointTests.swift
           - AnnotationCloudSyncTests.swift
+          - AnnotationRecordReceiverTests.swift
+          - SyncDeferredRecordStoreTests.swift
           - InkMutationCoordinationTests.swift
           - InkLocalMutationJournalTests.swift
           - HighlightPersistenceSafetyTests.swift

@@ -6,9 +6,11 @@ import SilveranKit
 /// Moves annotation changes between the person's devices with `CKSyncEngine` (ADR 010).
 /// Conflict rules live in `AnnotationSyncEngine`; this adapter only maps records and events.
 ///
-/// Zone `Annotations` in the private database holds one `Annotation` record per annotation and
-/// one `LibraryBook` card per annotated book and device source (ADR 012). Content fields use
-/// CloudKit encrypted values; payloads above 700 KB travel as assets.
+/// Zone `Annotations` in the private database holds one `Annotation` record per annotation, one
+/// `LibraryBook` card per annotated book and device source, and one `LibrarySource` card per
+/// book server (ADR 012). Content fields use CloudKit encrypted values; payloads above 700 KB
+/// travel as assets. Other zones in the database (such as `Backups`) belong to other owners and
+/// are never fetched here.
 final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
     static let recordType = "Annotation"
     static let cardRecordType = "LibraryBook"
@@ -19,6 +21,9 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
     private let container: CKContainer
     private let engine: AnnotationSyncEngine
     private let checkpoint: AnnotationTransportCheckpoint
+    private let deferred: SyncDeferredRecordStore
+    private let appVersion: String
+    private let receiver: AnnotationRecordReceiver
     private let activity: SyncActivityLog
     private let library: LibraryIdentityStore
     private let identity: LibraryIdentityService
@@ -31,6 +36,7 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
         containerIdentifier: String,
         engine: AnnotationSyncEngine,
         stateURL: URL,
+        appVersion: String,
         activity: SyncActivityLog,
         library: LibraryIdentityStore,
         identity: LibraryIdentityService
@@ -38,9 +44,19 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
         container = CKContainer(identifier: containerIdentifier)
         self.engine = engine
         checkpoint = AnnotationTransportCheckpoint(url: stateURL)
+        deferred = SyncDeferredRecordStore(directory: stateURL.deletingLastPathComponent())
+        self.appVersion = appVersion
         self.activity = activity
         self.library = library
         self.identity = identity
+        receiver = AnnotationRecordReceiver(
+            engine: engine,
+            library: library,
+            checkpoint: checkpoint,
+            deferred: deferred,
+            activity: activity,
+            appVersion: appVersion
+        )
     }
 
     /// Starts the engine, creating the zone on first use and queueing everything pending.
@@ -86,6 +102,7 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
         await engine.reconcileAll()
         await queuePending()
         refreshLibrary()
+        await retryDeferred(syncEngine: created)
     }
 
     func stop() {
@@ -113,6 +130,12 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
         if let problem = checkpoint.problem { return problem }
         if let problem = await engine.persistenceStatus() { return problem }
         return await library.lastFailure
+    }
+
+    /// Received records this version couldn't read, kept in iCloud to read after an update.
+    /// Nil when the list itself can't be read.
+    func deferredRecords() async -> [SyncDeferredRecord]? {
+        await deferred.records()
     }
 
     /// Changes CloudKit still has to send for this device.
@@ -218,7 +241,7 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
     }
 
     private func queuePending() async {
-        guard checkpoint.problem == nil,
+        guard !checkpoint.isHalted,
               await engine.persistenceStatus() == nil,
               let syncEngine = lock.withLock({ syncEngine }) else { return }
         let names =
@@ -270,18 +293,19 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
                         do {
                             let account = try await container.userRecordID()
                             guard await engine.resetForNewAccount(accountContext: account.recordName) else {
-                                checkpoint.blockReceipt()
-                                await activity.record(.problem, await engine.persistenceStatus() ?? "The account change needs recovery before sync can continue.")
+                                await halt(await engine.persistenceStatus() ?? "The account change needs recovery before sync can continue.")
                                 return
                             }
                         } catch {
-                            checkpoint.blockReceipt()
-                            await activity.record(.problem, "The changed iCloud account couldn't be verified: \(Self.describe(error))")
+                            await halt("The changed iCloud account couldn't be verified: \(Self.describe(error))")
                             return
                         }
                         guard await library.resetForNewAccount() else {
-                            checkpoint.blockReceipt()
-                            await activity.record(.problem, "Library identity couldn't be saved for the changed account.")
+                            await halt("Library identity couldn't be saved for the changed account.")
+                            return
+                        }
+                        guard await deferred.clear() else {
+                            await halt(await deferred.lastFailure ?? "The changed account's sync state couldn't be reset.")
                             return
                         }
                         syncEngine.state.add(
@@ -305,13 +329,15 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
                         "Annotations were removed from iCloud; sending this device's again"
                     )
                     guard await engine.resetForNewAccount() else {
-                        checkpoint.blockReceipt()
-                        await activity.record(.problem, await engine.persistenceStatus() ?? "The removed iCloud zone needs recovery before sync can continue.")
+                        await halt(await engine.persistenceStatus() ?? "The removed iCloud zone needs recovery before sync can continue.")
                         return
                     }
                     guard await library.resetForNewAccount() else {
-                        checkpoint.blockReceipt()
-                        await activity.record(.problem, "Library identity couldn't be saved after the cloud zone changed.")
+                        await halt("Library identity couldn't be saved after the cloud zone changed.")
+                        return
+                    }
+                    guard await deferred.clear() else {
+                        await halt(await deferred.lastFailure ?? "Sync state couldn't be reset after the cloud zone changed.")
                         return
                     }
                     syncEngine.state.add(
@@ -320,79 +346,34 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
                     await queuePending()
                 }
             case .fetchedRecordZoneChanges(let changes):
-                var books: [BookID: Int] = [:]
-                var unreadable = 0
-                var cards = 0
-                for modification in changes.modifications {
-                    if modification.record.recordType == Self.sourceRecordType {
-                        if let card = Self.sourceCard(from: modification.record) {
-                            let receipt = await library.receiveChecked(
-                                source: card,
-                                systemFields: Self.systemFields(modification.record)
-                            )
-                            if !receipt.persisted {
-                                checkpoint.blockReceipt()
-                                await activity.record(.problem, receipt.failure ?? "A received source connection couldn't be saved.")
-                            }
-                        } else {
-                            unreadable += 1
-                        }
-                        if await library.lastFailure != nil { checkpoint.blockReceipt() }
-                        continue
-                    }
-                    if modification.record.recordType == Self.cardRecordType {
-                        if let card = Self.card(from: modification.record) {
-                            let receipt = await library.receiveChecked(
-                                card,
-                                systemFields: Self.systemFields(modification.record)
-                            )
-                            if receipt.changed { cards += 1 }
-                            if !receipt.persisted {
-                                checkpoint.blockReceipt()
-                                await activity.record(.problem, receipt.failure ?? "A received book identity couldn't be saved.")
-                            }
-                        } else {
-                            unreadable += 1
-                        }
-                        if await library.lastFailure != nil { checkpoint.blockReceipt() }
-                        continue
-                    }
-                    guard let record = Self.syncRecord(from: modification.record) else {
-                        unreadable += 1
-                        continue
-                    }
-                    books[record.bookID, default: 0] += 1
-                    if !(await engine.receive(
-                        record,
-                        systemFields: Self.systemFields(modification.record)
-                    )) {
-                        checkpoint.blockReceipt()
-                        await activity.record(.problem, await engine.persistenceStatus() ?? "Received annotation changes need retry.")
-                    }
-                }
-                for deletion in changes.deletions {
+                // After a halt the account or zone can't be trusted; the held cursor
+                // delivers these again after a restart.
+                guard !checkpoint.isHalted else { break }
+                // The scope in nextFetchChangesOptions already excludes other zones; this
+                // keeps another owner's records out even if the engine delivers them.
+                let modifications = changes.modifications.map(\.record)
+                    .filter { $0.recordID.zoneID == Self.zoneID }
+                let deletions = changes.deletions.filter { $0.recordID.zoneID == Self.zoneID }
+                let tally = await receiver.receive(modifications)
+                for deletion in deletions {
                     if !(await engine.forgetRecord(named: deletion.recordID.recordName)) { checkpoint.blockReceipt() }
                 }
-                if cards > 0 { refreshLibrary() }
-                let received = books.values.reduce(0, +)
-                if received > 0 || !changes.deletions.isEmpty {
-                    var summary = "Received \(Self.count(received, "change"))"
-                    if !changes.deletions.isEmpty {
-                        summary += ", \(Self.count(changes.deletions.count, "expired deletion"))"
+                if tally.cards > 0 { refreshLibrary() }
+                if tally.received > 0 || !deletions.isEmpty {
+                    var summary = "Received \(Self.count(tally.received, "change"))"
+                    if !deletions.isEmpty {
+                        summary += ", \(Self.count(deletions.count, "expired deletion"))"
                     }
                     await activity.record(
                         .received,
                         summary,
-                        detail: Self.bookLines(books)
+                        detail: Self.bookLines(tally.books)
                     )
                 }
-                if unreadable > 0 {
-                    checkpoint.blockReceipt()
-                    await activity.record(
-                        .problem,
-                        "Ignored \(Self.count(unreadable, "record")) this version couldn't read"
-                    )
-                }
+                await receiver.settle(
+                    read: tally.read.union(deletions.map(\.recordID.recordName)),
+                    unreadable: tally.unreadable
+                )
                 await queuePending()
             case .sentDatabaseChanges(let sent):
                 for failure in sent.failedZoneSaves {
@@ -537,7 +518,7 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
         _ context: CKSyncEngine.SendChangesContext,
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
-        guard checkpoint.problem == nil,
+        guard !checkpoint.isHalted,
               lock.withLock({ self.syncEngine === syncEngine }) else { return nil }
         let changes = syncEngine.state.pendingRecordZoneChanges.filter {
             context.options.scope.contains($0)
@@ -545,7 +526,7 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
         let engine = self.engine
         let library = self.library
         return await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: changes) { [self] recordID in
-            guard checkpoint.problem == nil,
+            guard !checkpoint.isHalted,
                   lock.withLock({ self.syncEngine === syncEngine }) else { return nil }
             let name = recordID.recordName
             if name.hasPrefix(LibrarySourceCard.recordPrefix) {
@@ -587,6 +568,69 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
             Self.populate(ckRecord, with: record)
             return ckRecord
         }
+    }
+
+    /// Fetches only the annotations zone. The private database also holds other owners' zones
+    /// (`Backups`), whose records this adapter can't read and must not download.
+    func nextFetchChangesOptions(
+        _ context: CKSyncEngine.FetchChangesContext,
+        syncEngine: CKSyncEngine
+    ) async -> CKSyncEngine.FetchChangesOptions {
+        var options = context.options
+        options.scope = Self.fetchScope(within: context.options.scope)
+        return options
+    }
+
+    /// The annotations zone, if the requested scope includes it; otherwise nothing.
+    static func fetchScope(
+        within requested: CKSyncEngine.FetchChangesOptions.Scope
+    ) -> CKSyncEngine.FetchChangesOptions.Scope {
+        requested.contains(zoneID) ? .zoneIDs([zoneID]) : .zoneIDs([])
+    }
+
+    // MARK: Receiving
+
+    /// After an update, fetches the records an earlier version couldn't read and applies them.
+    /// Records still unreadable are listed again under this version.
+    private func retryDeferred(syncEngine: CKSyncEngine) async {
+        let due = await deferred.due(for: appVersion)
+        guard !due.isEmpty else { return }
+        let ids = due.map { CKRecord.ID(recordName: $0.recordName, zoneID: Self.zoneID) }
+        var fetched: [CKRecord] = []
+        var gone: Set<String> = []
+        for chunk in stride(from: 0, to: ids.count, by: 200).map({ ids[$0..<min($0 + 200, ids.count)] }) {
+            do {
+                for (id, result) in try await container.privateCloudDatabase.records(for: Array(chunk)) {
+                    switch result {
+                        case .success(let record): fetched.append(record)
+                        case .failure(let error):
+                            // Deleted since: nothing left to read. Other errors retry next start.
+                            if (error as? CKError)?.code == .unknownItem { gone.insert(id.recordName) }
+                    }
+                }
+            } catch {
+                await activity.record(.problem, "Records kept for a later version couldn't be fetched: \(Self.describe(error))")
+                return
+            }
+        }
+        guard !checkpoint.isHalted, lock.withLock({ self.syncEngine === syncEngine }) else { return }
+        let tally = await receiver.receive(fetched)
+        if tally.received > 0 || tally.cards > 0 {
+            await activity.record(
+                .received,
+                "Read \(Self.count(tally.read.count, "record")) kept from an earlier version",
+                detail: Self.bookLines(tally.books)
+            )
+        }
+        if tally.cards > 0 { refreshLibrary() }
+        await receiver.settle(read: tally.read.union(gone), unreadable: tally.unreadable)
+        await queuePending()
+    }
+
+    /// Stops sending and receiving until restart: the account or zone boundary can't be trusted.
+    private func halt(_ reason: String) async {
+        checkpoint.halt(reason)
+        await activity.record(.problem, reason)
     }
 
     // MARK: Activity
@@ -635,7 +679,7 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
             .joined(separator: "\n")
     }
 
-    private static func count(_ value: Int, _ noun: String) -> String {
+    static func count(_ value: Int, _ noun: String) -> String {
         "\(value) \(noun)\(value == 1 ? "" : "s")"
     }
 

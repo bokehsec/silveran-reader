@@ -44,6 +44,43 @@ enum CloudKitSchemaBootstrap {
             )
             annotation["payloadAsset"] = CKAsset(fileURL: file)  // normally only for large notes
 
+            let book = CKRecord(
+                recordType: AnnotationCloudSync.cardRecordType,
+                recordID: CKRecord.ID(recordName: "schema-book", zoneID: zone.zoneID)
+            )
+            AnnotationCloudSync.populate(
+                book,
+                card: LibraryBookCard(
+                    bookID: BookID(sourceID: "schema", uuid: "schema"),
+                    sourceKind: nil,
+                    accountID: nil,
+                    title: nil,
+                    authors: [],
+                    fingerprints: [],
+                    updatedAt: Date(),
+                    deviceID: "schema"
+                )
+            )
+
+            let source = CKRecord(
+                recordType: AnnotationCloudSync.sourceRecordType,
+                recordID: CKRecord.ID(recordName: "schema-source", zoneID: zone.zoneID)
+            )
+            AnnotationCloudSync.populate(
+                source,
+                source: LibrarySourceCard(
+                    sourceID: "schema",
+                    kind: .storyteller,
+                    name: "schema",
+                    serverURL: nil,
+                    username: nil,
+                    accountID: nil,
+                    deviceName: nil,
+                    updatedAt: Date(),
+                    deviceID: "schema"
+                )
+            )
+
             let asset = CKRecord(
                 recordType: "BackupAsset",
                 recordID: CKRecord.ID(recordName: "schema-asset", zoneID: zone.zoneID)
@@ -63,7 +100,7 @@ enum CloudKitSchemaBootstrap {
             generation["complete"] = 0 as NSNumber
 
             let results = try await database.modifyRecords(
-                saving: [annotation, asset, generation],
+                saving: [annotation, book, source, asset, generation],
                 deleting: [],
                 savePolicy: .allKeys,
                 atomically: true
@@ -73,7 +110,7 @@ enum CloudKitSchemaBootstrap {
             }
             _ = try await database.modifyRecordZones(saving: [], deleting: [zone.zoneID])
             return
-                "CloudKit schema bootstrap succeeded: Annotation, BackupAsset and BackupGeneration are defined in Development."
+                "CloudKit schema bootstrap succeeded: Annotation, LibraryBook, LibrarySource, BackupAsset and BackupGeneration are defined in Development."
         } catch {
             _ = try? await database.modifyRecordZones(saving: [], deleting: [zone.zoneID])
             return "CloudKit schema bootstrap failed: \(error)"

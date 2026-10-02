@@ -66,6 +66,21 @@ struct AnnotationCloudSyncTests {
         #expect(AnnotationCloudSync.syncRecord(from: ck) == nil)
     }
 
+    @Test("Sync fetches only the annotations zone, never the backup zone")
+    func fetchScope() {
+        let backups = CKRecordZone.ID(zoneName: "Backups")
+        for requested: CKSyncEngine.FetchChangesOptions.Scope in [
+            .all, .allExcluding([backups]), .zoneIDs([AnnotationCloudSync.zoneID, backups]),
+        ] {
+            let scope = AnnotationCloudSync.fetchScope(within: requested)
+            #expect(scope.contains(AnnotationCloudSync.zoneID))
+            #expect(!scope.contains(backups))
+        }
+        let excluded = AnnotationCloudSync.fetchScope(within: .zoneIDs([backups]))
+        #expect(!excluded.contains(AnnotationCloudSync.zoneID))
+        #expect(!excluded.contains(backups))
+    }
+
     @Test("System fields survive archiving")
     func systemFields() {
         let original = record(payloadBytes: 10)

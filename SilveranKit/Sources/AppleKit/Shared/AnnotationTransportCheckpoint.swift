@@ -3,11 +3,18 @@ import Foundation
 
 /// A transport cursor is only safe after all earlier received changes are durable.
 /// CKSyncEngine delivers delegate events serially, but cannot know whether app writes failed.
+///
+/// Two kinds of problem, with different reach:
+/// - A held receipt pins the cursor so failed changes are delivered again after a restart.
+///   Sending this device's own changes stays safe and continues.
+/// - A halt stops the transport: the account or zone boundary, or the saved cursor itself,
+///   can't be trusted, so nothing may be sent or received until a restart resolves it.
 final class AnnotationTransportCheckpoint: @unchecked Sendable {
     private let url: URL
     private let writeFile: @Sendable (Data, URL) throws -> Void
     private let lock = NSLock()
     private var blocked = false
+    private var halted = false
     private var failure: String?
 
     init(
@@ -32,6 +39,7 @@ final class AnnotationTransportCheckpoint: @unchecked Sendable {
         } catch {
             lock.withLock {
                 blocked = true
+                halted = true
                 failure = "The saved iCloud sync checkpoint couldn't be read. Its original file has been kept."
             }
             throw error
@@ -43,7 +51,19 @@ final class AnnotationTransportCheckpoint: @unchecked Sendable {
     func blockReceipt() {
         lock.withLock {
             blocked = true
-            failure = "Some received changes couldn't be saved. The iCloud checkpoint is held for retry."
+            // A halt's reason is the more important one to show.
+            if !halted {
+                failure = "Some received changes couldn't be saved. The iCloud checkpoint is held for retry."
+            }
+        }
+    }
+
+    /// Stops sending and receiving until restart, keeping the last persisted cursor.
+    func halt(_ reason: String) {
+        lock.withLock {
+            blocked = true
+            halted = true
+            failure = reason
         }
     }
 
@@ -66,5 +86,8 @@ final class AnnotationTransportCheckpoint: @unchecked Sendable {
     }
 
     var problem: String? { lock.withLock { failure } }
+
+    /// Whether this device's own changes may still be sent.
+    var isHalted: Bool { lock.withLock { halted } }
 }
 #endif

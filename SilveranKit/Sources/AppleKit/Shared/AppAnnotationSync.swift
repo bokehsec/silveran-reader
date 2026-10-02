@@ -192,7 +192,8 @@ enum AppAnnotationSync {
                 await LocalMediaActor.shared.libraryMetadata().map { ($0.id, $0.title) },
                 uniquingKeysWith: { first, _ in first }
             ),
-            persistenceProblem: transportProblem ?? coreProblem
+            persistenceProblem: transportProblem ?? coreProblem,
+            deferredRecords: await transport?.deferredRecords() ?? []
         )
     }
 
@@ -250,6 +251,7 @@ enum AppAnnotationSync {
             engine: engine,
             stateURL: SilveranPlatform.applicationSupportDirectory()
                 .appendingPathComponent("Sync/cloudkit-state.json"),
+            appVersion: AppBackup.appVersion,
             activity: activity,
             library: library,
             identity: identity
@@ -300,6 +302,8 @@ struct AnnotationSyncDiagnostics: Sendable {
     var cards: [LibraryBookCard]
     var library: [BookID: String]
     var persistenceProblem: String? = nil
+    /// Received records this version couldn't read, kept in iCloud for a later version.
+    var deferredRecords: [SyncDeferredRecord] = []
 
     /// A book this device knows, by its sync identity, and the library entry it belongs to.
     struct BookRow: Identifiable, Sendable {
@@ -370,6 +374,12 @@ struct AnnotationSyncDiagnostics: Sendable {
             let count = rows.reduce(0) { $0 + $1.book.annotations }
             return "\(count) annotation\(count == 1 ? "" : "s") in \(rows.count) book\(rows.count == 1 ? "" : "s")"
         }
+        if !deferredRecords.isEmpty {
+            let count = deferredRecords.count
+            result.append(
+                "\(count) iCloud record\(count == 1 ? " was" : "s were") written by a newer version of Silveran. Update the app on this device to read \(count == 1 ? "it" : "them"); \(count == 1 ? "it stays" : "they stay") safely in iCloud."
+            )
+        }
         let unmatched = stranded.filter { $0.link == nil }
         if !unmatched.isEmpty {
             result.append(
@@ -429,6 +439,10 @@ struct AnnotationSyncDiagnostics: Sendable {
         lines += cards.map {
             "  \($0.bookID.sourceID)/\($0.bookID.uuid) from device \($0.deviceID): \($0.fingerprints.count) file fingerprint(s), account \($0.accountID == nil ? "none" : "present")"
         }
+        lines += ["Records kept for a later version: \(deferredRecords.count)"]
+        lines += Dictionary(grouping: deferredRecords, by: \.recordType)
+            .map { "  \($0.value.count) × \($0.key), first kept \(time($0.value.map(\.firstDeferredAt).min())), last tried by \(Set($0.value.map(\.deferredBy)).sorted().joined(separator: ", "))" }
+            .sorted()
         lines += ["", "Books in sync state:"]
         for row in rows {
             let book = row.book

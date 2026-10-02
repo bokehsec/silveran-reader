@@ -20,6 +20,23 @@ struct AnnotationTransportCheckpointTests {
         try restarted.save(["cursor": 2])
     }
 
+    @Test("A held receipt keeps sending open; a halt stops it and keeps its reason")
+    func holdVersusHalt() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let held = AnnotationTransportCheckpoint(url: url)
+        held.blockReceipt()
+        #expect(held.problem != nil)
+        #expect(!held.isHalted)
+
+        let halted = AnnotationTransportCheckpoint(url: url)
+        halted.halt("account boundary")
+        halted.blockReceipt()
+        #expect(halted.isHalted)
+        #expect(halted.problem == "account boundary")
+        #expect(throws: (any Error).self) { try halted.save(["cursor": 2]) }
+    }
+
     @Test("Damaged checkpoint remains intact and blocks writes")
     func damaged() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -31,6 +48,7 @@ struct AnnotationTransportCheckpointTests {
         #expect(throws: (any Error).self) { try checkpoint.save(["cursor": 2]) }
         #expect(try Data(contentsOf: url) == original)
         #expect(checkpoint.problem != nil)
+        #expect(checkpoint.isHalted)
     }
 
     @Test("Write failure preserves old cursor and surfaces retry status")

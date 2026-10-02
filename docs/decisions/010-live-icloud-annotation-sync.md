@@ -32,6 +32,15 @@ Keep the protected per-book files (`InkActor`, `BookmarkActor`/`FilesystemActor`
 
 Records are keyed by `BookID(sourceID, uuid)`, and `sourceID` is a random UUID made when a device adds a book source. Two devices that each added the same Storyteller server have different `sourceID`s for the same book. A received annotation is therefore filed under a source the receiving device doesn't have and appears in no book there. The annotation is preserved, not lost. Confirmed on the owner's iPad and iPhone; the transport itself delivered every record. Settings > Sync Diagnostics now reports these "stranded" annotations. The fix (map foreign sources by a portable account identity, then re-home through the owners) changes annotation identity and needs its own ADR before implementation.
 
+## Amendment 2026-10-02: receipt scope and unreadable records
+
+Found on two TestFlight devices (OD-035, BF-071). The private database holds other owners' zones (`Backups`, ADR 009), and newer versions add record types and formats. The transport now follows these rules:
+
+- **One owner per zone.** Annotation sync fetches only the `Annotations` zone (`nextFetchChangesOptions`) and ignores anything delivered from another zone.
+- **A record this version can't read doesn't stop sync, and isn't forgotten.** Before the cursor may pass it, it is listed durably (`SyncDeferredRecordStore`: name, type, the version that couldn't read it). The record stays in iCloud. A different app version fetches listed records by ID on start and applies them through the same rules. Only if the list can't be saved is the cursor held. Alternatives rejected: holding the cursor for every unreadable record stalls every device on the oldest build, and re-fetches the whole zone on each start. Copying raw `CKRecord`s locally would duplicate iCloud's copy and lose large-payload assets.
+- **Hold versus halt.** A received change that can't be saved holds the cursor (BF-060) but no longer stops sending: outgoing conflicts are still merged through `serverRecordChanged`, and the local-store guard still stops sending from a failed store. Only boundary failures halt both directions until restart: an account change or zone removal that couldn't be reset, or an unreadable cursor.
+- **Schema.** Every record type the adapter writes (`Annotation`, `LibraryBook`, `LibrarySource`) must be in `XCodeApps/CloudKit/schema.ckdb` and the debug schema bootstrap, and deployed to Production before a TestFlight build uses it.
+
 ## Why not the ADR 003 repository
 
 The repository keeps a full causal history so concurrent edits can be kept side by side. The product choice ("latest wins, older kept in recovery", strokes combined) needs only current state, clocks, tombstones and a recovery copy. Using the repository would also require the reader cutover blocked by revision growth (ADR 003). The repository stays inactive; this ADR does not delete it.

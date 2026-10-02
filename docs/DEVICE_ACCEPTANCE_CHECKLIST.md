@@ -81,7 +81,7 @@ Simulator pre-check (2026-09-30, unsigned iPad simulator): items 14 (export only
 
 ## Annotation and settings sync between devices (signed builds with the container and push provisioned; Phase 4S)
 
-Setup: as for iCloud backup (items 22–30), plus enable Push Notifications for the App ID. After a Development run creates the `Annotation` record type, deploy the schema to Production before TestFlight.
+Setup: as for iCloud backup (items 22–30), plus enable Push Notifications for the App ID. Run the schema bootstrap so `Annotation`, `LibraryBook` and `LibrarySource` exist in Development, then deploy the schema to Production before TestFlight (BF-071).
 
 | # | Check | Pass when |
 | --- | --- | --- |
@@ -95,6 +95,9 @@ Setup: as for iCloud backup (items 22–30), plus enable Push Notifications for 
 | 45 | Use a kept version | It becomes current on both devices; the replaced one is kept |
 | 46 | Sign in to a different Apple ID on one device | Nothing from the old account appears; that device's annotations upload to the new account |
 | 47 | Change reader settings on one device | They apply on the other (settings sync, unchanged) |
+| 61 | BF-071: three devices on the fixed build (for example iPad mini, iPhone, iPad), each with the same Storyteller server added separately and automatic iCloud backup on; annotate one book on each | Every device shows all three devices' annotations in that book. Sync Diagnostics shows the books matched and no "couldn't read" or "checkpoint is held" loop |
+| 62 | BF-071: after 61, check Sync Diagnostics on each device | "Last sent" and "Last received" are recent; "Cards from other devices" lists the others' books; no CKError 12 |
+| 63 | BF-071: keep one device on build 811 and annotate on the fixed devices | The fixed devices keep syncing with each other; the old device's state doesn't stop them |
 
 ## Phase 5 PDF and browser acceptance increment
 

@@ -53,7 +53,7 @@ The reader, exports, repair and backup all read the protected owners with the lo
 
 ## Rollback and compatibility
 
-Cards are a new record type; older builds ignore them (Sync Diagnostics counts them as unreadable). Entries gain optional fields; older builds ignore them, but an older build that sends a translated annotation would publish its local form under the cloud name, so every device should be updated before relying on cross-device books (as with BF-043). Removing the feature leaves annotations in the local books they were moved to. The `LibraryBook` record type must be deployed to the Production schema before TestFlight builds use it.
+Cards are a new record type; older builds ignore them (Sync Diagnostics counts them as unreadable). Entries gain optional fields; older builds ignore them, but an older build that sends a translated annotation would publish its local form under the cloud name, so every device should be updated before relying on cross-device books (as with BF-043). Removing the feature leaves annotations in the local books they were moved to. The `LibraryBook` and `LibrarySource` record types must be deployed to the Production schema before TestFlight builds use them. `LibrarySource` was missing from the schema in build 811, so Production rejected source cards (BF-071). Under the ADR 010 amendment, records that an older build can't read are deferred for a later version rather than counted as unreadable.
 
 ## Validation
 

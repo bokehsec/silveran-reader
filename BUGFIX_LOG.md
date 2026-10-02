@@ -42,6 +42,58 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-071 — Sync stalled on two devices: backup records counted as unreadable, sending stopped, and source cards were rejected
+
+- Date: 2026-10-02
+- Status: Needs validation (portable and iPhone simulator component tests pass; the Production schema deploy and signed two-device acceptance are pending)
+- Platforms: Apple (iOS, macOS) CloudKit adapter; portable Kit sync store
+- Components: `AnnotationCloudSync`, new `AnnotationRecordReceiver`, `AnnotationTransportCheckpoint`, new `SyncDeferredRecordStore` (Kit), `AppAnnotationSync` diagnostics, `CloudKitSchemaBootstrap`, `XCodeApps/CloudKit/schema.ckdb`
+- Related links: [OD-035](docs/OBSERVED_ODDITIES.md), [ADR 010 amendment](docs/decisions/010-live-icloud-annotation-sync.md#amendment-2026-10-02-receipt-scope-and-unreadable-records), [ADR 012](docs/decisions/012-cross-device-library-identity.md), BF-060 (checkpoint latch), commit `fea56d2`
+
+#### Symptom
+
+The Sync Diagnostics reports from two TestFlight devices on build 0.1 (811) showed the same loop on every start. Each start received the same 61 annotation changes. It then reported "Ignored 149/150/150/126 records this version couldn't read" and "Some received changes couldn't be saved. The iCloud checkpoint is held for retry". Each start also reported "iCloud didn't accept 1 change (CKError 12)". The newer device had never sent anything; the older one had not sent since 19:07Z. The newer device showed 54 annotations in 4 books unmatched, although both devices use the same Storyteller server. Reproduces whenever the private database holds iCloud backups (any device with automatic backup on), with a Production schema that lacks `LibrarySource`.
+
+#### Root cause
+
+Three defects combined:
+
+1. **The annotation engine fetched every zone.** `AnnotationCloudSync` didn't provide `nextFetchChangesOptions`, so `CKSyncEngine` fetched changes for every zone in the private database, including `Backups` (ADR 009). `BackupAsset`/`BackupGeneration` records fell through to `syncRecord(from:)` and were counted as unreadable. Their deletions were passed to `forgetRecord`. Backup asset bytes were downloaded as well. ADR 009 and ADR 010 assumed separate owners per zone, but the code didn't enforce it.
+2. **One unreadable record stopped all sync.** `fea56d2` (BF-060) made any unreadable record call `checkpoint.blockReceipt()`. That latch also gated `queuePending` and `nextRecordZoneChangeBatch`. So the cursor never advanced, every restart re-fetched the whole database, and nothing was sent. That included the book cards produced by the library refresh, which explains "Cards from other devices: 0" on the newer device. BF-060's intent was to hold the cursor until received changes are durable. It treated "this version can't read it" the same as "couldn't save it". It also made a receive-side hold stop sending, which isn't needed for safety: conflicts on send are already merged via `serverRecordChanged`.
+3. **`LibrarySource` was missing from the schema.** `fea56d2` added the record type, but it wasn't added to `schema.ckdb` or the schema bootstrap, so Production rejects every source card (CKError 12, `invalidArguments`). `LibraryBook` was in `schema.ckdb` but not in the bootstrap.
+
+#### Change
+
+- **Zone ownership.** `nextFetchChangesOptions` limits fetches to the `Annotations` zone (`fetchScope(within:)`). The receive handler also drops modifications and deletions from any other zone, so another owner's records are never applied, counted or forgotten here.
+- **Unreadable records are deferred, not blocking.** The receive rules moved from the transport into `AnnotationRecordReceiver`, so they can be tested without iCloud. A record this version can't read is a new type, a future card format, or an unknown annotation kind. Before the cursor may pass it, it is listed durably in the portable `SyncDeferredRecordStore` (`Sync/deferred-records.json`: record name, type, the app version that couldn't read it, first-seen date). The record stays in iCloud. On start, an app version different from the one that listed a record fetches it again by ID and applies it through the same rules. Records still unreadable are listed again under the new version, records that no longer exist are resolved, and a deletion or later successful read resolves an entry. If the list can't be saved, the cursor is held as before. A damaged or newer-format list is preserved byte for byte, and every change to it is refused.
+- **Hold versus halt.** `AnnotationTransportCheckpoint` now distinguishes two states. A *held receipt* (a received change couldn't be saved) pins the cursor but no longer stops sending. A *halt* means the account or zone boundary, or the saved cursor itself, can't be trusted. A halt stops both sending and applying received records until a restart. The halt cases are failed account-change resets, failed zone-removal resets, failed deferred-list resets, and an unreadable checkpoint. The local-store guard in `queuePending` (`engine.persistenceStatus()`) is unchanged.
+- **Schema.** Added `LibrarySource` to `schema.ckdb`. The debug schema bootstrap now writes sample `LibraryBook` and `LibrarySource` records too.
+- **Diagnostics.** The report lists "Records kept for a later version" by type and the versions that tried them. Findings say when records from a newer version are waiting for an update. A deferral is logged as a received event, not as a failure.
+
+Intentionally unchanged: conflict rules, record formats, the receipt inbox/journal protocol (ADR 013), when the cursor is held after a failed save, and the restart-on-foreground retry in `AppAnnotationSync`.
+
+#### Validation
+
+- `scripts/test`: **592 tests in 75 suites passed** (macOS host).
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=2C20FA6A-BC39-4E15-9C5E-65C8A543AFF6' scripts/iosbuild`: Build Succeeded.
+- `scripts/iostest` with the same settings and destination ("Silveran Sync Diagnostics QA iPhone", iOS 18.6): result bundle `Test-Silveran Components (iOS)-2026.10.02_16-59-27--0400.xcresult` shows **264/264 passed**. The result tree was inspected and contains every new test. The new test files were added to the component target in `XCodeApps/project.yml`; the first run, before that, had 256 tests and lacked them.
+- New tests:
+  - `AnnotationRecordReceiverTests`: unreadable annotation kinds and unknown record types are listed and the cursor can still be saved; a later read resolves a deferral; a failed listing holds the cursor without halting sending.
+  - `SyncDeferredRecordStoreTests`: restart, version-gated retry and re-listing; resolve and clear; no-op writes; write failure keeps the earlier file; damaged, future-schema and unknown-field files are preserved and refused.
+  - `AnnotationCloudSyncTests.fetchScope`: Backups are never in scope.
+  - `AnnotationTransportCheckpointTests.holdVersusHalt`, plus an unreadable-checkpoint halt expectation.
+- These tests assert properties that the old adapter violated by construction: it called `blockReceipt()` for any unreadable record and gated sending on any checkpoint problem. They could not run against the old code, because the receiver type didn't exist.
+- `swift format lint` is clean on the new files apart from existing-style line-length warnings; `git diff --check` is clean.
+- Not run: the iPad component run, signed devices, and the Production schema deploy. The fix can't reach devices until the schema is deployed and both devices run the new build. Cross-device matching after the fix still needs the signed two-device acceptance in the device checklist.
+
+#### Compatibility and follow-up
+
+- **Owner action:** run the schema bootstrap from a signed Debug build (or `cktool import-schema`), then deploy to Production in the CloudKit Console (`XCodeApps/CloudKit/README.md`). Until then, Production keeps rejecting source cards. That rejection is now harmless to the rest of sync: book cards alone carry the server account identity used for "same server account" matching.
+- **Older builds:** build 811 and earlier keep looping until updated. They don't harm other devices.
+- **Migration:** none needed. The first start of the new build re-fetches from its last saved cursor, and backup zones are no longer fetched.
+- **Deferred list:** the list is transport state, like the cursor: not backed up, and cleared on an account change or zone removal.
+- **`LibraryBook` in Production:** verify it is deployed while deploying `LibrarySource`.
+
 ### BF-070 — The text-selection bar left the system Speak/Spell bubble over the text, hid Copy, and covered the selection handle
 
 - Date: 2026-10-02
