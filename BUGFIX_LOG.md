@@ -42,6 +42,34 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-069 — Selecting the eraser crashed the ink tool strip (index out of range)
+
+- Date: 2026-10-02
+- Status: Needs validation
+- Platforms: Apple (iOS/iPadOS)
+- Components: `SilveranKit/Sources/AppleKit/MobileDesktop/Views/Player/EbookPlayer/InkToolStripView.swift`
+- Related links: TestFlight crash "Swift runtime failure: Index out of range" in `InkToolStripView.colorButton(_:)` (Silveran Reader 810, iPad mini A17 Pro, iOS 26.6.2)
+
+#### Symptom
+
+Tapping the eraser in the ink tool strip crashed the app.
+
+#### Root cause
+
+The strip renders colour swatches with `ForEach(strip.colors.indices)`. The eraser has no writing tool, so `strip.colors` becomes empty, but SwiftUI re-evaluated the departing swatch rows with their old indices and `colorButton` subscripted `strip.colors[index]` unconditionally.
+
+#### Change
+
+`colorButton` now renders nothing when the index is no longer valid and delegates to a new `colorSwatch` otherwise. No behaviour change for pen/highlighter.
+
+#### Validation
+
+Not yet run: needs a build and an eraser tap on an iPad/iPhone simulator. Crash reproduced only from the TestFlight report.
+
+#### Compatibility and migration
+
+None known.
+
 ### BF-068 — Local edit history grew by a whole book's ink per save and slowed every save
 
 - Date: 2026-10-02

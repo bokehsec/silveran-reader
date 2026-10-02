@@ -189,9 +189,17 @@ struct InkToolStripView: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    @ViewBuilder
     private func colorButton(_ index: Int) -> some View {
+        // ForEach can re-evaluate a departing row after the tool changed (e.g. to the
+        // eraser, which has no colours), so the index may no longer be valid.
+        if strip.colors.indices.contains(index) {
+            colorSwatch(index, hex: strip.colors[index])
+        }
+    }
+
+    private func colorSwatch(_ index: Int, hex: String) -> some View {
         let selected = strip.selectedSlot == index
-        let hex = strip.colors[index]
         return Button {
             if selected { editingSlot = index } else { strip.selectColor(at: index) }
         } label: {
