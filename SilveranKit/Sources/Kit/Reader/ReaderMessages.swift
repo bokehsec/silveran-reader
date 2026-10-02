@@ -166,6 +166,13 @@ public struct SelectionTextActionMessage: Codable {
     public let height: Double?
 }
 
+/// Sent from JS when the selection toolbar's Speak or Spell item is chosen
+public struct SelectionSpeakMessage: Codable {
+    public let text: String
+    /// Read the text letter by letter (Spell) rather than as words (Speak).
+    public let spell: Bool
+}
+
 /// Sent from JS to recolor an existing highlight from the toolbar
 public struct HighlightSetColorMessage: Codable {
     public let id: String

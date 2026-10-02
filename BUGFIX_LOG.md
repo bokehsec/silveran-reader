@@ -42,6 +42,74 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-070 — The text-selection bar left the system Speak/Spell bubble over the text, hid Copy, and covered the selection handle
+
+- Date: 2026-10-02
+- Status: Fixed; simulator gesture acceptance pending (simulator access not granted this session)
+- Platforms: Apple (iOS/iPadOS). The macOS reader shares the JavaScript toolbar; its native menu code is unchanged and it was not run.
+- Components: `SilveranKit/Sources/Kit/Resources/WebResources/SelectionToolbar.js`, `BookmarkManager.js`, `FoliateManager.js`; `ReaderCommsBridge.sendJsSetSpeakAvailable`, `SelectionSpeakMessage`; AppleKit `EbookPlayerWebView.swift` (`HighlightableWebView.buildMenu`, `SelectionSpeak` handler), new `SelectionSpeaker.swift`, `EbookPlayerViewModel.swift`, `EbookPlayerView.swift`
+- Related: owner's screenshot of a long-pressed word ("originates") on iPad, 2026-10-02; product decisions dated 2026-10-02 in [the Pencil plan](docs/PENCIL_INK_IMPLEMENTATION_PLAN.md#product-decisions-settled)
+
+#### Symptom
+
+Long-pressing a word showed Silveran's dark selection bar above the word and, at the same time, a second system bubble with **Speak** and **Spell** over the line below the selection. The bubble covered the book text. Other problems with the bar at the same time:
+
+- The bar's "…" button looked like "More" but opened a new note.
+- **Copy** had no button at all, although the bar's code already had a copy action.
+- The bar sat 10 px above the selection, on top of the round handle iOS draws above the first selected character, so the handle could not be grabbed there.
+- Tapping the colour wheel added six swatches to an already full bar. On an iPhone this pushed the right end of the bar off the screen. This was worked out from the bar's measurements, not reproduced.
+
+The Speak/Spell bubble appears when the system's Speak Selection setting is on (Settings › Accessibility › Spoken Content).
+
+#### Root cause
+
+The reader replaces the native edit menu with its own in-page bar. `HighlightableWebView.buildMenu` removed `.standardEdit`, `.lookup`, `.share`, `.replace` and `.learn`, but not `.speech`. Speak Selection's items live in the `.speech` menu, so with that setting on, UIKit still presented a callout containing only them. That is a second floating menu, positioned by UIKit independently of the in-page bar.
+
+The other problems came from the bar's fixed layout. `showForSelection` added a fixed list of buttons with no width budget, never added a Copy button, used the `more` icon for the note action, and used a single 10 px gap on every device.
+
+#### Change
+
+- `buildMenu` also removes `.speech`. Speak, and Spell for a single word, move into the bar's More menu. They appear only while Speak Selection is on (`UIAccessibility.isSpeakSelectionEnabled`), matching Apple's menus. The bar updates when the setting changes (`speakSelectionStatusDidChangeNotification`).
+- New `SelectionSpeaker`, owned by the web view and stopped when it leaves the window, speaks the text with `AVSpeechSynthesizer`. It uses `prefersAssistiveTechnologySettings`, so the person's Spoken Content voice and rate apply, and `usesApplicationAudioSession = false`, so it does not take over the read-aloud audio session.
+- The bar is rebuilt with these groups:
+  - **Annotation:** last-used highlight colour, colour wheel, **Add Note** (its own note icon).
+  - **Text:** Look Up, Share, Copy, Translate, Find in Book.
+  - **More (…):** a real menu with labelled rows.
+- `fitSelectionActions` moves text actions that don't fit the viewport into More, keeping their order. Speak and Spell always go in More. The More button only appears when the menu has something in it. iPad: every text action fits on the bar. iPhone (375 pt): Look Up, Share and Copy stay on the bar; Translate and Find in Book move to More.
+- The colour wheel now replaces the bar's other buttons with the full palette, so the bar never gets wider than the screen.
+- On touch screens the bar keeps 22 px from the selection (`SELECTION_CLEARANCE`), clear of the grab handles. It still flips below the selection near the top of the screen.
+- **Styling:** the bar now follows the system's light or dark appearance. It is a translucent capsule with the Pencil tool strip's 40 pt buttons, 1 px dividers and accent selection ring, using one injected stylesheet per document instead of inline colours.
+- **Accessibility:** every control now has an `aria-label`. The bar is a `toolbar` and More is a `menu` with `menuitem` rows that sets `aria-expanded`. Swatches are announced as "Yellow highlight" and so on, using the theme's labels.
+- **Not changed:** what each action does; the existing-highlight bar's actions (colours, Delete, Edit); the desktop context-menu suppression; the touch long-press-into-highlight behaviour.
+
+#### Validation
+
+- `cd SilveranKit/Tests/WebHarness && npm test`: 201 tests pass, including 10 new tests in `selectionToolbar.test.mjs`. They cover:
+  - iPad and iPhone splits between the bar and More
+  - Speak/Spell gating
+  - menu actions closing the bar
+  - Add Note
+  - spoken labels on every control
+  - the palette replacing the bar
+  - handle clearance
+  - a single stylesheet per document
+  - `fitSelectionActions` edge cases
+- `scripts/test`: 582 Swift tests pass.
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION="platform=iOS Simulator,id=F406C068-C710-434F-ABCD-AFC7EA20ECAC" scripts/iosbuild`: Build Succeeded.
+- **Pending (simulator access was requested for the isolated clones "Silveran Selection QA iPad" `C4859787-581E-42FC-80A2-E0AD19F005BC` and "Silveran Selection QA iPhone" `99413B0E-18A9-4FED-B293-DAA3D7866683`, iOS 18.6, and not granted):**
+  - long-press a word on iPad and iPhone; with Speak Selection on, confirm no system bubble appears and Speak/Spell are in More and speak
+  - check the iPhone More menu
+  - colour wheel on iPhone
+  - handle drag with the bar showing
+  - light/dark appearance
+  - a selection near the top of the screen
+  - VoiceOver reading of the bar and menu
+- `.speech` containing Speak Selection's items is inferred from UIKit's menu identifiers and the observed bubble. It is not yet confirmed in the simulator.
+
+#### Compatibility and migration
+
+None known. No stored data changes.
+
 ### BF-069 — Selecting the eraser crashed the ink tool strip (index out of range)
 
 - Date: 2026-10-02

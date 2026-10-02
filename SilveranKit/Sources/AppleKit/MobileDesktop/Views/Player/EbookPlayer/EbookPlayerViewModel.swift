@@ -938,6 +938,11 @@ class EbookPlayerViewModel {
             }
         }
 
+        // A highlight colour picked for the Pencil highlighter leads the selection toolbar too.
+        inkToolStrip.onHighlightColorChosen = { [weak self] color in
+            self?.rememberLastUsedColor(color.rawValue)
+        }
+
         bridge.onSelectionTranslate = { [weak self] text in
             guard let self else { return }
             Task { @MainActor in
@@ -1236,13 +1241,34 @@ class EbookPlayerViewModel {
             translateAvailable = false
         }
 
+        // Highlighter ink is stored as it looks on a light page, so it shares the light theme's
+        // highlight colours whichever theme is showing.
+        let lightTheme =
+            settingsVM.resolveTheme(id: settingsVM.selectedLightThemeId) ?? .builtInLight
+        inkToolStrip.setHighlightPalette(HighlightInkPalette(lightTheme: lightTheme))
+
         do {
             try await bridge.sendJsSetHighlightPalette(entries)
             try await bridge.sendJsSetTranslateAvailable(translateAvailable)
+            try await bridge.sendJsSetSpeakAvailable(Self.speakSelectionAvailable)
             try await bridge.sendJsSetDefaultHighlightColor(lastUsedHighlightColorId)
         } catch {
             debugLog("[EbookPlayerViewModel] Failed to send highlight palette to JS: \(error)")
         }
+    }
+
+    /// Speak and Spell follow the system's Speak Selection setting, as in Apple's own text menus.
+    private static var speakSelectionAvailable: Bool {
+        #if os(iOS)
+        UIAccessibility.isSpeakSelectionEnabled
+        #else
+        false
+        #endif
+    }
+
+    /// Updates the selection toolbar when Speak Selection is turned on or off in Settings.
+    func speakSelectionSettingChanged() async {
+        try? await commsBridge?.sendJsSetSpeakAvailable(Self.speakSelectionAvailable)
     }
 
     private static let lastUsedHighlightColorKey = "lastUsedHighlightColorId"
@@ -1256,7 +1282,8 @@ class EbookPlayerViewModel {
     }
 
     private func rememberLastUsedColor(_ colorId: String) {
-        guard HighlightColor(rawValue: colorId) != nil else { return }
+        guard let color = HighlightColor(rawValue: colorId) else { return }
+        inkToolStrip.highlightColorUsed(color)
         guard colorId != lastUsedHighlightColorId else { return }
         lastUsedHighlightColorId = colorId
         Task { try? await commsBridge?.sendJsSetDefaultHighlightColor(colorId) }

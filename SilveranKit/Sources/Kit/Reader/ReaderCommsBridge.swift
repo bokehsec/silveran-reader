@@ -717,6 +717,18 @@ public final class ReaderCommsBridge {
         )
     }
 
+    /// Tells the selection toolbar whether to offer Speak and Spell. Apple platforms offer them
+    /// only while the system's Speak Selection setting is on.
+    public func sendJsSetSpeakAvailable(_ available: Bool) async throws {
+        guard let js else {
+            throw ReaderCommsBridgeError.jsNotAvailable
+        }
+
+        _ = try await js.evaluate(
+            "(function() { window.foliateManager.setSpeakAvailable(\(available ? "true" : "false")); })()"
+        )
+    }
+
     /// Pushes the last-used highlight color so the toolbar shows it as the lead swatch
     public func sendJsSetDefaultHighlightColor(_ colorId: String) async throws {
         guard let js else {

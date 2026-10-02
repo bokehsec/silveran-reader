@@ -215,7 +215,7 @@ struct InkToolStripView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Colour \(index + 1)")
-        .accessibilityValue(InkColorName.describe(hex))
+        .accessibilityValue(colorName(hex))
         .accessibilityHint(selected ? "Double-tap to change this colour" : "")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .popover(
@@ -224,13 +224,36 @@ struct InkToolStripView: View {
                 set: { if !$0 { editingSlot = nil } }
             )
         ) {
-            InkColorEditor(
-                color: hex,
-                presets: strip.writingTool?.mode == .highlighter
-                    ? InkColorEditor.highlighterPresets : InkColorEditor.penPresets
-            ) { strip.setColor($0, at: index) }
+            InkColorEditor(color: hex, sections: editorSections) { strip.setColor($0, at: index) }
             .presentationCompactAdaptation(.popover)
         }
+    }
+
+    private var isHighlighter: Bool { strip.writingTool?.mode == .highlighter }
+
+    /// A highlighter colour that is one of the reader's highlight colours is called by its label.
+    private func colorName(_ hex: String) -> String {
+        if isHighlighter, let shared = strip.highlightPalette.color(forInk: hex),
+            let entry = strip.highlightPalette.entries.first(where: { $0.color == shared })
+        {
+            return "\(entry.label) highlight"
+        }
+        return InkColorName.describe(hex)
+    }
+
+    /// The highlighter offers the reader's highlight colours first, so highlighter ink can match
+    /// typed highlights; the pen offers its own presets.
+    private var editorSections: [InkColorEditor.Section] {
+        guard isHighlighter else {
+            return [.init(title: nil, colors: InkColorEditor.penPresets.map { ($0, nil) })]
+        }
+        let shared = strip.highlightPalette.entries.map { ($0.hex, Optional("\($0.label) highlight")) }
+        let sharedHexes = Set(shared.map(\.0))
+        let others = InkColorEditor.highlighterPresets.filter { !sharedHexes.contains($0) }
+        return [
+            .init(title: "Highlight Colours", colors: shared),
+            .init(title: "Other Colours", colors: others.map { ($0, nil) }),
+        ]
     }
 
     private var thicknessButton: some View {
@@ -346,10 +369,16 @@ struct InkToolStripView: View {
     }
 }
 
-/// Changes one of the strip's three colours: a few presets, or any colour.
+/// Changes one of the strip's three colours: presets in labelled groups, or any colour.
 private struct InkColorEditor: View {
+    struct Section {
+        let title: String?
+        /// Each colour with its spoken name, or nil to describe it from its hue.
+        let colors: [(hex: String, label: String?)]
+    }
+
     let color: String
-    let presets: [String]
+    let sections: [Section]
     let onPick: (String) -> Void
 
     static let penPresets = [
@@ -364,30 +393,22 @@ private struct InkColorEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Change This Colour").font(.headline)
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(36)), count: 5), spacing: 10) {
-                ForEach(presets, id: \.self) { hex in
-                    Button {
-                        onPick(hex)
-                    } label: {
-                        Circle()
-                            .fill(Color(uiColor: UIColor(inkHex: hex)))
-                            .frame(width: 30, height: 30)
-                            .overlay(Circle().strokeBorder(.primary.opacity(0.2)))
-                            .overlay(
-                                Circle().strokeBorder(
-                                    hex == color.lowercased() ? Color.accentColor : .clear,
-                                    lineWidth: 2.5
-                                )
-                                .padding(-4)
-                            )
-                            .frame(width: 36, height: 36)
+            ForEach(sections.indices, id: \.self) { index in
+                let section = sections[index]
+                if !section.colors.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let title = section.title {
+                            Text(title)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .accessibilityAddTraits(.isHeader)
+                        }
+                        grid(section.colors)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(InkColorName.describe(hex))
                 }
             }
             ColorPicker(
-                "Other Colour",
+                "Any Colour",
                 selection: Binding(
                     get: { Color(uiColor: UIColor(inkHex: color)) },
                     set: { onPick(UIColor($0).inkHex) }
@@ -397,6 +418,30 @@ private struct InkColorEditor: View {
         }
         .padding()
         .frame(width: 236)
+    }
+
+    private func grid(_ colors: [(hex: String, label: String?)]) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(36)), count: 5), spacing: 10) {
+            ForEach(colors, id: \.hex) { entry in
+                let selected = entry.hex == color.lowercased()
+                Button {
+                    onPick(entry.hex)
+                } label: {
+                    Circle()
+                        .fill(Color(uiColor: UIColor(inkHex: entry.hex)))
+                        .frame(width: 30, height: 30)
+                        .overlay(Circle().strokeBorder(.primary.opacity(0.2)))
+                        .overlay(
+                            Circle().strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2.5)
+                                .padding(-4)
+                        )
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(entry.label ?? InkColorName.describe(entry.hex))
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
     }
 }
 

@@ -20,7 +20,12 @@ public struct InkTool: Codable, Sendable, Hashable {
     public var width: Double
 
     public static let pen = InkTool(mode: .pen, color: "#1f4fd1", width: 2.2)
-    public static let highlighter = InkTool(mode: .highlighter, color: "#ffd60a", width: 14)
+    /// Starts in the reader's yellow highlight colour, as typed highlights do.
+    public static let highlighter = InkTool(
+        mode: .highlighter,
+        color: HighlightInkPalette.default.hex(for: .yellow) ?? "#ffb600",
+        width: 14
+    )
     public static let eraser = InkTool(mode: .eraser, color: "#000000", width: 10)
 
     public init(mode: Mode, color: String, width: Double) {
@@ -125,7 +130,11 @@ public struct InkToolStripSettings: Codable, Sendable, Hashable {
 
     public static let slotCount = 3
     public static let defaultPenColors = ["#000000", "#1f4fd1", "#d12f1f"]
-    public static let defaultHighlighterColors = ["#ffd60a", "#7ee081", "#ff9ecb"]
+    /// The reader's default yellow, green and pink highlight colours, so highlighter ink and
+    /// typed highlights start from the same colours (owner, 2026-10-02).
+    public static let defaultHighlighterColors = [HighlightColor.yellow, .green, .pink].compactMap {
+        HighlightInkPalette.default.hex(for: $0)
+    }
 
     public var penColors: [String]
     public var highlighterColors: [String]

@@ -26,7 +26,7 @@ struct InkToolStripTests {
         #expect(strip.selectedSlot(for: .eraser) == nil)
         #expect(strip.colors(for: .eraser).isEmpty)
         strip.setColor("#123456", at: 2, for: .highlighter)
-        #expect(strip.highlighterColors == ["#ffd60a", "#7ee081", "#123456"])
+        #expect(strip.highlighterColors == ["#ffb600", "#00915a", "#123456"])
         strip.setColor("#123456", at: 3, for: .pen)
         #expect(strip.penColors == InkToolStripSettings.defaultPenColors)
     }
@@ -103,5 +103,32 @@ struct InkToolStripTests {
         let fresh = InkToolStripPreferenceStore(defaults: defaults)
         try fresh.save(moved)
         #expect(InkToolStripPreferenceStore(defaults: defaults).presented == moved)
+    }
+}
+
+@Suite("Highlighter and typed highlights share colours")
+struct HighlightInkPaletteTests {
+    @Test("The palette comes from a light theme in slot order, matched case-insensitively")
+    func lightThemePalette() {
+        var theme = ReaderTheme.builtInLight
+        theme.userHighlightColor3 = "#ABCDEF"
+        theme.userHighlightLabel3 = "Important"
+        let palette = HighlightInkPalette(lightTheme: theme)
+        #expect(palette.entries.map(\.color) == HighlightColor.allCases)
+        #expect(palette.hex(for: .yellow) == "#abcdef")
+        #expect(palette.entries[HighlightColor.yellow.slotIndex].label == "Important")
+        #expect(palette.color(forInk: "#ABCDEF") == .yellow)
+        #expect(palette.color(forInk: "#123456") == nil)
+    }
+
+    @Test("The highlighter starts in the reader's yellow, green and pink highlight colours")
+    func defaultsAreHighlightColors() {
+        let palette = HighlightInkPalette.default
+        #expect(
+            InkToolStripSettings.defaultHighlighterColors.compactMap(palette.color(forInk:))
+                == [.yellow, .green, .pink]
+        )
+        #expect(palette.color(forInk: InkTool.highlighter.color) == .yellow)
+        #expect(InkToolStripSettings().selectedSlot(for: .highlighter) == 0)
     }
 }

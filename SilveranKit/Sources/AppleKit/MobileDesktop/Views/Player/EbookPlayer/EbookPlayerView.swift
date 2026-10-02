@@ -177,6 +177,13 @@ public struct EbookPlayerView: View {
             _ in
             inkToolPreferenceMessage = InkToolPreferenceStore.shared.statusMessage
         }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: UIAccessibility.speakSelectionStatusDidChangeNotification
+            )
+        ) { _ in
+            Task { await viewModel.speakSelectionSettingChanged() }
+        }
         .statusBarHidden(!viewModel.isTopBarVisible)
         .persistentSystemOverlays(viewModel.isTopBarVisible ? .automatic : .hidden)
         .onAppear { viewModel.scheduleChromeAutoHide() }
@@ -754,7 +761,7 @@ public struct EbookPlayerView: View {
 
             // Above the mini player, and clear of it when it shows; hidden while the audio card
             // is pulled up over the page.
-            if isPad, !viewModel.isComicBook, viewModel.inkToolStrip.isShowing,
+            if isPad, !viewModel.isComicBook, viewModel.inkToolStrip.isPresented,
                 !viewModel.isAudioCardExpanded
             {
                 InkToolStripView(
@@ -812,6 +819,10 @@ public struct EbookPlayerView: View {
             }
             #endif
         }
+        #if os(iOS)
+        // The Pencil strip fades out of the selection bar's way and back.
+        .animation(.easeOut(duration: 0.15), value: viewModel.inkToolStrip.yieldsToTextSelection)
+        #endif
     }
 
     #if os(iOS)

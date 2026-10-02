@@ -37,11 +37,24 @@ struct BookmarksPanel: View {
         case highlights = "Highlights"
     }
 
+    /// Pencil highlighter marks are handwriting, not typed highlights (owner, 2026-10-01), so the
+    /// list says where they are on the iPad, where the Pencil writes.
+    private static var pencilHighlightsNote: String? {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .pad
+            ? "Highlights drawn with Apple Pencil are kept with your handwriting. Find them in Annotations, under Handwritten Marks."
+            : nil
+        #else
+        nil
+        #endif
+    }
+
     private var emptyStateDescription: String {
         #if os(iOS)
         selectedTab == .bookmarks
             ? "Tap the button below to bookmark the current page"
-            : "Long-press on text to create a highlight"
+            : ["Long-press on text to create a highlight.", Self.pencilHighlightsNote]
+                .compactMap { $0 }.joined(separator: "\n\n")
         #else
         selectedTab == .bookmarks
             ? "Click the button below to bookmark the current page"
@@ -197,21 +210,25 @@ struct BookmarksPanel: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List {
-                ForEach(highlights) { highlight in
-                    HighlightRow(
-                        highlight: highlight,
-                        highlightColorResolver: highlightColorResolver,
-                        onTap: { selectedHighlight = highlight },
-                        onNavigate: { onNavigate(highlight) },
-                        onDelete: { onDelete(highlight) },
-                    )
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
-                            onDelete(highlight)
-                        } label: {
-                            Label("Delete", systemImage: "trash")
+                Section {
+                    ForEach(highlights) { highlight in
+                        HighlightRow(
+                            highlight: highlight,
+                            highlightColorResolver: highlightColorResolver,
+                            onTap: { selectedHighlight = highlight },
+                            onNavigate: { onNavigate(highlight) },
+                            onDelete: { onDelete(highlight) },
+                        )
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                onDelete(highlight)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
                         }
                     }
+                } footer: {
+                    if let note = Self.pencilHighlightsNote { Text(note) }
                 }
             }
             #if os(iOS)

@@ -57,6 +57,9 @@ final class InkToolController: NSObject, UIPencilInteractionDelegate {
 
     func selectionEnded() { strip.selectionEnded() }
 
+    /// Text was selected or deselected on the page: the strip makes room for the selection bar.
+    func textSelectionChanged(active: Bool) { strip.textSelectionChanged(active: active) }
+
     /// Picks the select tool (a margin note was chosen for editing).
     func selectLasso() { strip.select(.select) }
 

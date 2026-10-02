@@ -1694,6 +1694,10 @@ class FoliateManager {
     this.#bookmarkManager.setTranslateAvailable(value);
   }
 
+  setSpeakAvailable(value) {
+    this.#bookmarkManager.setSpeakAvailable(value);
+  }
+
   setDefaultHighlightColor(colorId) {
     this.#bookmarkManager.setDefaultColor(colorId);
   }

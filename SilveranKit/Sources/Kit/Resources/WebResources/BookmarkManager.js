@@ -43,6 +43,10 @@ class BookmarkManager {
     this.#selectionToolbar.setTranslateAvailable(value);
   }
 
+  setSpeakAvailable(value) {
+    this.#selectionToolbar.setSpeakAvailable(value);
+  }
+
   setDefaultColor(colorId) {
     this.#selectionToolbar.setDefaultColor(colorId);
   }
@@ -341,8 +345,12 @@ class BookmarkManager {
         window.webkit?.messageHandlers?.SelectionSearch?.postMessage({ text: payload.text }),
       copy: () =>
         window.webkit?.messageHandlers?.SelectionCopy?.postMessage({ text: payload.text }),
+      speak: () =>
+        window.webkit?.messageHandlers?.SelectionSpeak?.postMessage({ text: payload.text, spell: false }),
+      spell: () =>
+        window.webkit?.messageHandlers?.SelectionSpeak?.postMessage({ text: payload.text, spell: true }),
       note: () => window.webkit?.messageHandlers?.TextSelection?.postMessage(payload),
-    });
+    }, { singleWord: !/\s/.test(payload.text) });
   }
 
   #showHighlightToolbar(doc, highlightId, x, y) {

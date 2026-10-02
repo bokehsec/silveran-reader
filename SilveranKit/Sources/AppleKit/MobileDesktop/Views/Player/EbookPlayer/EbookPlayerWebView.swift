@@ -203,6 +203,13 @@ private class WebViewCoordinator2: NSObject, WKNavigationDelegate, WKScriptMessa
                     (message.webView as? HighlightableWebView)?
                         .presentShare(for: text, atViewportRect: rect)
 
+                case "SelectionSpeak":
+                    #if os(iOS)
+                    let data = try JSONSerialization.data(withJSONObject: message.body)
+                    let msg = try decoder.decode(SelectionSpeakMessage.self, from: data)
+                    (message.webView as? HighlightableWebView)?.speak(msg.text, spell: msg.spell)
+                    #endif
+
                 case "SelectionCopy":
                     let data = try JSONSerialization.data(withJSONObject: message.body)
                     let msg = try decoder.decode(SelectionTextActionMessage.self, from: data)
@@ -214,6 +221,7 @@ private class WebViewCoordinator2: NSObject, WKNavigationDelegate, WKScriptMessa
                         let active = body["active"] as? Bool
                     {
                         pageCurlAnimator?.textSelectionActive = active
+                        inkToolController?.textSelectionChanged(active: active)
                     }
                     #endif
 
@@ -363,7 +371,24 @@ class HighlightableWebView: WKWebView {
         return window?.rootViewController
     }
 
-    // The compact in-page selection toolbar replaces the native callout menu entirely.
+    /// Made on the first Speak or Spell; stops when the reader closes.
+    private var selectionSpeaker: SelectionSpeaker?
+
+    /// The selection toolbar's Speak and Spell items (offered while Speak Selection is on).
+    func speak(_ text: String, spell: Bool) {
+        let speaker = selectionSpeaker ?? SelectionSpeaker()
+        selectionSpeaker = speaker
+        speaker.speak(text, spell: spell)
+    }
+
+    override func removeFromSuperview() {
+        selectionSpeaker?.stop()
+        super.removeFromSuperview()
+    }
+
+    // The compact in-page selection toolbar replaces the native callout menu entirely. Speech
+    // (Speak and Spell, present while Speak Selection is on) is offered in the toolbar's More menu
+    // instead; left in, it drew a second bubble over the text below the selection.
     override func buildMenu(with builder: any UIMenuBuilder) {
         super.buildMenu(with: builder)
         builder.remove(menu: .standardEdit)
@@ -371,6 +396,7 @@ class HighlightableWebView: WKWebView {
         builder.remove(menu: .share)
         builder.remove(menu: .replace)
         builder.remove(menu: .learn)
+        builder.remove(menu: .speech)
     }
 }
 #endif
@@ -451,6 +477,7 @@ private func makeWebViewConfiguration2(
     contentController.add(coordinator, name: "SelectionTranslate")
     contentController.add(coordinator, name: "SelectionSearch")
     contentController.add(coordinator, name: "SelectionCopy")
+    contentController.add(coordinator, name: "SelectionSpeak")
     contentController.add(coordinator, name: "HighlightSetColor")
     contentController.add(coordinator, name: "HighlightDelete")
     contentController.add(coordinator, name: "HighlightEdit")
