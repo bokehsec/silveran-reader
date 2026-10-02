@@ -2,8 +2,12 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Shows when a Pencil tool preference (the tool in hand, or the tool strip's colours and
+/// position) can't be read or saved, with retry and recovery export from its protected owner.
 struct InkToolPreferenceBanner: View {
     let message: String?
+    var retry: () throws -> Void = { try InkToolPreferenceStore.shared.retryPending() }
+    var exportRecovery: () throws -> Data = { try InkToolPreferenceStore.shared.exportRecovery() }
     @State private var document: InkToolRecoveryDocument?
     @State private var isExporting = false
     @State private var exportError: String?
@@ -15,15 +19,14 @@ struct InkToolPreferenceBanner: View {
                     Label(message, systemImage: "exclamationmark.triangle")
                     HStack {
                         Button("Retry Pencil tools") {
-                            let store = InkToolPreferenceStore.shared
-                            do { try store.retryPending() } catch {
+                            do { try retry() } catch {
                                 exportError = error.localizedDescription
                             }
                         }
                         Button("Export Pencil tool recovery…") {
                             do {
                                 document = InkToolRecoveryDocument(
-                                    data: try InkToolPreferenceStore.shared.exportRecovery()
+                                    data: try exportRecovery()
                                 )
                                 isExporting = true
                             } catch { exportError = error.localizedDescription }

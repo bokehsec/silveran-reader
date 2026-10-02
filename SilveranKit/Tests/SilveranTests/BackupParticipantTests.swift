@@ -278,6 +278,58 @@ struct PreferencesBackupTests {
         #expect(again.applied == 0)
     }
 
+    @Test("Pencil tool strip choices restore on the same kind of device through their owner")
+    func toolStrip() async throws {
+        let (sourceName, source) = suite()
+        let (sameName, same) = suite()
+        let (otherName, other) = suite()
+        defer {
+            for name in [sourceName, sameName, otherName] {
+                UserDefaults().removePersistentDomain(forName: name)
+            }
+        }
+        let strip = InkToolStripSettings(edge: .bottom, rolledUp: true)
+        let bytes = try InkToolStripSettingsPersistenceCodec.encode(strip)
+        source.set(bytes, forKey: InkToolStripPreferenceStore.key)
+        let capture = await PreferencesBackupParticipant(suiteName: sourceName).capture()
+        let archive = try BackupArchiveCodec.manifest(
+            appVersion: "t",
+            deviceID: "d",
+            deviceClass: "tablet",
+            captures: [("preferences", 1, capture)]
+        )
+        #expect(archive.files(for: "preferences")["inkToolStrip.json"] == bytes)
+
+        func restore(_ name: String, deviceClass: String, files: [String: Data]) async throws
+            -> BackupParticipantResult
+        {
+            try await PreferencesBackupParticipant(suiteName: name).restore(
+                files,
+                schema: 1,
+                context: BackupRestoreContext(
+                    restoreID: UUID(),
+                    manifest: archive.manifest,
+                    localDeviceClass: deviceClass,
+                    recoveryDirectory: FileManager.default.temporaryDirectory
+                        .appendingPathComponent(UUID().uuidString)
+                ),
+                dryRun: false
+            )
+        }
+        _ = try await restore(sameName, deviceClass: "tablet", files: archive.files(for: "preferences"))
+        _ = try await restore(otherName, deviceClass: "mac", files: archive.files(for: "preferences"))
+        #expect(same.data(forKey: InkToolStripPreferenceStore.key) == bytes)
+        #expect(other.object(forKey: InkToolStripPreferenceStore.key) == nil)
+
+        let damaged = try await restore(
+            otherName,
+            deviceClass: "tablet",
+            files: ["inkToolStrip.json": Data(#"{"edge":"middle"}"#.utf8)]
+        )
+        #expect(!damaged.attention.isEmpty)
+        #expect(other.object(forKey: InkToolStripPreferenceStore.key) == nil)
+    }
+
     @Test("Only allowlisted archive-only keys are accepted")
     func allowlist() {
         #expect(PreferencesBackupParticipant.isArchivedDeviceKey("library.table.books.columnOrder"))
