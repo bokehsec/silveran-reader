@@ -145,6 +145,7 @@ public actor FilesystemActor {
     private let writeHighlights: @Sendable (Data, URL) throws -> Void
     private let removeHighlights: @Sendable (URL) throws -> Void
     private let mutationEpoch: AnnotationMutationEpoch
+    private let highlightJournalCache = LocalMutationJournalCache()
 
     public init(
         applicationSupportDirectory: URL? = nil,
@@ -905,6 +906,8 @@ public actor FilesystemActor {
     public func mutateHighlights(_ mutation: HighlightMutation, bookID: BookID, operationID: UUID)
         throws
     {
+        highlightJournalCache.begin()
+        defer { highlightJournalCache.end() }
         try replayHighlightMutations(bookID: bookID)
         if let prior = try highlightMutationJournal.record(operationID: operationID, bookID: bookID)
         {
@@ -984,6 +987,7 @@ public actor FilesystemActor {
             ),
             owner: "highlight.book",
             mutationEpoch: mutationEpoch,
+            cache: highlightJournalCache,
             writeFile: writeHighlights
         )
     }
@@ -1070,6 +1074,21 @@ public actor FilesystemActor {
         }
     }
 
+    /// Retention (OD-034): compacted and completed sequences of local highlight history.
+    public func highlightLocalMutationRetention(bookID: BookID) throws
+        -> LocalMutationRetentionState
+    {
+        LocalMutationRetentionState(
+            compactedThrough: try highlightMutationJournal.base(bookID: bookID)?.sequence ?? 0,
+            completedThrough: try highlightMutationJournal.completedThrough(bookID: bookID)
+        )
+    }
+
+    /// Removes completed local highlight history up to `sequence` once every consumer took it.
+    public func compactHighlightLocalMutations(bookID: BookID, through sequence: UInt64) throws {
+        try highlightMutationJournal.compact(bookID: bookID, through: sequence)
+    }
+
     public func highlightLocalMutationBookIDs() throws -> [BookID] {
         try highlightMutationJournal.bookIDs()
     }
@@ -1077,9 +1096,12 @@ public actor FilesystemActor {
     public func highlightCommittedTransitions(bookID: BookID, afterSequence: UInt64) throws
         -> [HighlightCommittedTransition]
     {
+        highlightJournalCache.begin()
+        defer { highlightJournalCache.end() }
         try replayHighlightMutations(bookID: bookID)
         let records = try highlightMutationJournal.records(bookID: bookID)
-        guard afterSequence <= (records.last?.sequence ?? 0) else {
+        let base = try highlightMutationJournal.base(bookID: bookID)?.sequence ?? 0
+        guard afterSequence <= (records.last?.sequence ?? base) else {
             throw AnnotationPersistenceFailure(
                 message: "Highlight delivery history is missing; original metadata is preserved."
             )

@@ -53,6 +53,7 @@ public actor InkActor {
     private let mutationEpoch: AnnotationMutationEpoch
     /// The last committed book per file, with the stamp of the file this actor wrote.
     private var committed: [URL: CommittedInk] = [:]
+    private let journalCache = LocalMutationJournalCache()
 
     private struct CommittedInk {
         var ink: BookInk
@@ -88,6 +89,8 @@ public actor InkActor {
 
     public func load(bookID: BookID) async -> InkLoadResult {
         let url = await fileURL(bookID: bookID)
+        journalCache.begin()
+        defer { journalCache.end() }
         do {
             try settleLocalMutations(bookID: bookID, file: url)
             return read(url)
@@ -115,6 +118,8 @@ public actor InkActor {
     ) async -> Result<Void, InkPersistenceFailure> {
         // No suspension from journal validation through payload and completion persistence.
         let url = await fileURL(bookID: bookID)
+        journalCache.begin()
+        defer { journalCache.end() }
         do {
             let journal = localJournal(file: url)
             let existing = try journal.record(operationID: operationID, bookID: bookID)
@@ -150,14 +155,16 @@ public actor InkActor {
             var candidate = loaded.ink
             candidate.sections[href] = section.isEmpty ? nil : section
             guard candidate.hasUniqueIdentities else { throw InkPersistenceFailure(message: "Duplicate ink identity") }
-            let original = try loaded.state == .missing ? nil : (loaded.original ?? Data(contentsOf: url))
+            // Section-level evidence only: the section before and after is enough to replay or
+            // recognise this edit. A whole-book copy per save grew history by the book's size
+            // on every stroke (OD-034); older records that carry one are still validated.
             let record = try journal.newRecord(
                 operationID: operationID, bookID: bookID, scope: href,
-                expected: encodedSection(before), intended: intended, original: original
+                expected: encodedSection(before), intended: intended, original: nil
             )
             try mutationEpoch.withMutation {
                 try journal.prepare(record)
-                try commitSection(section, href: href, loaded: loaded, file: url)
+                try commitSection(section, href: href, loaded: loaded, file: url, encoded: intended)
                 try journal.complete(record)
             }
             LocalDataChangeSignal.post(bookID: bookID)
@@ -173,7 +180,7 @@ public actor InkActor {
         LocalAnnotationMutationJournal(
             root: file.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
                 .appendingPathComponent("LocalMutations", isDirectory: true),
-            owner: "ink", mutationEpoch: mutationEpoch, writeFile: writeFile
+            owner: "ink", mutationEpoch: mutationEpoch, cache: journalCache, writeFile: writeFile
         )
     }
 
@@ -200,8 +207,6 @@ public actor InkActor {
             guard Self.matchesPersistedSection(book.sections[record.scope!] ?? SectionInk(), try sectionFromRecord(record.expected)) else {
                 throw InkPersistenceFailure(message: "Local ink original does not match its expected section.")
             }
-        } else if record.expected != nil {
-            throw InkPersistenceFailure(message: "Local ink expected state has no original book.")
         }
     }
 
@@ -210,8 +215,10 @@ public actor InkActor {
     private func settleLocalMutations(bookID: BookID, file: URL) throws {
         let journal = localJournal(file: file)
         for record in try journal.records(bookID: bookID) {
-            try validateLocalRecord(record)
+            // Completed records were validated before they were applied, and the journal
+            // re-checks every checksum and link when it reads them.
             if try journal.isCompleted(record) { continue }
+            try validateLocalRecord(record)
             let loaded = committedRead(file)
             guard loaded.canEdit else { throw InkPersistenceFailure(message: "Interrupted ink save cannot replace protected ink.") }
             let href = record.scope!
@@ -225,7 +232,9 @@ public actor InkActor {
             }
             try mutationEpoch.withMutation {
                 try journal.prepare(record)
-                if !alreadyApplied { try commitSection(after, href: href, loaded: loaded, file: file) }
+                if !alreadyApplied {
+                    try commitSection(after, href: href, loaded: loaded, file: file, encoded: record.intended)
+                }
                 try journal.complete(record)
             }
             LocalDataChangeSignal.post(bookID: bookID)
@@ -240,7 +249,10 @@ public actor InkActor {
         return read(file)
     }
 
-    private func commitSection(_ section: SectionInk, href: String, loaded: InkLoadResult, file: URL) throws {
+    /// `encoded` is the section's already validated `encodedSection` bytes, when the caller has them.
+    private func commitSection(
+        _ section: SectionInk, href: String, loaded: InkLoadResult, file: URL, encoded: Data? = nil
+    ) throws {
         var candidate = loaded.ink
         candidate.sections[href] = section.isEmpty ? nil : section
         candidate.version = BookInk.currentVersion
@@ -253,7 +265,7 @@ public actor InkActor {
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        fragments[href] = try encodedSection(section)
+        fragments[href] = try encoded ?? encodedSection(section)
         for (key, value) in candidate.sections where fragments[key] == nil {
             fragments[key] = try encoder.encode(value)
         }
@@ -267,14 +279,16 @@ public actor InkActor {
 
     public func committedTransitions(bookID: BookID, afterSequence: UInt64) async throws -> [InkCommittedTransition] {
         let file = await fileURL(bookID: bookID)
+        journalCache.begin()
+        defer { journalCache.end() }
         try settleLocalMutations(bookID: bookID, file: file)
         let journal = localJournal(file: file)
         let history = try journal.records(bookID: bookID)
-        guard afterSequence <= (history.last?.sequence ?? 0) else {
+        let base = try journal.base(bookID: bookID)?.sequence ?? 0
+        guard afterSequence <= (history.last?.sequence ?? base) else {
             throw InkPersistenceFailure(message: "The consumed ink cursor is ahead of retained local mutation history. Sync is paused for recovery.")
         }
         return try history.filter { $0.sequence > afterSequence }.map { record in
-            try validateLocalRecord(record)
             guard try journal.isCompleted(record) else { throw InkPersistenceFailure(message: "Local ink transition is not committed.") }
             return InkCommittedTransition(
                 operationID: record.operationID, sequence: record.sequence, bookID: bookID, href: record.scope!,
@@ -282,6 +296,21 @@ public actor InkActor {
                 after: try record.intended.map { try decoder().decode(SectionInk.self, from: $0) }
             )
         }
+    }
+
+    /// Retention (OD-034): the last compacted sequence, so a consumer behind it knows the gap is
+    /// deliberate; and the last fully completed sequence.
+    public func localMutationRetention(bookID: BookID) async throws -> LocalMutationRetentionState {
+        let journal = localJournal(file: await fileURL(bookID: bookID))
+        return LocalMutationRetentionState(
+            compactedThrough: try journal.base(bookID: bookID)?.sequence ?? 0,
+            completedThrough: try journal.completedThrough(bookID: bookID)
+        )
+    }
+
+    /// Removes completed local history up to `sequence` once every consumer has taken it.
+    public func compactLocalMutations(bookID: BookID, through sequence: UInt64) async throws {
+        try localJournal(file: await fileURL(bookID: bookID)).compact(bookID: bookID, through: sequence)
     }
 
     public func localMutationBookIDs() async throws -> [BookID] {

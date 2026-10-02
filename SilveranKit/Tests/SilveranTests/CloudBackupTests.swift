@@ -120,6 +120,77 @@ struct CloudBackupTests {
         ])
     }
 
+    @Test("A complete backup records what it captured, so local edit history can be compacted (OD-034)")
+    func recordsLocalHistoryWatermarks() async throws {
+        let cloud = FakeCloud()
+        let clock = BackupTestClock()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let epoch = AnnotationMutationEpoch()
+        let ink = InkActor(directory: root.appendingPathComponent("Ink"), mutationEpoch: epoch)
+        let fs = FilesystemActor(applicationSupportDirectory: root, mutationEpoch: epoch)
+        let retention = LocalMutationRetention(
+            ink: ink, highlights: fs, stateURL: root.appendingPathComponent("Backup/retention.json")
+        )
+        let service = BackupService(
+            participants: [LegacyAnnotationsBackupParticipant(ink: ink, filesystem: fs)],
+            appVersion: "t", deviceID: "a", deviceClass: "tablet",
+            stateDirectory: root.appendingPathComponent("Backup"), mutationEpoch: epoch
+        )
+        let coordinator = CloudBackupCoordinator(
+            transport: cloud, service: service,
+            stateURL: root.appendingPathComponent("Backup/cloud.json"), deviceID: "a",
+            localHistory: retention, now: { clock.now }
+        )
+        try await coordinator.setEnabled(true)
+        try await ink.setSection(note("n1"), href: "c", bookID: book).get()
+        #expect(await retention.backedUp().marks.isEmpty)
+        #expect(await coordinator.runIfDue())
+        #expect(await retention.backedUp().marks.first { $0.bookID == book }?.ink == 1)
+        // Sync off, backup on: the backed-up edit can go; a later one waits for the next backup.
+        try await ink.setSection(note("n2"), href: "d", bookID: book).get()
+        #expect(await retention.compact(syncConsumed: nil, backupRequired: true) == 1)
+        #expect(try await ink.localMutationRetention(bookID: book)
+            == LocalMutationRetentionState(compactedThrough: 1, completedThrough: 2))
+    }
+
+    @Test("An incomplete backup does not let local edit history be compacted")
+    func incompleteBackupKeepsHistory() async throws {
+        let cloud = FakeCloud()
+        let clock = BackupTestClock()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let epoch = AnnotationMutationEpoch()
+        let ink = InkActor(directory: root.appendingPathComponent("Ink"), mutationEpoch: epoch)
+        let fs = FilesystemActor(applicationSupportDirectory: root, mutationEpoch: epoch)
+        let retention = LocalMutationRetention(
+            ink: ink, highlights: fs, stateURL: root.appendingPathComponent("Backup/retention.json")
+        )
+        // A fonts folder that is a file makes that participant unavailable: incomplete capture.
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let notAFolder = root.appendingPathComponent("not-a-folder")
+        try Data("x".utf8).write(to: notAFolder)
+        let service = BackupService(
+            participants: [
+                LegacyAnnotationsBackupParticipant(ink: ink, filesystem: fs),
+                FontsBackupParticipant(fonts: CustomFontsActor(fontsDirectory: notAFolder)),
+            ],
+            appVersion: "t", deviceID: "a", deviceClass: "tablet",
+            stateDirectory: root.appendingPathComponent("Backup"), mutationEpoch: epoch
+        )
+        let coordinator = CloudBackupCoordinator(
+            transport: cloud, service: service,
+            stateURL: root.appendingPathComponent("Backup/cloud.json"), deviceID: "a",
+            localHistory: retention, now: { clock.now }
+        )
+        try await coordinator.setEnabled(true)
+        try await ink.setSection(note("n1"), href: "c", bookID: book).get()
+        #expect(await coordinator.runIfDue(), "an incomplete generation is still stored")
+        #expect(await retention.backedUp().marks.isEmpty)
+        #expect(await retention.compact(syncConsumed: nil, backupRequired: true) == 0)
+        #expect(try await ink.localMutationRetention(bookID: book).compactedThrough == 0)
+    }
+
     @Test("A backup uploads files before its generation and restores on another device")
     func backupAndRestore() async throws {
         let cloud = FakeCloud()

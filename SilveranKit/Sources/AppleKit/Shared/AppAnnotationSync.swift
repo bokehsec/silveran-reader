@@ -147,6 +147,7 @@ enum AppAnnotationSync {
         if let transport, await transport.persistenceProblem() != nil { deactivate() }
         if transport == nil, isAvailable, AppleConfigurationSyncCoordinator.shared.enabled { await activate() }
         await transport?.syncNow()
+        await AppLocalHistoryRetention.run()
     }
 
     /// Re-reads the library for cards and matches, for example after a server was added.

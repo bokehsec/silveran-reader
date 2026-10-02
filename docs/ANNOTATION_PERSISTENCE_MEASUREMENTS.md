@@ -57,6 +57,37 @@ Each active workload recorded exactly 32 successful payload writes. The large wo
 The repository's database and exported full history grow with retained full-note revisions: doubling this fixture from 128 to 256 revisions raised its snapshot from 2,588,540 to 10,359,804 bytes. These measurements motivate a bounded-history/compaction design and verification rather than a production cutover to the current experiment. Checkpoint latency percentiles cover all commits up to that checkpoint; they are not isolated windows or transactional comparisons with active files.
 
 
+## Observed evidence after the local journal and retention fix (BF-068)
+
+Same host and helper command. The [retained report](evidence/annotation-persistence-host-2026-10-02-retention.json) was generated at `2026-10-02T18:42:36Z` from an unoptimized build of the working tree on top of `6710d52`: the BF-068 retention, section-level records, record cache, per-operation memo and `lstat`. The measurement test passed in 244 s. The harness never compacts, so the journal holds every save, which is the worst case between backups; in the app, history is compacted after sync and a complete backup.
+
+| Active file workload (32 saves) | Save p50 / p95 / max, ms | Cold load, ms | Startup reconciliation, ms | Capture / ZIP, ms | Uncompressed / ZIP bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Small | 21.1 / 33.9 / 35.1 | 28.7 | 398.9 | 41.9 / 33.2 | 914,813 / 231,462 |
+| Medium | 52.2 / 70.6 / 72.3 | 205.4 | 2,515.1 | 186.0 / 97.8 | 5,958,326 / 835,772 |
+| Large | 132.3 / 150.4 / 161.1 | 1,345.8 | 9,612.8 | 1,234.5 / 319.3 | 24,734,985 / 2,516,557 |
+
+How the large-workload save p50 changed on this host:
+
+| Build | Large save p50 |
+| --- | ---: |
+| Before the journal | 26 ms |
+| Journal as committed in `fea56d2` | Did not finish (OD-034) |
+| Section-level records only | 2,224 ms |
+| Plus the verified-record cache | 533 ms |
+| Plus the per-operation memo | 248 ms |
+| Plus `lstat` | 158 ms |
+| Plus reusing the encoded section | 132 ms |
+
+Interpretation:
+
+- Storage growth per save is now about the changed section, not the book.
+- Saves still cost about 5–7× the pre-journal baseline on this debug host. Each save writes four files (intent, head, payload, completion), encodes the record and still re-checks retained history once per operation.
+- Startup reconciliation is about 3× the pre-journal value, because sync consumes every retained transition.
+- Backups are larger because the uncompacted journal is captured.
+
+Saves are asynchronous to Pencil rendering, but these numbers need release-build device measurement against the proposed budgets before acceptance.
+
 ## Proposed numerical qualification targets
 
 These values make follow-up validation concrete. They are proposed targets for named reference hardware, not measured capability or a settled product-owner release budget. Inventory the actual signed acceptance devices and agree the final numerical budgets before marking IP-6 complete. Use the workloads above with a release build, report p50/p95/max and repetition counts, and keep the original data.
@@ -73,7 +104,8 @@ Physical bytes written and retained recovery growth have no accepted numerical c
 
 ## Open acceptance
 
-- **2026-10-02 rerun on committed `fea56d2` was stopped (OD-034).** After 28 minutes at full CPU and 7 GB memory the large workload had 56 journal records totalling 163 MB for a 4.3 MB book (medium: 52 / 43 MB for 716 KB; small: 37 / 1.7 MB for 28 KB). Each local ink record stores the whole book's ink, history is never pruned, and every save re-reads and decodes all of it. A retention/compaction design (ADR 013 revision) must land before this harness can produce a current report.
+- Resolved by BF-068 (see the evidence above): **2026-10-02 rerun on committed `fea56d2` was stopped (OD-034).** After 28 minutes at full CPU and 7 GB memory the large workload had 56 journal records totalling 163 MB for a 4.3 MB book (medium: 52 / 43 MB for 716 KB; small: 37 / 1.7 MB for 28 KB). Each local ink record stores the whole book's ink, history is never pruned, and every save re-reads and decodes all of it. A retention/compaction design (ADR 013 revision) must land before this harness can produce a current report.
+- Measure on a release build and real iPad/iPhone with retention active. Reduce per-save journal overhead (four writes per save, one history re-check per operation) and startup reconciliation if budgets are missed.
 
 - Rerun the revised owners/local command journal on a frozen Mac tree and retain separate observations; repeat under a release build before qualifying the proposed Mac budget.
 - Set and exercise numerical budgets on named real iPad/iPhone hardware with isolated synthetic content, not the user's annotations.

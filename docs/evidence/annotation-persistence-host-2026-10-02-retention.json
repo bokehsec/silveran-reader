@@ -1,0 +1,121 @@
+{
+  "activeFiles" : [
+    {
+      "backupArchiveBytes" : 231462,
+      "backupCaptureMilliseconds" : 41.918,
+      "backupEncodingMilliseconds" : 33.228167,
+      "backupUncompressedBytes" : 914813,
+      "coldLoadMilliseconds" : 28.69875,
+      "finalInkFileBytes" : 24632,
+      "physicalBytesWritten" : 1289448,
+      "physicalWrites" : 128,
+      "recoveryBytes" : 235466,
+      "recoveryConflicts" : 12,
+      "recoveryFiles" : 55,
+      "samples" : 32,
+      "saveMaximumMilliseconds" : 35.142667,
+      "saveMedianMilliseconds" : 21.079792,
+      "saveP95Milliseconds" : 33.855667,
+      "startupReconciliationMilliseconds" : 398.849792,
+      "workload" : {
+        "name" : "small",
+        "notesPerSection" : 2,
+        "pointsPerStroke" : 12,
+        "sections" : 5,
+        "strokesPerNote" : 10
+      }
+    },
+    {
+      "backupArchiveBytes" : 835772,
+      "backupCaptureMilliseconds" : 186.004916,
+      "backupEncodingMilliseconds" : 97.848875,
+      "backupUncompressedBytes" : 5958326,
+      "coldLoadMilliseconds" : 205.373542,
+      "finalInkFileBytes" : 730428,
+      "physicalBytesWritten" : 26677772,
+      "physicalWrites" : 128,
+      "recoveryBytes" : 570037,
+      "recoveryConflicts" : 12,
+      "recoveryFiles" : 55,
+      "samples" : 32,
+      "saveMaximumMilliseconds" : 72.251625,
+      "saveMedianMilliseconds" : 52.170291,
+      "saveP95Milliseconds" : 70.611041,
+      "startupReconciliationMilliseconds" : 2515.094333,
+      "workload" : {
+        "name" : "medium",
+        "notesPerSection" : 4,
+        "pointsPerStroke" : 16,
+        "sections" : 20,
+        "strokesPerNote" : 40
+      }
+    },
+    {
+      "backupArchiveBytes" : 2516557,
+      "backupCaptureMilliseconds" : 1234.4605,
+      "backupEncodingMilliseconds" : 319.315333,
+      "backupUncompressedBytes" : 24734985,
+      "coldLoadMilliseconds" : 1345.773083,
+      "finalInkFileBytes" : 6418190,
+      "physicalBytesWritten" : 212518862,
+      "physicalWrites" : 128,
+      "recoveryBytes" : 931286,
+      "recoveryConflicts" : 12,
+      "recoveryFiles" : 55,
+      "samples" : 32,
+      "saveMaximumMilliseconds" : 161.121583,
+      "saveMedianMilliseconds" : 132.295875,
+      "saveP95Milliseconds" : 150.36875,
+      "startupReconciliationMilliseconds" : 9612.754167,
+      "workload" : {
+        "name" : "large",
+        "notesPerSection" : 5,
+        "pointsPerStroke" : 24,
+        "sections" : 80,
+        "strokesPerNote" : 50
+      }
+    }
+  ],
+  "buildMode" : "debug",
+  "generatedAt" : "2026-10-02T18:42:36Z",
+  "inactiveRepositoryGrowth" : [
+    {
+      "commitMedianMilliseconds" : 22.833417,
+      "commitP95Milliseconds" : 29.751458,
+      "databaseBytes" : 339968,
+      "pendingBackupIntents" : 32,
+      "revisions" : 32,
+      "snapshotBytes" : 182510,
+      "strokesInCurrentNote" : 32
+    },
+    {
+      "commitMedianMilliseconds" : 41.981959,
+      "commitP95Milliseconds" : 66.5265,
+      "databaseBytes" : 4018176,
+      "pendingBackupIntents" : 128,
+      "revisions" : 128,
+      "snapshotBytes" : 2588540,
+      "strokesInCurrentNote" : 128
+    },
+    {
+      "commitMedianMilliseconds" : 69.544708,
+      "commitP95Milliseconds" : 116.53025,
+      "databaseBytes" : 15749120,
+      "pendingBackupIntents" : 256,
+      "revisions" : 256,
+      "snapshotBytes" : 10359804,
+      "strokesInCurrentNote" : 256
+    }
+  ],
+  "limitations" : [
+    "Synthetic deterministic points; no real Pencil input, EPUB reflow or renderer latency.",
+    "Process-local atomic write timings; not process-kill, power-loss or hardware flush acceptance.",
+    "Unoptimized host test binary; results are observations, not iPad\/iPhone or release-build budgets.",
+    "No CloudKit transport, upload quota, signed accounts or historical retention acceptance.",
+    "Byte totals cover injected atomic payload writes, not filesystem journal or flash wear."
+  ],
+  "osVersion" : "Version 26.0.1 (Build 25A362)",
+  "physicalMemoryBytes" : 68719476736,
+  "processorCount" : 10,
+  "schema" : 1
+}

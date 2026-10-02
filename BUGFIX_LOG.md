@@ -42,6 +42,58 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-068 — Local edit history grew by a whole book's ink per save and slowed every save
+
+- Date: 2026-10-02
+- Status: Fixed; device storage/latency measurement pending
+- Platforms: Shared (portable Kit); retention wiring in AppleKit (iOS/macOS)
+- Components: `LocalAnnotationMutationJournal`, `InkActor`, `FilesystemActor` (highlight retention), `AnnotationSyncEngine.reconcileLocked`/`consumedLocalSequences`, new `LocalMutationRetention`, `CloudBackupCoordinator`, new `AppLocalHistoryRetention`, `AppBackup`, `AppAnnotationSync`
+- Related: OD-034, [ADR 013 revision 2026-10-02](docs/decisions/013-active-file-mutation-recovery.md#revision-2026-10-02-local-mutation-history-retention-od-034), BF-061
+
+#### Symptom
+
+Found by the IP-6 measurement rerun, before any user report. The harness that took 228 s before the local journal ran 28 minutes at full CPU and 7 GB memory without finishing. For a 4.3 MB book of ink, 56 saves produced 163 MB of local history, averaging 3 MB per record. On a device, writing in a well-annotated book would have made each Pencil save slower and grown storage by about the book's ink size per save. Every automatic backup also copied the whole history.
+
+#### Root cause
+
+Three compounding choices in the BF-061 local journal:
+
+1. Each ink record stored the whole book file as `original`, in addition to the changed section before and after.
+2. History was never pruned (ADR 013 as first written).
+3. Every save ran `settleLocalMutations`, which re-read every record and decoded every `original` to cross-check it.
+
+Per-save cost and storage were therefore proportional to (number of saves) × (book size).
+
+#### Change
+
+- New ink records store only the changed section. Legacy records with `original` are still validated.
+- Completed records are no longer re-decoded on every save; the journal still verifies checksums and chain links.
+- Added crash-safe compaction behind a durable `base.json` marker. Readers ignore leftovers of an interrupted compaction, and a base that disagrees with retained history blocks reading.
+- Added `LocalMutationRetention`. Per the owner's decision, it compacts completed history once sync has consumed it and a complete automatic backup has captured it; a consumer that is switched off doesn't hold history. Backup watermarks are read before capture and recorded only after a complete generation.
+- The sync engine accepts a cursor behind the durable base (sync was off meanwhile) and reconciles from the saved annotations.
+- The app runs compaction at launch, foreground, after backups and 30 s after edits, never during a pending restore.
+
+Unchanged: highlight record format, conflict policy, the refusal of a cursor ahead of retained history, and incomplete-record replay.
+
+#### Validation
+
+- New `LocalMutationRetentionTests` (8 tests): section-level record size; compaction with continued chain and restart; interrupted compaction; tampered base refused; incomplete records kept; consumer gating (sync, backup, unreadable sync history, both off); sync after a compaction gap with a deletion recorded; highlight compaction.
+- New `CloudBackupTests.recordsLocalHistoryWatermarks` and `incompleteBackupKeepsHistory` (an incomplete generation is stored but records no watermarks, so nothing is compacted).
+- `scripts/test`: 576 tests / 71 suites passed.
+- IP-6 harness (debug host build, no compaction in the harness) now completes in 244 s; before this fix it was stopped after 28 min. Save p50 / p95 is small 21 / 34 ms, medium 52 / 71 ms and large 132 / 150 ms; before the journal it was 3 / 15 / 26 ms p50. Report: `docs/evidence/annotation-persistence-host-2026-10-02-retention.json`.
+- Further changes in this fix that came from profiling:
+  - a per-owner cache of verified records keyed by file number, size and modification time;
+  - a per-operation memo of history, invalidated by the journal's own writes;
+  - `lstat` instead of `FileManager.attributesOfItem`;
+  - reusing the validated section bytes for the payload write.
+- Unsigned iOS app build (`SILVERAN_XCODE_PROJECT=SilveranValidation.xcodeproj SILVERAN_DISABLE_CODE_SIGNING=1 scripts/iosbuild`, iPad simulator destination): Build Succeeded.
+- Not covered: the app-side triggers (`AppLocalHistoryRetention`) have no simulator or device run.
+
+#### Compatibility and follow-up
+
+Builds before this change treat `base.json` as unrecognized evidence and pause editing/sync for that book instead of guessing. After compaction has run, moving back to an older build needs this build or later. Existing histories shrink at the next compaction once consumers have caught up. Measure storage and save latency on a real iPad with Pencil.
+
+
 ### BF-067 — Replacing a custom font deleted the installed font before copying the new one
 
 - Date: 2026-10-02

@@ -139,7 +139,8 @@ enum AppBackup {
             transport: CloudKitBackupTransport(containerIdentifier: $0),
             service: service,
             stateURL: stateDirectory.appendingPathComponent("cloud-state.json"),
-            deviceID: deviceID
+            deviceID: deviceID,
+            localHistory: AppLocalHistoryRetention.retention
         )
     }
 
@@ -165,6 +166,7 @@ enum AppBackup {
     /// Registers change observers once and takes the launch opportunity.
     static func start() async {
         guard await protectPendingRestoreOnLaunch() else { return }
+        await AppLocalHistoryRetention.start()
         guard let cloud, observers.isEmpty else { return }
         let center = NotificationCenter.default
         for name in [LocalDataChangeSignal.name, UserDefaults.didChangeNotification] {
@@ -193,7 +195,9 @@ enum AppBackup {
     @discardableResult
     static func opportunity(force: Bool = false) async -> Bool {
         guard let cloud else { return false }
-        return await cloud.runIfDue(force: force)
+        let stored = await cloud.runIfDue(force: force)
+        await AppLocalHistoryRetention.run()
+        return stored
     }
 
     /// True when automatic backup is on and local changes haven't been backed up yet.

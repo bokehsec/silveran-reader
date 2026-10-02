@@ -139,6 +139,8 @@ public actor CloudBackupCoordinator {
     private let stateURL: URL
     private let deviceID: String
     private let now: @Sendable () -> Date
+    /// Told what each complete backup captured, so local edit history can be compacted.
+    private let localHistory: LocalMutationRetention?
     private var state: CloudBackupState
     private var running = false
     /// Incremented by every local change; a backup clears `pendingSince` only if no change
@@ -150,8 +152,10 @@ public actor CloudBackupCoordinator {
         service: BackupService,
         stateURL: URL,
         deviceID: String,
+        localHistory: LocalMutationRetention? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
+        self.localHistory = localHistory
         self.transport = transport
         self.service = service
         self.stateURL = stateURL
@@ -258,11 +262,17 @@ public actor CloudBackupCoordinator {
                 throw CloudBackupTransportError.temporarilyUnavailable(retryAfter: nil)
         }
         let sequence = changeSequence
+        // Read before capture: every edit up to these marks is in the captured payloads.
+        let marks = await localHistory?.watermarksBeforeCapture()
         let archive = try await service.createArchive()
         let fingerprint = Self.contentFingerprint(archive.manifest)
         if fingerprint == state.lastContentFingerprint, state.lastCompleteAt != nil {
             if changeSequence == sequence { state.pendingSince = nil }
             try save()
+            // Identical content to the last stored generation, so it holds these edits too.
+            if archive.manifest.isComplete, let marks {
+                try? await localHistory?.recordCompleteBackup(marks)
+            }
             return false
         }
         // Upload every file not already stored (content-addressed, so unchanged files are free).
@@ -299,6 +309,9 @@ public actor CloudBackupCoordinator {
         // Changes made while this backup ran stay pending.
         if changeSequence == sequence { state.pendingSince = nil }
         try save()
+        if archive.manifest.isComplete, let marks {
+            try? await localHistory?.recordCompleteBackup(marks)
+        }
         try? await prune()
         return true
     }

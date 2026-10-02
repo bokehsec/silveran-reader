@@ -305,6 +305,17 @@ public actor AnnotationSyncEngine {
     /// Records one book's local changes: new or edited annotations get a new clock and are
     /// queued; missing ones become tombstones. A book whose files need recovery is skipped.
     @discardableResult
+    /// How far sync has taken each book's local ink and highlight history, for retention.
+    /// Nil when the book's sync history cannot be read; retention then keeps everything.
+    public func consumedLocalSequences(bookID: BookID) async -> (ink: UInt64, highlight: UInt64)? {
+        guard beginCall() else { return nil }
+        defer { endCall() }
+        await lock(bookID)
+        defer { unlock(bookID) }
+        guard let state = try? loadState(bookID) else { return nil }
+        return (state.inkLocalSequence ?? 0, state.highlightLocalSequence ?? 0)
+    }
+
     public func reconcile(bookID: BookID) async -> Bool {
         guard beginCall() else { return false }
         defer { endCall() }
@@ -1814,6 +1825,23 @@ public actor AnnotationSyncEngine {
         _ = try loadIndex()
         var state = try loadState(bookID)
         var changed = false
+        // Retention compacts only history every enabled consumer has taken, so a cursor behind
+        // the durable compaction base means sync was off meanwhile. The snapshot comparison
+        // below still records every net addition, edit, erased stroke and deletion (OD-034).
+        let inkCompacted = try await ink.localMutationRetention(bookID: bookID).compactedThrough
+        if (state.inkLocalSequence ?? 0) < inkCompacted {
+            state.inkLocalSequence = inkCompacted
+            state.schema = 2
+            changed = true
+        }
+        let highlightCompacted = try await filesystem.highlightLocalMutationRetention(
+            bookID: bookID
+        ).compactedThrough
+        if (state.highlightLocalSequence ?? 0) < highlightCompacted {
+            state.highlightLocalSequence = highlightCompacted
+            state.schema = 2
+            changed = true
+        }
         for transition in try await ink.committedTransitions(
             bookID: bookID,
             afterSequence: state.inkLocalSequence ?? 0
