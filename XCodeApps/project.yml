@@ -63,6 +63,21 @@ targets:
           - InkSessionModelTests.swift
           - InkModelsTests.swift
           - InkMarginWebKitTests.swift
+          - AnnotationRepairCommandsTests.swift
+          - AnnotationSyncTests.swift
+          - AnnotationSyncDurabilityTests.swift
+          - AnnotationTransportCheckpointTests.swift
+          - AnnotationCloudSyncTests.swift
+          - InkMutationCoordinationTests.swift
+          - InkLocalMutationJournalTests.swift
+          - HighlightPersistenceSafetyTests.swift
+          - HighlightLocalMutationRecoveryTests.swift
+          - LibraryIdentitySafetyTests.swift
+          - CrossDeviceLibraryTests.swift
+          - BackupIntegrityTests.swift
+          - BackupParticipantTests.swift
+          - BackupRestoreTests.swift
+          - ConfigurationSyncTests.swift
     dependencies:
       - target: Silveran Component Test Host (iOS)
       - package: Silveran

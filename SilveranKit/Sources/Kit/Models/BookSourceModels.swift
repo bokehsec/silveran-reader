@@ -2,6 +2,58 @@ import Foundation
 
 public typealias BookSourceID = String
 
+/// Adapter-defined stable identifier namespace. Equality is meaningful only together with
+/// the source's nonempty account partition; a title or an unscoped server UUID is insufficient.
+public struct BookSourceBookIdentity: Codable, Sendable, Hashable {
+    public var namespace: String
+    public var identifier: String
+    /// Adapter principal evidence, scoped by an established local source. Excludes its address
+    /// so an intentional address change does not authorize a different configured user.
+    public var principalIdentity: String?
+
+    public init(namespace: String, identifier: String, principalIdentity: String? = nil) {
+        self.namespace = namespace
+        self.identifier = identifier
+        self.principalIdentity = principalIdentity
+    }
+
+    public var isValid: Bool { !namespace.isEmpty && !identifier.isEmpty }
+}
+
+/// Nonsecret connection details an adapter chooses to offer to the person's other devices.
+public struct BookSourceConnectionDescriptor: Sendable, Hashable {
+    public var serverURL: String?
+    public var username: String?
+
+    public init(serverURL: String?, username: String?) {
+        self.serverURL = serverURL
+        self.username = username
+    }
+}
+
+/// The matching contract is independent of catalog, download and reading-position behavior.
+public protocol BookSourceIdentityProviding: Actor {
+    var accountScopeID: String? { get async }
+    func matchingBookIdentity(for bookID: String) async -> BookSourceBookIdentity?
+    func libraryConnectionDescriptor() async -> BookSourceConnectionDescriptor?
+}
+
+public enum BookSourceIdentityEvidence {
+    public static func matchingIdentity(
+        for bookID: String,
+        expectedAccountID: String?,
+        source: any BookSourceIdentityProviding
+    ) async -> BookSourceBookIdentity? {
+        let account = await source.accountScopeID
+        guard let account, !account.isEmpty, account == expectedAccountID else { return nil }
+        let identity = await source.matchingBookIdentity(for: bookID)
+        guard account == (await source.accountScopeID), identity?.isValid == true else {
+            return nil
+        }
+        return identity
+    }
+}
+
 public enum BookSourceKind: String, Codable, Sendable, Hashable {
     case storyteller
     case localFolder
@@ -329,12 +381,11 @@ public func normalizedUserRating(_ rating: Double?) -> Double? {
     return stepped >= 0.5 ? stepped : nil
 }
 
-public protocol BookSourceActor: Actor {
+public protocol BookSourceActor: BookSourceIdentityProviding {
     var sourceRecord: BookSourceRecord { get async }
     var connectionStatus: ConnectionStatus { get async }
     /// Stable local ownership or conservative configured-principal namespace; nil stays unverified.
     /// Backends expose identity through this contract without leaking credentials to shared owners.
-    var accountScopeID: String? { get async }
 
     func fetchLibraryInformation() async -> [BookMetadata]?
 
@@ -418,6 +469,8 @@ public protocol BookSourceActor: Actor {
 
 extension BookSourceActor {
     public var accountScopeID: String? { nil }
+    public func matchingBookIdentity(for bookID: String) async -> BookSourceBookIdentity? { nil }
+    public func libraryConnectionDescriptor() async -> BookSourceConnectionDescriptor? { nil }
 
     /// Categories whose media is resolvable locally without a network round-trip.
     public func locallyAvailableMedia(for bookID: String) async -> Set<LocalMediaCategory> {

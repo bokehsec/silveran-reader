@@ -1,0 +1,121 @@
+{
+  "activeFiles" : [
+    {
+      "backupArchiveBytes" : 14239,
+      "backupCaptureMilliseconds" : 9.934125,
+      "backupEncodingMilliseconds" : 6.389167,
+      "backupUncompressedBytes" : 35894,
+      "coldLoadMilliseconds" : 7.516916,
+      "finalInkFileBytes" : 24632,
+      "physicalBytesWritten" : 697456,
+      "physicalWrites" : 32,
+      "recoveryBytes" : 10796,
+      "recoveryConflicts" : 12,
+      "recoveryFiles" : 12,
+      "samples" : 32,
+      "saveMaximumMilliseconds" : 5.864958,
+      "saveMedianMilliseconds" : 3.195,
+      "saveP95Milliseconds" : 5.121875,
+      "startupReconciliationMilliseconds" : 53.137792,
+      "workload" : {
+        "name" : "small",
+        "notesPerSection" : 2,
+        "pointsPerStroke" : 12,
+        "sections" : 5,
+        "strokesPerNote" : 10
+      }
+    },
+    {
+      "backupArchiveBytes" : 25969,
+      "backupCaptureMilliseconds" : 133.704833,
+      "backupEncodingMilliseconds" : 6.616042,
+      "backupUncompressedBytes" : 741743,
+      "coldLoadMilliseconds" : 232.113625,
+      "finalInkFileBytes" : 730428,
+      "physicalBytesWritten" : 23261600,
+      "physicalWrites" : 32,
+      "recoveryBytes" : 10848,
+      "recoveryConflicts" : 12,
+      "recoveryFiles" : 12,
+      "samples" : 32,
+      "saveMaximumMilliseconds" : 54.29325,
+      "saveMedianMilliseconds" : 15.374667,
+      "saveP95Milliseconds" : 50.234292,
+      "startupReconciliationMilliseconds" : 984.726833,
+      "workload" : {
+        "name" : "medium",
+        "notesPerSection" : 4,
+        "pointsPerStroke" : 16,
+        "sections" : 20,
+        "strokesPerNote" : 40
+      }
+    },
+    {
+      "backupArchiveBytes" : 175008,
+      "backupCaptureMilliseconds" : 1136.740792,
+      "backupEncodingMilliseconds" : 41.15675,
+      "backupUncompressedBytes" : 6429453,
+      "coldLoadMilliseconds" : 1095.533667,
+      "finalInkFileBytes" : 6418190,
+      "physicalBytesWritten" : 205222368,
+      "physicalWrites" : 32,
+      "recoveryBytes" : 10797,
+      "recoveryConflicts" : 12,
+      "recoveryFiles" : 12,
+      "samples" : 32,
+      "saveMaximumMilliseconds" : 46.94925,
+      "saveMedianMilliseconds" : 26.185625,
+      "saveP95Milliseconds" : 32.9775,
+      "startupReconciliationMilliseconds" : 3347.195958,
+      "workload" : {
+        "name" : "large",
+        "notesPerSection" : 5,
+        "pointsPerStroke" : 24,
+        "sections" : 80,
+        "strokesPerNote" : 50
+      }
+    }
+  ],
+  "buildMode" : "debug",
+  "generatedAt" : "2026-10-02T16:15:31Z",
+  "inactiveRepositoryGrowth" : [
+    {
+      "commitMedianMilliseconds" : 24.757208,
+      "commitP95Milliseconds" : 29.031917,
+      "databaseBytes" : 339968,
+      "pendingBackupIntents" : 32,
+      "revisions" : 32,
+      "snapshotBytes" : 182510,
+      "strokesInCurrentNote" : 32
+    },
+    {
+      "commitMedianMilliseconds" : 49.342708,
+      "commitP95Milliseconds" : 71.1645,
+      "databaseBytes" : 4018176,
+      "pendingBackupIntents" : 128,
+      "revisions" : 128,
+      "snapshotBytes" : 2588540,
+      "strokesInCurrentNote" : 128
+    },
+    {
+      "commitMedianMilliseconds" : 72.637292,
+      "commitP95Milliseconds" : 155.066542,
+      "databaseBytes" : 15749120,
+      "pendingBackupIntents" : 256,
+      "revisions" : 256,
+      "snapshotBytes" : 10359804,
+      "strokesInCurrentNote" : 256
+    }
+  ],
+  "limitations" : [
+    "Synthetic deterministic points; no real Pencil input, EPUB reflow or renderer latency.",
+    "Process-local atomic write timings; not process-kill, power-loss or hardware flush acceptance.",
+    "Unoptimized host test binary; results are observations, not iPad\/iPhone or release-build budgets.",
+    "No CloudKit transport, upload quota, signed accounts or historical retention acceptance.",
+    "Byte totals cover injected atomic payload writes, not filesystem journal or flash wear."
+  ],
+  "osVersion" : "Version 26.0.1 (Build 25A362)",
+  "physicalMemoryBytes" : 68719476736,
+  "processorCount" : 10,
+  "schema" : 1
+}

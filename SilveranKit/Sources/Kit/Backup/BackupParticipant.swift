@@ -8,6 +8,7 @@ public struct BackupRestoreContext: Sendable {
     public let localDeviceClass: String
     /// Archived material that could not be applied (conflicts, damaged copies) is kept here.
     public let recoveryDirectory: URL
+    private let mutationEpoch: AnnotationMutationEpoch
 
     public var isSameDeviceClass: Bool { manifest.deviceClass == localDeviceClass }
 
@@ -15,12 +16,14 @@ public struct BackupRestoreContext: Sendable {
         restoreID: UUID,
         manifest: BackupManifest,
         localDeviceClass: String,
-        recoveryDirectory: URL
+        recoveryDirectory: URL,
+        mutationEpoch: AnnotationMutationEpoch = AnnotationMutationEpoch()
     ) {
         self.restoreID = restoreID
         self.manifest = manifest
         self.localDeviceClass = localDeviceClass
         self.recoveryDirectory = recoveryDirectory
+        self.mutationEpoch = mutationEpoch
     }
 
     /// Keeps archived bytes that were not applied, under `<recovery>/<kind>/<path>`.
@@ -31,7 +34,9 @@ public struct BackupRestoreContext: Sendable {
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try data.write(to: url, options: .atomic)
+        try mutationEpoch.withMutation {
+            try data.write(to: url, options: .atomic)
+        }
     }
 }
 
@@ -68,6 +73,8 @@ public protocol BackupParticipant: Sendable {
     var kind: String { get }
     var schema: Int { get }
     func capture() async -> BackupParticipantCapture
+    /// Owners with writes outside the shared mutation epoch supply canonical snapshot evidence.
+    func captureConsistencyToken() async throws -> Data?
     /// Must be idempotent: an interrupted restore is resumed by running it again.
     func restore(
         _ files: [String: Data],
@@ -75,6 +82,10 @@ public protocol BackupParticipant: Sendable {
         context: BackupRestoreContext,
         dryRun: Bool
     ) async throws -> BackupParticipantResult
+}
+
+extension BackupParticipant {
+    public func captureConsistencyToken() async throws -> Data? { nil }
 }
 
 // MARK: - Annotations (current legacy files)
@@ -111,7 +122,18 @@ public struct LegacyAnnotationsBackupParticipant: BackupParticipant {
             "highlights": 0, "damagedFiles": 0,
         ]
         var unreadable = 0
-        for bookID in await ink.storedBookIDs() {
+        let inkBooks: [BookID]
+        let highlightBooks: [BookID]
+        do {
+            inkBooks = try await ink.storedBookIDsForBackup()
+            highlightBooks = try await filesystem.highlightBookIDsForBackup()
+        } catch {
+            return BackupParticipantCapture(
+                status: .unavailable,
+                message: "The annotation inventory could not be fully read. This backup is incomplete."
+            )
+        }
+        for bookID in inkBooks {
             let loaded = await ink.load(bookID: bookID)
             guard let original = loaded.original else {
                 if loaded.state != .missing { unreadable += 1 }
@@ -128,7 +150,7 @@ public struct LegacyAnnotationsBackupParticipant: BackupParticipant {
                 counts["damagedFiles", default: 0] += 1
             }
         }
-        for bookID in await filesystem.highlightBookIDs() {
+        for bookID in highlightBooks {
             let original: Data?
             do { original = try await filesystem.highlightOriginal(bookID: bookID) } catch {
                 unreadable += 1

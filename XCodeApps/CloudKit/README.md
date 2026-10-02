@@ -1,6 +1,6 @@
 # CloudKit schema
 
-`schema.ckdb` defines every record type and field the app writes to its private iCloud database: `Annotation` (device sync, ADR 010) and `BackupAsset` / `BackupGeneration` (automatic backup, ADR 009). Keep it in step with `AnnotationCloudSync.swift` and `CloudKitBackupTransport.swift`; a field the code writes that isn't in the Production schema makes those saves fail in TestFlight and App Store builds.
+`schema.ckdb` defines every record type and field the app writes to its private iCloud database: `Annotation` (device sync, ADR 010), `LibraryBook` (book cards for matching books across devices, ADR 012) and `BackupAsset` / `BackupGeneration` (automatic backup, ADR 009). Keep it in step with `AnnotationCloudSync.swift` and `CloudKitBackupTransport.swift`; a field the code writes that isn't in the Production schema makes those saves fail in TestFlight and App Store builds.
 
 The records live in private zones (`Annotations`, `Backups`), so the grants only matter for CloudKit's schema format. Enumeration uses zone changes, so no query indexes are needed beyond `___recordID`.
 

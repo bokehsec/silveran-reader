@@ -14,9 +14,11 @@ private actor FaultingHighlightStore: HighlightStoring {
     func highlightOriginal(bookID: BookID) async throws -> Data? {
         try await filesystem.highlightOriginal(bookID: bookID)
     }
-    func mutateHighlights(_ mutation: HighlightMutation, bookID: BookID) async throws {
+    func mutateHighlights(_ mutation: HighlightMutation, bookID: BookID, operationID: UUID)
+        async throws
+    {
         if fails { throw CocoaError(.fileWriteOutOfSpace) }
-        try await filesystem.mutateHighlights(mutation, bookID: bookID)
+        try await filesystem.mutateHighlights(mutation, bookID: bookID, operationID: operationID)
     }
 }
 
@@ -128,6 +130,57 @@ struct HighlightPersistenceSafetyTests {
         try await actor.retryPendingChanges(bookID: book).get()
         #expect(await actor.getHighlights(bookID: book).isEmpty)
         #expect(!(await actor.hasPendingChanges(bookID: book)))
+    }
+
+    @Test("Journaled sync validates the committed highlight and replay is idempotent")
+    func conditionalSync() async throws {
+        let root = directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fs = FilesystemActor(applicationSupportDirectory: root)
+        let actor = BookmarkActor(store: fs)
+        let original = highlight()
+        try await actor.addHighlight(original).get()
+        let remote = Highlight(
+            id: original.id, bookID: book, locator: original.locator, text: original.text,
+            color: original.color, note: "remote revision", createdAt: original.createdAt,
+            placement: original.placement
+        )
+        #expect(await actor.applySynced(id: original.id, expected: original, replacement: remote, bookID: book))
+        #expect(await actor.applySynced(id: original.id, expected: original, replacement: remote, bookID: book))
+        // An independent local edit made after inspection must survive stale replacement/deletion.
+        try await actor.editHighlightProperties(id: original.id, color: .green, note: "local revision", bookID: book).get()
+        #expect(!(await actor.applySynced(id: original.id, expected: remote, replacement: nil, bookID: book)))
+        #expect(!(await actor.applySynced(id: original.id, expected: original, replacement: remote, bookID: book)))
+        let kept = try #require(try await fs.loadHighlights(bookID: book)?.first)
+        #expect(kept.note == "local revision")
+        #expect(kept.color == .green)
+        #expect(await actor.applySynced(id: original.id, expected: kept, replacement: nil, bookID: book))
+        #expect(await actor.applySynced(id: original.id, expected: kept, replacement: nil, bookID: book))
+        #expect(await actor.getHighlights(bookID: book).isEmpty)
+    }
+
+    @Test("Restore admission blocks highlight writes and failed pending commands refuse restore")
+    func restoreGate() async throws {
+        let root = directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fs = FilesystemActor(applicationSupportDirectory: root)
+        let store = FaultingHighlightStore(fs)
+        let actor = BookmarkActor(store: store)
+        let original = highlight()
+        await #expect(throws: AnnotationPersistenceFailure.self) { try await actor.addHighlight(original).get() }
+        #expect(!(await actor.suspendForRestore()))
+        #expect(await actor.hasPendingChanges(bookID: book))
+        await store.setFailure(false)
+        await #expect(throws: AnnotationPersistenceFailure.self) { try await actor.retryPendingChanges(bookID: book).get() }
+        #expect(try await fs.loadHighlights(bookID: book) == nil)
+        await actor.resumeAfterRestore()
+        try await actor.retryPendingChanges(bookID: book).get()
+        #expect(await actor.suspendForRestore())
+        await #expect(throws: AnnotationPersistenceFailure.self) { try await actor.deleteHighlight(id: original.id, bookID: book).get() }
+        #expect(try await fs.loadHighlights(bookID: book) == [original])
+        await actor.resumeAfterRestore()
+        try await actor.deleteHighlight(id: original.id, bookID: book).get()
+        #expect(await actor.getHighlights(bookID: book).isEmpty)
     }
 
     @Test(

@@ -13,7 +13,8 @@ enum AppBackup {
 
     static let reconnections = SourceReconnectionStore(
         url: SilveranPlatform.applicationSupportDirectory()
-            .appendingPathComponent("Backup/source-reconnections.json")
+            .appendingPathComponent("Backup/source-reconnections.json"),
+        mutationEpoch: .shared
     )
 
     /// Stable per installation; tells restore whether an archive came from this device.
@@ -38,6 +39,7 @@ enum AppBackup {
         return BackupService(
             participants: [
                 LegacyAnnotationsBackupParticipant(),
+                LibraryIdentityEvidenceBackupParticipant(store: AppAnnotationSync.library),
                 ConfigurationBackupParticipant(),
                 SourcesBackupParticipant(reconnections: reconnections),
                 SmartShelvesBackupParticipant(),
@@ -47,7 +49,37 @@ enum AppBackup {
                     "migrations": configDirectory.appendingPathComponent(
                         "MigrationBackups",
                         isDirectory: true
-                    )
+                    ),
+                    "highlight-local-mutations": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Highlights/LocalMutations", isDirectory: true),
+                    "ink-local-mutations": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Ink/LocalMutations", isDirectory: true),
+                    "ink-drafts": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Ink/Recovery", isDirectory: true),
+                    "sync-versions": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Sync/Recovery", isDirectory: true),
+                    "sync-inbox": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Sync/Inbox", isDirectory: true),
+                    "sync-books": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Sync/Books", isDirectory: true),
+                    "sync-moves": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Sync/Moves", isDirectory: true),
+                    "sync-receipts": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Sync/Completed", isDirectory: true),
+                    "sync-operations": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Sync/Operations", isDirectory: true),
+                    "restored": stateDirectory.appendingPathComponent(
+                        "RestoreRecovery", isDirectory: true
+                    ),
+                ], originalFiles: [
+                    "sync-index.json": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Sync/index.json"),
+                    "sync-transport-checkpoint.json": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Sync/cloudkit-state.json"),
+                    "sync-clock.json": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Sync/clock.json"),
+                    "sync-account-context.json": SilveranPlatform.applicationSupportDirectory()
+                        .appendingPathComponent("Sync/account-context.json"),
                 ]),
             ],
             appVersion: appVersion,
@@ -55,20 +87,39 @@ enum AppBackup {
             deviceClass: AppleConfigurationSyncCoordinator.currentDeviceClass,
             stateDirectory: stateDirectory,
             suspendPublishers: {
-                await MainActor.run { AppleConfigurationSyncCoordinator.shared.suspendPublishing() }
+                await AppleConfigurationSyncCoordinator.shared.suspendPublishingAndDrain()
+                await AppAnnotationSync.suspendForRestore()
+                guard await BookmarkActor.shared.suspendForRestore() else {
+                    throw BackupFailure("Some highlight edits have not settled. Sync remains paused; save or export them and retry restore.")
+                }
+                guard await ReadingSessionStore.shared.suspendForRestore() else {
+                    throw BackupFailure("Some handwriting in an open book cannot safely pause for restore. Sync remains paused; save or export the pending work and retry.")
+                }
             },
             resumePublishers: {
+                guard await ReadingSessionStore.shared.releaseAfterRestore() else {
+                    throw BackupFailure("Open books could not reload restored annotations. Sync remains paused; retry the restore resume.")
+                }
+                await BookmarkActor.shared.resumeAfterRestore()
+                await AppAnnotationSync.resumeAfterRestore()
                 await MainActor.run { AppleConfigurationSyncCoordinator.shared.resumePublishing() }
-                // Open books redraw from the restored ink instead of keeping stale pages.
-                await ReadingSessionStore.shared.reloadAllInk()
             },
             prepareForRestore: {
-                guard await ReadingSessionStore.shared.flushAllInk() else {
+                guard await BookmarkActor.shared.suspendForRestore() else {
+                    throw BackupFailure("Some highlight edits have not settled. Sync remains paused; save or export them and retry restore.")
+                }
+                guard await ReadingSessionStore.shared.suspendForRestore() else {
                     throw BackupFailure(
                         "Some handwriting in an open book hasn't been saved. Retry or export it from the reader, then restore."
                     )
                 }
-            }
+            },
+            prepareForResume: {
+                guard await ReadingSessionStore.shared.reloadAfterRestore() else {
+                    throw BackupFailure("Open books could not reload restored annotations. Sync remains paused; retry the restore resume.")
+                }
+            },
+            mutationEpoch: .shared
         )
     }()
 
@@ -97,8 +148,23 @@ enum AppBackup {
     /// Quiet period after the last change before an automatic backup starts.
     static let debounceInterval: Duration = .seconds(120)
 
+    /// Run before any live configuration/annotation sync starts after launch.
+    @discardableResult
+    static func protectPendingRestoreOnLaunch() async -> Bool {
+        do {
+            return !(try await service.enforcePendingRestoreGuard())
+        } catch {
+            await AppAnnotationSync.activity.record(
+                .problem,
+                "Backup restore needs recovery. Synchronization remains paused."
+            )
+            return false
+        }
+    }
+
     /// Registers change observers once and takes the launch opportunity.
     static func start() async {
+        guard await protectPendingRestoreOnLaunch() else { return }
         guard let cloud, observers.isEmpty else { return }
         let center = NotificationCenter.default
         for name in [LocalDataChangeSignal.name, UserDefaults.didChangeNotification] {

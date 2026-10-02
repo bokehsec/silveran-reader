@@ -314,7 +314,14 @@ extension SettingsView {
     fileprivate var iosContent: some View {
         NavigationStack {
             Form {
-                Section { ICloudSettingsSection() }
+                Section {
+                    ICloudSettingsSection()
+                    NavigationLink {
+                        AnnotationSyncDiagnosticsView()
+                    } label: {
+                        Label("Sync Diagnostics", systemImage: "stethoscope")
+                    }
+                }
 
                 Section {
                     NavigationLink {

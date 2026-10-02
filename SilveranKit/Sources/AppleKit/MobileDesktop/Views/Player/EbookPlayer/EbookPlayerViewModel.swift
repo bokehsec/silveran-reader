@@ -373,9 +373,11 @@ class EbookPlayerViewModel {
     /// Moves a typed highlight onto the words the person accepted. Its colour, note and date are
     /// kept; its saved words become the words it now covers.
     @discardableResult
-    func relocateHighlight(id: UUID, to suggestion: HighlightRepairSuggestion) async -> Bool {
+    func relocateHighlight(
+        id: UUID, to suggestion: HighlightRepairSuggestion, checked: Highlight
+    ) async -> Bool {
         guard let bookID = bookData?.metadata.id,
-            let existing = highlights.first(where: { $0.id == id }),
+            let existing = highlights.first(where: { $0.id == id }), existing == checked,
             let expectedSession = session, let scope = expectedSession.preparedAnnotationScope,
             let asset = expectedSession.preparedAssetFingerprint, let bridge = commsBridge,
             let sectionIndex = findSectionIndex(
@@ -403,28 +405,20 @@ class EbookPlayerViewModel {
                 locator: locator,
                 selection: AnnotationSelectionEvidence(anchor: anchor, normalizedText: text)
             )
-            try await BookServiceActor.shared.verifyAnnotationPlacement(
-                proposed,
-                bookID: bookID,
-                category: expectedSession.category
+            var verifiedSuggestion = suggestion
+            verifiedSuggestion.placement = proposed
+            let updated = try await AnnotationRepairCommands.prepareHighlight(
+                expected: existing, suggestion: verifiedSuggestion,
+                checkedHref: existing.locator.href, category: expectedSession.category,
+                verifyPlacement: { bookID, category, placement in
+                    try await BookServiceActor.shared.verifyAnnotationPlacement(
+                        placement, bookID: bookID, category: category
+                    )
+                }
             )
             guard session === expectedSession, commsBridge === bridge,
                 highlights.first(where: { $0.id == id }) == existing
-            else {
-                throw AnnotationPersistenceFailure(
-                    message: "This annotation changed. Check placement again."
-                )
-            }
-            let updated = Highlight(
-                id: existing.id,
-                bookID: existing.bookID,
-                locator: locator,
-                text: suggestion.text,
-                color: existing.color,
-                note: existing.note,
-                createdAt: existing.createdAt,
-                placement: try proposed.confirmingRepair(of: existing)
-            )
+            else { throw AnnotationRepairCommands.changed() }
             guard
                 await applyHighlightMutation(
                     .repair(expected: existing, replacement: updated),
@@ -1023,10 +1017,13 @@ class EbookPlayerViewModel {
             case .update(let highlight):
                 result = await BookmarkActor.shared.updateHighlight(highlight)
             case .repair(let expected, let replacement):
-                result = await BookmarkActor.shared.confirmHighlightRepair(
-                    expected: expected,
-                    replacement: replacement
+                result = await AnnotationRepairCommands.commitHighlight(
+                    expected: expected, replacement: replacement, owner: BookmarkActor.shared
                 )
+            case .synchronize:
+                result = .failure(AnnotationPersistenceFailure(
+                    message: "Synchronized changes must be applied through the annotation sync owner."
+                ))
             case .recolor(let id, let color):
                 result = await BookmarkActor.shared.recolorHighlight(
                     id: id,

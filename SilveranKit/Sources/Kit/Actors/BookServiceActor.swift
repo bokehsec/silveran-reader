@@ -1063,6 +1063,40 @@ public actor BookServiceActor {
         return AnnotationScope(bookID: bookID, accountID: await source.accountScopeID)
     }
 
+    public func matchingBookIdentity(for bookID: BookID, expectedAccountID: String?) async
+        -> BookSourceBookIdentity?
+    {
+        await ensureSourceRegistryLoaded()
+        guard let source = sourceActor(for: bookID.sourceID) else { return nil }
+        let identity = await BookSourceIdentityEvidence.matchingIdentity(
+            for: bookID.uuid,
+            expectedAccountID: expectedAccountID,
+            source: source
+        )
+        guard sourceActor(for: bookID.sourceID) === source else { return nil }
+        return identity
+    }
+
+    public func libraryMatchingIdentity(for bookID: BookID) async -> BookSourceBookIdentity? {
+        let account = await sourceAccountScopeID(for: bookID.sourceID)
+        return await matchingBookIdentity(for: bookID, expectedAccountID: account)
+    }
+
+    public func sourceAccountScopeID(for sourceID: BookSourceID) async -> String? {
+        await ensureSourceRegistryLoaded()
+        guard let source = sourceActor(for: sourceID) else { return nil }
+        let account = await source.accountScopeID
+        guard sourceActor(for: sourceID) === source else { return nil }
+        return account
+    }
+
+    public func libraryConnectionDescriptor(for sourceID: BookSourceID) async
+        -> BookSourceConnectionDescriptor?
+    {
+        await ensureSourceRegistryLoaded()
+        return await sourceActor(for: sourceID)?.libraryConnectionDescriptor()
+    }
+
     public func verifyAnnotationPlacement(
         _ placement: HighlightPlacement,
         bookID: BookID,

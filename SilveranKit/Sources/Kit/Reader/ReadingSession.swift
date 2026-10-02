@@ -38,6 +38,11 @@ public final class ReadingSessionStore {
 
     private var sessions: [BookID: ReadingSession] = [:]
     private var inkSessions: [BookID: InkSession] = [:]
+    private var restoreSuspended = false
+    private var restoreSuspension: Task<Bool, Never>?
+    private var restoreGeneration: UInt64 = 0
+    private var reloadedRestoreGeneration: UInt64?
+    private var inkInventoryGeneration: UInt64 = 0
     private final class WeakInkSession {
         weak var value: InkSession?
         init(_ value: InkSession) { self.value = value }
@@ -55,14 +60,19 @@ public final class ReadingSessionStore {
             releasedInkSessions = releasedInkSessions.filter { $0.value.value != nil }
         }
         let created = InkSession()
+        if restoreSuspended { created.setRestoreSuspended(true) }
         inkSessions[bookID] = created
+        inkInventoryGeneration += 1
         return created
     }
 
     /// Used by tests to supply the existing writer's fault-injection boundary.
     func installInkSession(_ session: InkSession, for bookID: BookID) {
         precondition(inkSessions[bookID] == nil)
+        if restoreSuspended { session.setRestoreSuspended(true) }
+        if restoreSuspended { reloadedRestoreGeneration = nil }
         inkSessions[bookID] = session
+        inkInventoryGeneration += 1
     }
 
     /// Releases a library editor only when the existing owner is saved and detached.
@@ -74,7 +84,7 @@ public final class ReadingSessionStore {
         inkSessions[bookID] = nil
     }
 
-    private init() {}
+    init() {}
 
     private var allInkSessions: [InkSession] {
         Array(inkSessions.values) + releasedInkSessions.values.compactMap(\.value)
@@ -96,6 +106,71 @@ public final class ReadingSessionStore {
     /// Reloads every open book's ink after saved ink changed underneath it (a restore).
     public func reloadAllInk() async {
         for session in allInkSessions { await session.reloadFromStore() }
+    }
+
+    /// Paired with annotation transport suspension by the app restore hooks. Sessions created
+    /// during preparation inherit the gate; repeated callers wait for the same settling work.
+    public func suspendForRestore() async -> Bool {
+        if let restoreSuspension { return await restoreSuspension.value }
+        if restoreSuspended { return true }
+        restoreSuspended = true
+        restoreGeneration += 1
+        reloadedRestoreGeneration = nil
+        let task = Task { @SilveranUIActor [self] in
+            for session in allInkSessions {
+                guard await session.suspendForRestore() else {
+                    restoreSuspended = false
+                    reloadedRestoreGeneration = nil
+                    for session in allInkSessions { session.setRestoreSuspended(false) }
+                    return false
+                }
+            }
+            return true
+        }
+        restoreSuspension = task
+        let result = await task.value
+        restoreSuspension = nil
+        return result
+    }
+
+    /// Every affected projection reloads while editing remains blocked. A failed reload leaves
+    /// the gate closed, retaining the existing owner and its recoverable work for retry.
+    @discardableResult
+    public func reloadAfterRestore() async -> Bool {
+        if let restoreSuspension, !(await restoreSuspension.value) { return false }
+        guard restoreSuspended else { return true }
+        reloadedRestoreGeneration = nil
+        let generation = restoreGeneration
+        var reloaded: Bool
+        var inventory: UInt64
+        repeat {
+            inventory = inkInventoryGeneration
+            reloaded = true
+            for session in allInkSessions {
+                if !(await session.reloadFromStore()) { reloaded = false }
+            }
+        } while reloaded && inventory != inkInventoryGeneration
+        guard reloaded, restoreSuspended, generation == restoreGeneration else { return false }
+        reloadedRestoreGeneration = generation
+        return true
+    }
+
+    /// Called only after the restore owner durably commits its finished journal. Preparation
+    /// can retry without accepting new editor work while that final write is still outstanding.
+    @discardableResult
+    public func releaseAfterRestore() -> Bool {
+        guard restoreSuspended else { return true }
+        guard reloadedRestoreGeneration == restoreGeneration else { return false }
+        restoreSuspended = false
+        reloadedRestoreGeneration = nil
+        for session in allInkSessions { session.setRestoreSuspended(false) }
+        return true
+    }
+
+    @discardableResult
+    public func resumeAfterRestore() async -> Bool {
+        guard await reloadAfterRestore() else { return false }
+        return releaseAfterRestore()
     }
 
     public func obtain(

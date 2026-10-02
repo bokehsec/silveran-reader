@@ -42,6 +42,223 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-067 — Replacing a custom font deleted the installed font before copying the new one
+
+- Date: 2026-10-02
+- Status: Fixed; simulator font-import workflow not re-exercised
+- Platforms: Shared (portable Kit); used by the iPad/iPhone/Mac font importers
+- Components: `CustomFontsActor.importFont` (`Kit/Actors/CustomFontsActor.swift`), `CustomFontImportTests`
+- Related: OD-032, [IP-4](docs/ANNOTATION_INTEGRITY_EXECUTION_PLAN.md)
+
+#### Symptom
+
+Importing a font file whose name matches an installed custom font removed the installed file first and then copied the new one. If the copy failed (full storage, unreadable or revoked picked file), the person was left with neither font, and books using it fell back to another typeface. Found by reading the code during the backup review; not reported by a user.
+
+#### Root cause
+
+`importFont` ran `removeItem(destination)` followed by `copyItem(source, destination)`. Nothing preserved the original between the two steps.
+
+#### Change
+
+The new file is copied to a hidden staging file in the same fonts folder (`.<uuid>.importing`; hidden files are skipped by font scans and backup), then swapped in with `FileManager.replaceItemAt` when a font of that name exists, or moved into place when it does not. A failure removes the staging file and leaves any installed font untouched. The write stays inside the owner's mutation epoch so backup capture still detects it. Deleting fonts is unchanged.
+
+#### Validation
+
+New `CustomFontImportTests`: with a `FileManager` whose copy always fails, the installed font keeps its bytes and no staging file remains (this test fails against the previous code: the installed font is gone); a successful re-import replaces the bytes and leaves only the font. Full `scripts/test` result is recorded in the integrity execution plan for the commit containing this fix. The Apple component runs on 2026-10-02 started before this change and do not cover it; font import was not re-exercised in a simulator.
+
+#### Compatibility and follow-up
+
+None known. A crash between staging and the swap can leave a hidden `.importing` file in the fonts folder; it is ignored by scans and backup but is not yet cleaned up on launch.
+
+
+### BF-066 — A protocol default could silently drop a highlight command's operation identity
+
+- Date: 2026-10-02
+- Status: Fixed (latent; no production caller affected)
+- Platforms: Shared (portable Kit)
+- Components: `HighlightStoring` (`Kit/Models/HighlightPersistence.swift`), `FilesystemActor.mutateHighlights`, `HighlightLocalMutationRecoveryTests`, `HighlightPersistenceSafetyTests`
+- Related: [IP-1](docs/ANNOTATION_INTEGRITY_EXECUTION_PLAN.md), [ADR 013](docs/decisions/013-active-file-mutation-recovery.md), BF-061
+
+#### Symptom
+
+`HighlightLocalMutationRecoveryTests` failed deterministically: after an interrupted local highlight command, replaying it with the same operation ID recorded a *different* ID in the local mutation journal, and an incoming-sync test refused a retry of the original command as "different content". Replays of a retained command must keep the original identity so sync can recognise them as the same edit.
+
+#### Root cause
+
+`HighlightStoring` declared both `mutateHighlights(_:bookID:)` and `mutateHighlights(_:bookID:operationID:)`, and its protocol extension supplied a "compatibility" default for the identity-carrying form that discarded `operationID` and called the two-argument form (which generates a fresh UUID). Swift chooses that extension method over `FilesystemActor`'s own synchronous actor method when the call is made directly on the concrete actor type, so direct calls lost the identity. Calls through `any HighlightStoring` (the only production path, via `BookmarkActor`) dispatch to the conforming type's witness and were unaffected; a standalone reproduction confirmed both behaviours.
+
+#### Change
+
+Removed the identity-dropping default. The identity-carrying requirement now has no default; instead the two-argument form defaults to calling it with a fresh UUID. The injected test store (`FaultingHighlightStore`) now implements the identity-carrying form and forwards the ID. No storage format or journal behaviour changed.
+
+#### Validation
+
+`swift test --filter "HighlightLocalMutationRecoveryTests|HighlightPersistenceSafetyTests"` passes (all boundaries: intent, head, payload, completion; incoming CAS). Full `scripts/test`: 564 tests / 69 suites passed, three consecutive runs, 2026-10-02.
+
+#### Compatibility and follow-up
+
+None known. Any future `HighlightStoring` conformer must implement the identity-carrying method; the compiler enforces this.
+
+### BF-065 — A handwritten note with no strokes could not be deleted from "Annotations to place"
+
+- Date: 2026-10-02
+- Status: Fixed; simulator interaction check pending
+- Platforms: Shared (portable Kit); reached from the iPad/iPhone reader and library repair sheets
+- Components: `InkOperation` (`Kit/Models/InkOperations.swift`), `InkSession.deleteInk`, `AnnotationRepairCommandsTests`
+- Related: BF-064, [IP-7](docs/ANNOTATION_INTEGRITY_EXECUTION_PLAN.md)
+
+#### Symptom
+
+Choosing Delete for an orphaned handwritten note that has no strokes (possible in legacy or received data) did nothing: `deleteInk` returned false and the note stayed. The BF-064 regression test `staleInk` uses such a note, so its delete step silently failed and a later checked repair then legitimately found the unchanged note and re-anchored it. This looked like the stale-inspection guard resurrecting a deleted note; the guard was in fact correct.
+
+#### Root cause
+
+`deleteInk` deleted a note by issuing `.erase` for each of its strokes. `.erase` removes a note only when its last stroke is removed, so for a note with zero strokes it had nothing to remove and reported no change.
+
+#### Change
+
+Added `InkOperation.deleteNote(href:noteID:)`, an undoable operation that removes a whole note regardless of stroke count, and `deleteInk` now uses it. Mark deletion and stroke erasing are unchanged. Sync and the local journal work from section snapshots, not operation kinds, so no sync change is needed.
+
+#### Validation
+
+`AnnotationRepairCommandsTests.staleInk` passes: the delete succeeds and the checked repair is refused with `AnnotationPersistenceFailure`. Full `scripts/test`: 564 tests / 69 suites passed, three consecutive runs, 2026-10-02. Not yet exercised in the simulator repair sheet.
+
+#### Compatibility and follow-up
+
+None known. No persisted format change; `deleteNote` is an in-memory operation.
+
+
+### BF-064 — Reader repair acknowledged handwriting before durable save
+
+- Date: 2026-10-02
+- Status: Needs validation; portable and iPad/iPhone component tests pass, simulator usability pending
+- Platforms: portable Kit policy; iPad/iPhone/macOS reader adapters; Android/Linux UI unverified
+- Components: `AnnotationRepairCommands`, `AnnotationPlacementReview`, `EbookPlayerViewModel`, `InkRepairView`, `AnnotationRepairCommandsTests`
+- Related: [IP-7](docs/ANNOTATION_INTEGRITY_EXECUTION_PLAN.md), [ADR 011](docs/decisions/011-active-typed-anchors-and-edition-evidence.md)
+
+#### Symptom
+
+The reader's “Annotations to place” sheet removed a handwriting row after “Attach here”, deletion or page attachment changed the in-memory ink. A subsequent persistence failure could leave the change unsaved while the sheet suggested it was resolved. Library repair already waited for a durable flush. Reader typed suggestions also lacked a retained inspection snapshot, allowing a suggestion checked before a property edit to use a newer annotation as its baseline.
+
+#### Root cause
+
+Reader actions treated synchronous acceptance by the existing ink session as successful persistence. Separate reader and library implementations repeated highlight preparation and edition verification rules; the reader captured its comparison baseline when confirmation began rather than when the suggestion was listed.
+
+#### Change
+
+Kit now shares highlight proposal validation, exact-original owner commit and ink repair validation/flush. Both review adapters preserve annotation properties and edition history through the same rules and continue to use the existing owners. The reader retains checked ink/highlight snapshots, keeps an outstanding ink row through renderer reloads, disables competing row actions and exposes “Retry Save” when saving fails. Retry persists the retained edit without applying another repair/undo step. Closing and reopening the sheet also shows unsaved ink and its retry even if the renderer no longer reports an orphan. Ink deletion and page attachment also wait for flush; a failed typed deletion no longer removes its row. Geometry measurement, edition preparation, chapter navigation and undo ownership remain with their existing adapters.
+
+#### Validation
+
+Added shared-command/library legacy parity, neutral source evidence with a concurrent property edit, injected ink write failure/retry/undo, fractional-date round-trip equivalence and stale ink refusal coverage in `AnnotationRepairCommandsTests`; existing `AnnotationPlacementReviewTests` exercises verified placement, cross-chapter confirmation and retained saves. Consolidated `scripts/test` and Apple build/simulator interaction checks are pending root orchestration; no unit/build or usability acceptance is claimed yet. 2026-10-02 12:43 consolidated `scripts/test` (564 tests / 69 suites): **`AnnotationRepairCommandsTests.staleInk` fails deterministically** — a checked ink suggestion is committed after the note was deleted, re-adding it. The stale-inspection protection described above is therefore not yet working. Resolved 2026-10-02: the `staleInk` failure was BF-065 (the fixture's delete of a strokeless note was a no-op); the stale-inspection guard itself works. `inkDurability` compared a persisted section with exact `Date` equality and failed on sub-millisecond quantization only; it now compares with `InkActor.matchesPersistedSection`, like the owner. Consolidated `scripts/test`: 564 tests / 69 suites passed, three consecutive runs; iPad and iPhone component runs 254/254 each. Required interaction checks: iPad and narrow iPhone repair suggestions, failed-save row/retry, successful-save removal, deletion/page attachment, cancellation/reopening and accessibility labels.
+
+#### Compatibility and follow-up
+
+No storage schema or owner migration. Failed edits remain in the established recoverable session. Older renderer answers without typed placement continue same-chapter legacy repair; verified placement cannot be downgraded. Real Pencil, signed cloud and Android/Linux UI behavior remain unverified.
+
+
+
+### BF-063 — Book identity links could be acknowledged without durable matching evidence
+
+- Date: 2026-10-02
+- Status: Needs validation; portable and iPad/iPhone component tests pass, simulator usability and signed-device acceptance pending
+- Platforms: portable Kit and Apple sync adapter; other platform integration unverified
+- Components: `LibraryIdentity`, `LibraryIdentityService`, `BookSourceActor`, source adapter matching evidence and CloudKit card decoding
+- Related: [ADR 012](docs/decisions/012-cross-device-library-identity.md), [IP-3](docs/ANNOTATION_INTEGRITY_EXECUTION_PLAN.md#ip-3--finish-identity-without-adding-another-annotation-path)
+
+#### Symptom and root cause
+
+A failed identity-state write could leave a new match visible only in memory; restarting lost the link. Damaged identity data became empty state that later writes could replace. Shared matching also selected the Storyteller backend by name rather than evidence supplied by its adapter. Established links lacked enough evidence to reject a changed account while preserving deliberate address changes. These paths were identified in the existing pending ADR 012 implementation; no claim of additional user-data loss is made.
+
+#### Change
+
+Implementation is being completed through protected identity reads/writes, raw cloud-card validation, adapter-supplied namespaced book/principal evidence and journaled moves through the existing owners. Preserve existing cards, source-sharing work and original cloud record identities. Exact final scope and verification will be updated in this entry after independent review.
+
+#### Validation
+
+Starting tree: `scripts/test` passed 475 tests in 57 suites. Consolidated 2026-10-02 on the full integrity tree (base `6294e57`): `scripts/test` 564 tests / 69 suites passed in three consecutive runs; isolated Apple component run `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=F0F8B888-426F-4702-9FA3-AF32EC847C3C' scripts/iostest` (iPad Pro 11-inch M5, iOS 26.2) and `…id=A7542A35-BDAB-4254-B6FE-33AEEF2EA79A` (iPhone 17 Pro, iOS 26.2) each 254/254 passed. Protected identity, differing-source and interrupted-move suites pass; the tombstone-move fixture was updated for the `Books/<source>/<book>.json` history layout (fixture assumption, not a code defect). Signed iPad/iPhone/Mac acceptance remains open. Native usability access on 2026-10-02 failed because the Mac is locked; no user simulator data was reset.
+
+#### Compatibility and follow-up
+
+New optional identity evidence requires compatible writers; legacy/unknown evidence remains preserved and unresolved rather than guessed. ADR 012 and BF-043 rollout restrictions remain. Restore identity originals as recovery evidence, without replaying an old account's transport state.
+
+### BF-062 — Backups omitted kept sync versions and could report incomplete recovery capture as complete
+
+- Date: 2026-10-02
+- Status: Needs validation; portable and iPad/iPhone component tests pass, simulator usability and signed-device acceptance pending
+- Platforms: portable backup core and Apple app integration
+- Components: `BackupService`, `BackupParticipant`, `LibraryBackupParticipants`, `AppBackup`, `PreferencesBackupParticipant`, owner backup enumeration and mutation epochs
+- Related: [ADR 013](docs/decisions/013-active-file-mutation-recovery.md), [R4](docs/ARCHITECTURE_INTEGRATION_REVIEW_2026-10-02.md#r4--high-backup-coverage-has-not-caught-up-with-recovery-functionality)
+
+#### Symptom and root cause
+
+A backup excluded annotation versions retained in `Sync/Recovery`. Recovery enumeration ignored nested and hidden originals and suppressed read failures, allowing a missing recovery tree to look successfully empty. Preference capture likewise claimed completeness after skipping unexpected values. Existing unreadable restore journals were treated as absent; after participant failure publication could resume while only part of the restore had applied. Sequential owner capture had no mutation-generation check.
+
+#### Change
+
+Recovery capture now preserves nested raw files and reports enumeration/read failures; registers sync versions and restored originals; preserves the pre-import configuration original without applying it; and treats skipped preference values as incomplete. Restore requires a complete safety capture, keeps an interrupted/resume-failed restore quarantined through its durable journal, and reestablishes guards at startup. Same-process owner mutation epochs detect overlap and bound capture retry. Source-reconnection and additional recovery inventory work is still being integrated; final scope is updated after review.
+
+#### Validation
+
+Baseline `scripts/test`: 475 tests / 57 suites. New backup integrity, snapshot overlap, incomplete safety, restart/resume/discard and preference-recovery tests are implemented. Consolidated 2026-10-02 on the full integrity tree (base `6294e57`): `scripts/test` 564 tests / 69 suites passed in three consecutive runs; isolated Apple component run `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=F0F8B888-426F-4702-9FA3-AF32EC847C3C' scripts/iostest` (iPad Pro 11-inch M5, iOS 26.2) and `…id=A7542A35-BDAB-4254-B6FE-33AEEF2EA79A` (iPhone 17 Pro, iOS 26.2) each 254/254 passed. No signed cloud restore acceptance. Simulator usability is pending locked-Mac access; hardware/Pencil checks remain separate.
+
+#### Compatibility and follow-up
+
+Optional restore journal fields retain older valid journals. Unsupported journals/originals block unsafe mutation. Archive additions remain explicit participants/paths; unknown participants are retained. Transport cursors, credentials and old queues are not restored as user mutations. Epoch guarantees apply to participating owners in one process; power-loss and external writers remain unverified.
+
+Restore integration spot check (2026-10-02): the preference coordinator previously guarded only defaults-change observation; foreground imports, explicit export and a queued flush could still mutate/publish while restore was paused. Its admission checks now cover both import and publication, suspension invalidates awaited work and drains already admitted imports before safety capture, and resume treats restored preferences as a new baseline rather than replaying the old queue. Both app startup paths establish the pending-restore guard before starting either sync service. `ConfigurationCoordinatorTests.restoreGateBlocksIncomingPreferencesAndQueuedPublication` covers the paused import/export paths; consolidated verification remains pending.
+
+### BF-061 — A stale handwriting save or undo could replace incoming ink
+
+- Date: 2026-10-02
+- Status: Needs validation; portable and iPad/iPhone component tests pass, simulator usability and signed-device acceptance pending
+- Platforms: Kit handwriting owner/session and Apple restore lifecycle
+- Components: `InkActor`, `InkSession`, `ReadingSessionStore`, `BookmarkActor`, restore app hooks
+- Related: [ADR 013](docs/decisions/013-active-file-mutation-recovery.md), [R2](docs/ARCHITECTURE_INTEGRATION_REVIEW_2026-10-02.md#r2--high-editing-incoming-sync-and-restore-lack-shared-coordination)
+
+#### Symptom and root cause
+
+A section snapshot queued before another writer's commit could be flushed after that commit, erasing received notes. Incoming sync invoked editor reload only after owner application; reload first flushed the stale section. Undo similarly carried whole-section snapshots. Serial actors did not coordinate the suspended sequence across the session and sync. Restore paused preferences but kept editor admission and annotation publication active.
+
+#### Change
+
+Session saves carry their last confirmed committed section; the protected owner validates it immediately before writing. A mismatch refuses replacement, retains pending ink and explains recovery/retry limits. Queued successful writes advance the baseline; a clean external reload invalidates old undo. Conditional sync checks run atomically inside ink/highlight owners. Restore closes session and highlight admission, settles accepted commands and reloads projections before reopening; failed saves block unsafe restore. Durable stale-draft preservation is still being integrated and must not be confused with in-memory retention.
+
+#### Validation
+
+Consolidated 2026-10-02 on the full integrity tree (base `6294e57`): `scripts/test` 564 tests / 69 suites passed in three consecutive runs; isolated Apple component run `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=F0F8B888-426F-4702-9FA3-AF32EC847C3C' scripts/iostest` (iPad Pro 11-inch M5, iOS 26.2) and `…id=A7542A35-BDAB-4254-B6FE-33AEEF2EA79A` (iPhone 17 Pro, iOS 26.2) each 254/254 passed. `InkLifecycleSafetyTests.retainedFailure` was corrected: its old premise that undo-to-empty needs no write predates ordered command replay. Each failed command keeps its identity and replays in order, so retry still needs storage after undo; the test now asserts retry fails while storage is full and succeeds once it recovers, leaving the book empty. A sibling fault injector in `independentPendingSections` matched "bad" inside random journal digests (~few % flake) and now targets only the payload file. Cases cover stale receive, failed save/retry/export, two editors, stale undo, restore admission and new sessions. Root adds conditional highlight/replay and highlight restore-gate cases. Baseline: `scripts/test` 475/57. Actual reader/Pencil/VoiceOver interaction and signed-device checks remain open.
+
+#### Compatibility and follow-up
+
+No payload migration. Direct legacy owner calls retain existing API defaults; coordinated session/sync paths supply expectations. A refused save is never described as saved. Remaining command-consolidation and durable pending-conflict acceptance are tracked in IP-2/IP-7.
+
+Local commit follow-up (2026-10-02): protected ink/highlight owners now use ordered immutable intent, chain-head and completion records before acknowledgement. The shared journal rejects unknown fields, altered checksums, missing ancestry, orphan completion markers and symbolic links; original and intended payloads remain available through recovery backup. Bookmark retries pass the same operation UUID through its existing writer. Highlight restart replay applies only the recorded expected or already intended original; a reused UUID with different content is refused. Incoming conditional application does not create a synthetic local transition. Deleted-only books remain discoverable from the journal, and restore settles prepared disk intents even after the in-memory queue is gone. New boundary/identity/deletion fixtures are pending consolidated verification.
+
+### BF-060 — Sync could replace annotations after failed recovery writes or forget damaged history
+
+- Date: 2026-10-02
+- Status: Needs validation; portable and iPad/iPhone component tests pass, simulator usability and signed-device acceptance pending
+- Platforms: portable Kit sync core, Apple CloudKit adapter
+- Components: `AnnotationSync`, `AnnotationCloudSync`, `AnnotationTransportCheckpoint`, conditional protected annotation owners
+- Related: [ADR 013](docs/decisions/013-active-file-mutation-recovery.md), [R1](docs/ARCHITECTURE_INTEGRATION_REVIEW_2026-10-02.md#r1--critical-sync-persistence-weakens-local-durability-guarantees)
+
+#### Symptom and root cause
+
+`keep` and sync state/clock/index writes suppressed failures. Corrupt history decoded as empty state. Replacing or deleting a local version could therefore proceed without the promised recovery copy, and payload success followed by metadata failure could be misinterpreted as a fresh local edit after restart. Cloud receipt checkpoints and sent acknowledgements likewise ignored local persistence failures. Inspection narrowed these risks against the actual active files; isolated fault fixtures establish reproduction without touching user annotations.
+
+#### Change
+
+Sync reads and commits return explicit results; raw incoming envelopes are retained before decoding/translation, resolved operations are journaled before conditional owner application, and replay recognizes already applied payloads without inventing clocks. Losing versions are kept deterministically before replacement. Cloud checkpoints preserve unreadable originals, latch on unsafe receipt/acknowledgement or checkpoint-write failure, and report blocked status. Account context is verified before replay. Automatic age-only tombstone expiry is conservatively suspended under ADR 013 pending long-offline rejoin acceptance. Identity moves and recovery restoration use the same protocol as they are integrated.
+
+#### Validation
+
+Baseline `scripts/test`: 475 tests / 57 suites. Initial existing sync run passed eight of nine tests and exposed recovery visibility for future payloads; the implementation was corrected. Consolidated 2026-10-02 on the full integrity tree (base `6294e57`): `scripts/test` 564 tests / 69 suites passed in three consecutive runs; isolated Apple component run `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=F0F8B888-426F-4702-9FA3-AF32EC847C3C' scripts/iostest` (iPad Pro 11-inch M5, iOS 26.2) and `…id=A7542A35-BDAB-4254-B6FE-33AEEF2EA79A` (iPhone 17 Pro, iOS 26.2) each 254/254 passed. Root checkpoint tests cover failed receipt, failed write and damaged cursor preservation; fault/restart and actual termination cases are being added through production seams. No simulator or signed-cloud success is claimed.
+
+#### Compatibility and follow-up
+
+Existing annotation payloads remain with protected owners. Unfinished journals/unknown metadata require compatible recovery; reverting code alone cannot roll data back. Preserve old/future originals and require all writing devices updated before broad rollout. Atomic writes establish the tested process-termination protocol, not yet a power-loss guarantee. Metadata growth from conservative tombstone retention remains a measured IP-6 concern.
+
+
 ### BF-059 — Display Options and the sleep timer closed on their own after a few seconds
 
 - Date: 2026-10-02
@@ -129,6 +346,74 @@ Simulator (iPhone, iOS 18.6, synthetic EPUB): set Relaxed/Wide/Charter/117%, the
 
 None known.
 
+
+### BF-056 — Annotations synced from another device never appear in the book, and sync gives no sign of what happened
+
+- Date: 2026-10-02
+- Status: Investigating. Root cause confirmed on the owner's devices. The diagnostics part is implemented. The cross-device book matching fix is not yet implemented and needs an ADR (annotation identity).
+- Platforms: Shared Kit sync engine; Apple CloudKit adapter (iOS, iPadOS, macOS)
+- Components: `SilveranKit/Sources/Kit/Sync/AnnotationSync.swift` (record identity, new `summary()`), new `Kit/Sync/SyncActivityLog.swift`, `AppleKit/Shared/AnnotationCloudSync.swift`, `AppleKit/Shared/AppAnnotationSync.swift` (new `AnnotationSyncDiagnostics`), new `AppleKit/MobileDesktop/Views/Settings/AnnotationSyncDiagnosticsView.swift`, `ICloudSettingsSection.swift`, `SettingsView.swift`, `BookServiceActor.sourceIDForNewSource`, tests `SyncDiagnosticsTests.swift`
+- Related links: [ADR 010](docs/decisions/010-live-icloud-annotation-sync.md), [ADR 004](docs/decisions/004-edition-anchors-and-creative-conflicts.md)
+
+#### Symptom
+
+The owner wrote annotations on the iPad with "Sync annotations and settings with iCloud" on, then opened the same book on the iPhone with sync on. Hours later the iPhone book still showed none of them. Nothing in the app showed whether sync had run, sent or received anything, or failed.
+
+#### Root cause
+
+**The transport works; the book identity does not match across devices.** Each sync record is keyed by `BookID(sourceID, uuid)`. `sourceID` is a random UUID made when a book source is added (`BookServiceActor.sourceIDForNewSource` returns `UUID().uuidString` for Storyteller). The iPad and iPhone each added the same Storyteller server separately, so the same book has a different `BookID` on each. The receiving device applies an incoming annotation through the protected owners under the *sender's* `BookID`. That writes a file for a source the device doesn't have, so no book in its library shows it. `AnnotationLibrary` still lists such a book, as "Unknown book".
+
+Evidence (read-only copies from the owner's iPad mini, app `com.robwilliams.SilveranReaderRobTest`, 2026-10-02):
+
+- iPad sources: Storyteller `8EF03404-0056-438D-AB93-0D02D4DF7E26` and Internal Storage `6AA3678B-…`.
+- `Sync/` state: 124 annotations across three books under `8EF03404…`. Every one has `pending = false` and CloudKit system fields, so iCloud accepted all of them.
+- Two highlights from device `3B07CB3F-…` (the iPhone) were received at 22:20 on 2026-10-01. They were written to `Highlights/V2/<669206A0-C6B7-4E80-9BEE-D57B38D83BEF>/7764a235-….json`. That source ID doesn't exist on the iPad, but the same book `7764a235-2c19-432c-bce9-a6e3e01a642f` is in the iPad library under `8EF03404…`. The iPad's 124 annotations went the other way the same way.
+- Backup state shows the same iCloud account, and the last backup completed 2026-10-02 10:25Z.
+
+The Kit multi-device tests didn't catch this because every simulated device shares one `BookID(sourceID: "server", …)`.
+
+**Separately, sync failures were invisible.** `AnnotationCloudSync.syncNow` discarded `sendChanges`/`fetchChanges` errors with `try?`. Failed saves (other than the handled conflicts), zone save failures, zone fetch errors and account sign-out were ignored. No time of last send or receive was kept.
+
+#### Change
+
+Diagnostics (implemented):
+
+- `SyncActivityLog` (Kit) keeps a persisted history (newest 300) of sync starts and stops, sends, receives, merges and problems. It also keeps the last checked, sent, received and problem times. It is diagnostic only: clearing it or a damaged file never affects annotations.
+- `AnnotationCloudSync` records every send and receive (with per-book counts) and every failure. CloudKit errors get a plain-language reason plus their `CKError` code. It also handles `sentDatabaseChanges` zone failures, `didFetchRecordZoneChanges` errors and `didFetchChanges` (sets the "last checked" time). `syncNow` reports the first failure instead of discarding it.
+- `AnnotationSyncEngine.summary()` gives read-only per-book counts: current annotations, tombstones, waiting to send, held in iCloud, and latest change from another device.
+- Settings > iCloud shows "Annotations: last sent …, last received …". **Settings > Sync Diagnostics** (a sheet on the Mac) shows:
+  - plain-language findings, including "N annotations arrived for a book source this device doesn't have", and when the same book is in the library under another source ID;
+  - Sync Now with its result;
+  - status: switch, account, CloudKit environment from the embedded profile, last times, queue;
+  - per-book rows naming the source and flagging stranded books;
+  - recent activity, this device's ID and sources;
+  - a shareable text report with IDs, counts and times but no annotation text.
+
+Not changed: what is synced, record names, conflict rules, the protected owners. Stranded annotations stay where they were written; nothing is moved or deleted.
+
+Pending fix: match books across devices without trusting a random per-device source ID. The likely shape is a synced source descriptor carrying `BookSourceAccountIdentity.configuredPrincipal` (server address and user name, no secret). Foreign source IDs would then map to the local source with the same account, and stranded annotations would be re-homed through the owners. It touches annotation identity, so it needs an ADR first (AGENTS.md).
+
+#### Validation
+
+- `swift test --scratch-path .buildSyncDiag --filter "SyncDiagnosticsTests|AnnotationSyncTests|AnnotationCloudSyncTests"`: **16 tests in 3 suites pass**, including three new ones: activity history persistence, limit and times; a damaged history file; per-book summary counts before and after two devices settle.
+- `swift build --scratch-path .buildSyncDiag --target SilveranAppleKit` (macOS): builds.
+- `xcodebuild -project SilveranValidation.xcodeproj -scheme "Silveran Reader (iOS)" -configuration Debug -destination "platform=iOS Simulator,id=…" -derivedDataPath .buildIosSyncDiag ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build`: **BUILD SUCCEEDED** (the shared `Silveran.xcodeproj` stalled, OD-017, while another session was building it). Changed files pass `swift format lint --strict`.
+- Simulator, unsigned Debug on "Silveran Sync Diagnostics QA iPhone" (`2C20FA6A-BC39-4E15-9C5E-65C8A543AFF6`, a clone of the QA iPhone, iOS 18.6). The fixture was a synthetic sync state with two books under a foreign source, one under the clone's own Storyteller source, and four activity events.
+  - Settings shows the Sync Diagnostics row under the iCloud switch, and it opens the screen.
+  - Findings explains that the build has no iCloud container. Sync Now is disabled. Share opens the system share sheet with the text report.
+  - Status shows the times, waiting count and the last problem with its CKError code.
+  - Books flags the two foreign-source books in orange ("No book here matches…") and names "My Storyteller Server" for the local one.
+  - Recent Activity shows the per-book details. This Device lists the device ID and both sources.
+- Two defects were found and fixed in that pass: an unsigned or simulator build was labelled "Production (TestFlight or App Store)", and "1 annotations".
+- Limitations:
+  - The "stranded" finding text only appears in a provisioned build, so it was checked by reading the code, not on screen.
+  - The "same book under a different source" wording wasn't exercised, because the clone's library is empty.
+  - Not done: the iPad simulator, the Mac sheet at runtime, VoiceOver and large text.
+- Not yet done: the screen on the owner's signed iPad and iPhone; the identity fix; signed multi-device acceptance.
+
+#### Compatibility and follow-up
+
+Adds `Sync/activity.json` (diagnostic, not backed up or synced). No change to stored annotations or CloudKit records. Until the identity fix lands, annotation sync between devices that added the same server separately does not show annotations in the other device's book; restoring a backup onto a new device may keep source IDs and so behave differently (unverified).
 
 ### BF-055 — The wide margin could stay open while the toolbar said Closed
 

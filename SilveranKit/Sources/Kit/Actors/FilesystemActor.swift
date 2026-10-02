@@ -43,6 +43,53 @@ func storedBookIDs(in root: URL) -> [BookID] {
     return result.sorted { ($0.sourceID, $0.uuid) < ($1.sourceID, $1.uuid) }
 }
 
+/// Backup discovery must distinguish a missing owner from an unreadable existing inventory.
+func storedBookIDsForBackup(in root: URL) throws -> [BookID] {
+    let fm = FileManager.default
+    let sourceNames: [String]
+    do { sourceNames = try fm.contentsOfDirectory(atPath: root.path) } catch {
+        let failure = error as NSError
+        if (failure.domain == NSCocoaErrorDomain && failure.code == NSFileReadNoSuchFileError)
+            || (failure.domain == NSPOSIXErrorDomain && failure.code == 2)
+        {
+            return []
+        }
+        throw error
+    }
+    var result: [BookID] = []
+    for sourceName in sourceNames {
+        guard let sourceID = decodedIdentityPathComponent(sourceName) else {
+            throw BackupFailure(
+                "Annotation storage contains an unknown identity that requires recovery."
+            )
+        }
+        let sourceURL = root.appendingPathComponent(sourceName)
+        let sourceValues = try sourceURL.resourceValues(forKeys: [
+            .isDirectoryKey, .isSymbolicLinkKey,
+        ])
+        guard sourceValues.isDirectory == true, sourceValues.isSymbolicLink != true else {
+            throw BackupFailure("Annotation storage contains an unexpected source entry.")
+        }
+        for file in try fm.contentsOfDirectory(atPath: sourceURL.path) {
+            guard file.hasSuffix(".json"),
+                let uuid = decodedIdentityPathComponent(String(file.dropLast(5)))
+            else {
+                throw BackupFailure(
+                    "Annotation storage contains an unknown file that requires recovery."
+                )
+            }
+            let fileValues = try sourceURL.appendingPathComponent(file).resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+            )
+            guard fileValues.isRegularFile == true, fileValues.isSymbolicLink != true else {
+                throw BackupFailure("Annotation storage contains an unreadable book entry.")
+            }
+            result.append(BookID(sourceID: sourceID, uuid: uuid))
+        }
+    }
+    return result.sorted { ($0.sourceID, $0.uuid) < ($1.sourceID, $1.uuid) }
+}
+
 /// Result of merging one book's archived annotations into local storage during restore.
 public struct BackupRecordMerge: Sendable, Equatable {
     public enum Outcome: String, Sendable, Equatable {
@@ -97,9 +144,16 @@ public actor FilesystemActor {
     private let fixedApplicationSupportDirectory: URL?
     private let writeHighlights: @Sendable (Data, URL) throws -> Void
     private let removeHighlights: @Sendable (URL) throws -> Void
+    private let mutationEpoch: AnnotationMutationEpoch
 
-    public init(applicationSupportDirectory: URL? = nil) {
+    public init(
+        applicationSupportDirectory: URL? = nil,
+        mutationEpoch: AnnotationMutationEpoch? = nil
+    ) {
         fixedApplicationSupportDirectory = applicationSupportDirectory
+        self.mutationEpoch =
+            mutationEpoch
+            ?? (applicationSupportDirectory == nil ? .shared : AnnotationMutationEpoch())
         fingerprintFile = { try AnnotationContentFingerprint(contentsOf: $0) }
         writeHighlights = { data, url in try data.write(to: url, options: .atomic) }
         removeHighlights = { try FileManager.default.removeItem(at: $0) }
@@ -107,6 +161,7 @@ public actor FilesystemActor {
 
     init(
         applicationSupportDirectory: URL,
+        mutationEpoch: AnnotationMutationEpoch = AnnotationMutationEpoch(),
         writeHighlights: @escaping @Sendable (Data, URL) throws -> Void,
         fingerprintFile: @escaping @Sendable (URL) throws -> AnnotationContentFingerprint = {
             try AnnotationContentFingerprint(contentsOf: $0)
@@ -116,6 +171,7 @@ public actor FilesystemActor {
         }
     ) {
         fixedApplicationSupportDirectory = applicationSupportDirectory
+        self.mutationEpoch = mutationEpoch
         self.fingerprintFile = fingerprintFile
         self.writeHighlights = writeHighlights
         self.removeHighlights = removeHighlights
@@ -463,6 +519,22 @@ public actor FilesystemActor {
         let data = try encoder.encode(sources)
         try write(data: data, to: sourcesURL)
         LocalDataChangeSignal.post()
+    }
+
+    public func bookSourcesOriginalForBackup() throws -> Data? {
+        do {
+            return try Data(
+                contentsOf: getConfigDirectory().appendingPathComponent("book_sources.json")
+            )
+        } catch {
+            let failure = error as NSError
+            if (failure.domain == NSCocoaErrorDomain && failure.code == NSFileReadNoSuchFileError)
+                || (failure.domain == NSPOSIXErrorDomain && failure.code == 2)
+            {
+                return nil
+            }
+            throw error
+        }
     }
 
     public func loadBookSources() async throws -> [BookSourceRecord]? {
@@ -820,53 +892,226 @@ public actor FilesystemActor {
     }
 
     public func loadHighlights(bookID: BookID) throws -> [Highlight]? {
+        try replayHighlightMutations(bookID: bookID)
         guard let data = try highlightOriginal(bookID: bookID) else { return nil }
         return try HighlightsCodec.decode(data, bookID: bookID)
     }
 
-    /// Runs entirely inside the filesystem actor, with no reentrant read/modify/write gap.
+    /// Runs inside the filesystem owner with no suspended read/modify/write gap.
     public func mutateHighlights(_ mutation: HighlightMutation, bookID: BookID) throws {
-        let original = try loadHighlights(bookID: bookID) ?? []
+        try mutateHighlights(mutation, bookID: bookID, operationID: UUID())
+    }
+
+    public func mutateHighlights(_ mutation: HighlightMutation, bookID: BookID, operationID: UUID)
+        throws
+    {
+        try replayHighlightMutations(bookID: bookID)
+        if let prior = try highlightMutationJournal.record(operationID: operationID, bookID: bookID)
+        {
+            var expected =
+                try prior.expected.map { try HighlightsCodec.decode($0, bookID: bookID) } ?? []
+            try mutation.apply(to: &expected, bookID: bookID)
+            let intended =
+                expected.isEmpty ? nil : try encodeHighlightPayload(expected, bookID: bookID)
+            guard intended == prior.intended, try highlightMutationJournal.isCompleted(prior) else {
+                throw AnnotationPersistenceFailure(
+                    message:
+                        "This operation identity has different highlight content or still needs recovery."
+                )
+            }
+            // A retained command retry acknowledges its own completed intent; it cannot rewrite
+            // an unrelated change that arrived after the original commit.
+            return
+        }
+        let bytes = try highlightOriginal(bookID: bookID)
+        let original = try bytes.map { try HighlightsCodec.decode($0, bookID: bookID) } ?? []
         var candidate = original
         try mutation.apply(to: &candidate, bookID: bookID)
         guard candidate != original else { return }
-        if candidate.isEmpty {
-            try deleteHighlights(bookID: bookID)
+        let intended =
+            candidate.isEmpty ? nil : try encodeHighlightPayload(candidate, bookID: bookID)
+        if case .synchronize = mutation {
+            // Incoming application has its own core journal and must not masquerade as a new
+            // local edit or enqueue duplicate causal delivery intent.
+            try writeHighlightPayload(intended, bookID: bookID)
+            LocalDataChangeSignal.post(bookID: bookID)
         } else {
-            try saveHighlights(bookID: bookID, highlights: candidate)
+            try commitHighlightMutation(
+                operationID: operationID,
+                bookID: bookID,
+                expected: bytes,
+                intended: intended
+            )
         }
     }
 
-    /// Compare-and-update runs without suspension inside the protected owner. Library inspection
-    /// cannot overwrite a note/color edit or deletion that arrived after its snapshot.
     public func repairHighlight(expected: Highlight, replacement: Highlight, bookID: BookID) throws
     {
         try mutateHighlights(.repair(expected: expected, replacement: replacement), bookID: bookID)
     }
 
     public func saveHighlights(bookID: BookID, highlights: [Highlight]) throws {
-        // Existing callers cannot bypass protection with a whole-file replacement.
-        _ = try loadHighlights(bookID: bookID)
-        let fileURL = highlightsFileURL(bookID: bookID)
+        try replayHighlightMutations(bookID: bookID)
+        let original = try highlightOriginal(bookID: bookID)
+        if let original { _ = try HighlightsCodec.decode(original, bookID: bookID) }
+        let intended = try encodeHighlightPayload(highlights, bookID: bookID)
+        guard intended != original else { return }
+        try commitHighlightMutation(
+            operationID: UUID(),
+            bookID: bookID,
+            expected: original,
+            intended: intended
+        )
+    }
+
+    public func deleteHighlights(bookID: BookID) throws {
+        try replayHighlightMutations(bookID: bookID)
+        guard let original = try highlightOriginal(bookID: bookID) else { return }
+        _ = try HighlightsCodec.decode(original, bookID: bookID)
+        try commitHighlightMutation(
+            operationID: UUID(),
+            bookID: bookID,
+            expected: original,
+            intended: nil
+        )
+    }
+
+    private var highlightMutationJournal: LocalAnnotationMutationJournal {
+        LocalAnnotationMutationJournal(
+            root: getHighlightsDirectory().appendingPathComponent(
+                "LocalMutations",
+                isDirectory: true
+            ),
+            owner: "highlight.book",
+            mutationEpoch: mutationEpoch,
+            writeFile: writeHighlights
+        )
+    }
+
+    private func encodeHighlightPayload(_ highlights: [Highlight], bookID: BookID) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(highlights)
         _ = try HighlightsCodec.decode(data, bookID: bookID)
-        try ensureDirectoryExists(at: fileURL.deletingLastPathComponent())
-        try writeHighlights(data, fileURL)
-        LocalDataChangeSignal.post(bookID: bookID)
+        return data
     }
 
-    public func deleteHighlights(bookID: BookID) throws {
-        // Deletion must not bypass a failed read or unsupported payload either.
-        guard try loadHighlights(bookID: bookID) != nil else { return }
-        try removeHighlights(highlightsFileURL(bookID: bookID))
-        LocalDataChangeSignal.post(bookID: bookID)
+    private func writeHighlightPayload(_ data: Data?, bookID: BookID) throws {
+        let destination = highlightsFileURL(bookID: bookID)
+        if let data {
+            _ = try HighlightsCodec.decode(data, bookID: bookID)
+            try ensureDirectoryExists(at: destination.deletingLastPathComponent())
+            try mutationEpoch.withMutation { try writeHighlights(data, destination) }
+        } else if try highlightOriginal(bookID: bookID) != nil {
+            try mutationEpoch.withMutation { try removeHighlights(destination) }
+        }
+    }
+
+    private func commitHighlightMutation(
+        operationID: UUID,
+        bookID: BookID,
+        expected: Data?,
+        intended: Data?
+    ) throws {
+        let record = try highlightMutationJournal.newRecord(
+            operationID: operationID,
+            bookID: bookID,
+            scope: nil,
+            expected: expected,
+            intended: intended,
+            original: expected
+        )
+        try highlightMutationJournal.prepare(record)
+        try finishHighlightMutation(record)
+    }
+
+    private func finishHighlightMutation(_ record: AnnotationLocalMutationRecord) throws {
+        guard record.owner == "highlight.book", record.scope == nil,
+            record.original == record.expected
+        else {
+            throw AnnotationPersistenceFailure(
+                message: "Highlight mutation identity or original evidence requires recovery."
+            )
+        }
+        if let bytes = record.expected {
+            _ = try HighlightsCodec.decode(bytes, bookID: record.bookID)
+        }
+        if let bytes = record.intended {
+            _ = try HighlightsCodec.decode(bytes, bookID: record.bookID)
+        }
+        try highlightMutationJournal.prepare(record)
+        let current = try highlightOriginal(bookID: record.bookID)
+        if let current { _ = try HighlightsCodec.decode(current, bookID: record.bookID) }
+        if current != record.intended {
+            guard current == record.expected else {
+                throw AnnotationPersistenceFailure(
+                    message:
+                        "Highlight content changed while a local edit was unfinished. The original and intended edit are retained for recovery."
+                )
+            }
+            try writeHighlightPayload(record.intended, bookID: record.bookID)
+        }
+        try highlightMutationJournal.complete(record)
+        LocalDataChangeSignal.post(bookID: record.bookID)
+    }
+
+    private func replayHighlightMutations(bookID: BookID) throws {
+        for record in try highlightMutationJournal.records(bookID: bookID) {
+            if !(try highlightMutationJournal.isCompleted(record)) {
+                try finishHighlightMutation(record)
+            }
+        }
+    }
+
+    public func settleLocalMutations() throws {
+        for bookID in try highlightMutationJournal.bookIDs() {
+            try replayHighlightMutations(bookID: bookID)
+        }
+    }
+
+    public func highlightLocalMutationBookIDs() throws -> [BookID] {
+        try highlightMutationJournal.bookIDs()
+    }
+
+    public func highlightCommittedTransitions(bookID: BookID, afterSequence: UInt64) throws
+        -> [HighlightCommittedTransition]
+    {
+        try replayHighlightMutations(bookID: bookID)
+        let records = try highlightMutationJournal.records(bookID: bookID)
+        guard afterSequence <= (records.last?.sequence ?? 0) else {
+            throw AnnotationPersistenceFailure(
+                message: "Highlight delivery history is missing; original metadata is preserved."
+            )
+        }
+        return try records.filter { $0.sequence > afterSequence }.map { record in
+            guard record.scope == nil, record.original == record.expected,
+                try highlightMutationJournal.isCompleted(record)
+            else {
+                throw AnnotationPersistenceFailure(
+                    message: "Highlight delivery history requires recovery."
+                )
+            }
+            let before =
+                try record.expected.map { try HighlightsCodec.decode($0, bookID: bookID) } ?? []
+            let after =
+                try record.intended.map { try HighlightsCodec.decode($0, bookID: bookID) } ?? []
+            return HighlightCommittedTransition(
+                operationID: record.operationID,
+                sequence: record.sequence,
+                bookID: bookID,
+                before: before,
+                after: after
+            )
+        }
     }
 
     public func highlightBookIDs() -> [BookID] {
         storedBookIDs(in: highlightsV2Directory())
+    }
+
+    public func highlightBookIDsForBackup() throws -> [BookID] {
+        try storedBookIDsForBackup(in: highlightsV2Directory())
     }
 
     /// Adds archived highlights/bookmarks whose IDs are not present locally. A local record with
@@ -1003,7 +1248,9 @@ public actor FilesystemActor {
     }
 
     private func write(data: Data, to destination: URL) throws {
-        try data.write(to: destination, options: .atomic)
+        try mutationEpoch.withMutation {
+            try data.write(to: destination, options: .atomic)
+        }
     }
 
     public func getWebResourcesDirectory() -> URL {
@@ -1449,7 +1696,9 @@ public actor FilesystemActor {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(shelves)
-        try data.write(to: url, options: .atomic)
+        try mutationEpoch.withMutation {
+            try data.write(to: url, options: .atomic)
+        }
         LocalDataChangeSignal.post()
     }
 
@@ -1459,6 +1708,22 @@ public actor FilesystemActor {
         for name in ["smart_shelves.json", "dynamic_shelves.json"] {
             if let data = try? Data(contentsOf: configDir.appendingPathComponent(name)) {
                 return data
+            }
+        }
+        return nil
+    }
+
+    public func smartShelvesOriginalForBackup() throws -> Data? {
+        for name in ["smart_shelves.json", "dynamic_shelves.json"] {
+            do {
+                return try Data(contentsOf: getConfigDirectory().appendingPathComponent(name))
+            } catch {
+                let failure = error as NSError
+                guard
+                    (failure.domain == NSCocoaErrorDomain
+                        && failure.code == NSFileReadNoSuchFileError)
+                        || (failure.domain == NSPOSIXErrorDomain && failure.code == 2)
+                else { throw error }
             }
         }
         return nil

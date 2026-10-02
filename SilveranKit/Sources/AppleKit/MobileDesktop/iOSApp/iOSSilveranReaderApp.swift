@@ -121,6 +121,7 @@ struct SilveranReaderApp: App {
     private let restorePrerequisitesTask: Task<Bool, Never>
 
     init() {
+        AppAnnotationSync.resolveDefaultEnablement()
         StorytellerFontRegistration.registerBundledFonts()
         #if DEBUG
         if CloudKitSchemaBootstrap.isRequested, let container = AppBackup.cloudContainerIdentifier {
@@ -142,6 +143,7 @@ struct SilveranReaderApp: App {
         let prerequisites = Task {
             let started = CFAbsoluteTimeGetCurrent()
             guard await SilveranRuntime.start() else { return false }
+            _ = await AppBackup.protectPendingRestoreOnLaunch()
             await AppleConfigurationSyncCoordinator.shared.start()
             await AppAnnotationSync.start()
             await AppBackup.start()
@@ -329,6 +331,9 @@ private struct iOSRootView: View {
                 "[RestoreTrace][Restore] loadPlayerBookData deltaMs=\(String(format: "%.1f", (CFAbsoluteTimeGetCurrent() - afterStartup) * 1000))"
             )
             restoreStartupFinished = true
+            // After a reopened book has finished presenting, so the question appears above it.
+            try? await Task.sleep(for: .seconds(1.5))
+            AppAnnotationSync.presentOfferIfNeeded()
         }
     }
 

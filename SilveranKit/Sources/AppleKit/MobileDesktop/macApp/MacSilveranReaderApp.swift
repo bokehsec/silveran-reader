@@ -23,6 +23,7 @@ struct SilveranReaderApp: App {
     @State private var runtimeReady = false
 
     init() {
+        AppAnnotationSync.resolveDefaultEnablement()
         StorytellerFontRegistration.registerBundledFonts()
         SidebarSelectionColor.install()
         #if DEBUG
@@ -38,9 +39,11 @@ struct SilveranReaderApp: App {
         #endif
         Task {
             guard await SilveranRuntime.start() else { return }
+            _ = await AppBackup.protectPendingRestoreOnLaunch()
             await AppleConfigurationSyncCoordinator.shared.start()
             await AppAnnotationSync.start()
             await AppBackup.start()
+            AppAnnotationSync.presentOfferIfNeeded()
 
             do {
                 let webResourcesURL = try KitResources.webResourcesDirectory()

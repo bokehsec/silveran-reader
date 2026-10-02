@@ -13,6 +13,9 @@ public actor BookmarkActor {
     private var workers: [BookID: Task<Void, Never>] = [:]
     private var generations: [BookID: UInt64] = [:]
     private var failures: [BookID: AnnotationPersistenceFailure] = [:]
+    private var restoreSuspended = false
+    private var activeConditional = 0
+    private var conditionalWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(store: any HighlightStoring = FilesystemActor.shared) { self.store = store }
 
@@ -34,6 +37,27 @@ public actor BookmarkActor {
     }
     public func getColoredHighlights(bookID: BookID) async -> [Highlight] {
         await getHighlights(bookID: bookID).filter { !$0.isBookmark }
+    }
+
+    /// A sync journal applies only against its inspected original, atomically inside the
+    /// file owner. Failure remains in the sync journal rather than the local edit queue.
+    public func applySynced(
+        id: UUID,
+        expected: Highlight?,
+        replacement: Highlight?,
+        bookID: BookID
+    ) async -> Bool {
+        guard !restoreSuspended, !hasPendingChanges(bookID: bookID) else { return false }
+        activeConditional += 1
+        defer { finishConditional() }
+        do {
+            try await store.mutateHighlights(
+                .synchronize(id: id, expected: expected, replacement: replacement),
+                bookID: bookID
+            )
+            await notifyObservers()
+            return true
+        } catch { return false }
     }
 
     @discardableResult
@@ -69,13 +93,15 @@ public actor BookmarkActor {
     public func confirmHighlightRepair(expected: Highlight, replacement: Highlight) async -> Result<
         Void, AnnotationPersistenceFailure
     > {
-        guard !hasPendingChanges(bookID: expected.bookID) else {
+        guard !restoreSuspended, !hasPendingChanges(bookID: expected.bookID) else {
             return .failure(
                 AnnotationPersistenceFailure(
                     message: "Save pending highlight edits before repairing placement."
                 )
             )
         }
+        activeConditional += 1
+        defer { finishConditional() }
         do {
             try await store.mutateHighlights(
                 .repair(expected: expected, replacement: replacement),
@@ -110,6 +136,14 @@ public actor BookmarkActor {
     private func perform(_ mutation: HighlightMutation, bookID: BookID) async -> Result<
         Void, AnnotationPersistenceFailure
     > {
+        guard !restoreSuspended else {
+            return .failure(
+                AnnotationPersistenceFailure(
+                    message:
+                        "Annotation editing is paused while backup restore is in progress. Retry after recovery finishes."
+                )
+            )
+        }
         let command = Pending(id: UUID(), mutation: mutation)
         pending[bookID, default: []].append(command)
         generations[bookID, default: 0] += 1
@@ -133,7 +167,13 @@ public actor BookmarkActor {
     private func drain(_ bookID: BookID) async {
         defer { workers[bookID] = nil }
         while let command = pending[bookID]?.first {
-            do { try await store.mutateHighlights(command.mutation, bookID: bookID) } catch {
+            do {
+                try await store.mutateHighlights(
+                    command.mutation,
+                    bookID: bookID,
+                    operationID: command.id
+                )
+            } catch {
                 failures[bookID] = failure(error)
                 return
             }
@@ -149,10 +189,50 @@ public actor BookmarkActor {
 
     public func hasPendingChanges(bookID: BookID) -> Bool { !(pending[bookID]?.isEmpty ?? true) }
 
+    /// Close admission before draining accepted commands; failed edits block restore and
+    /// remain available through the existing retry/export owner.
+    public func suspendForRestore() async -> Bool {
+        restoreSuspended = true
+        if activeConditional > 0 {
+            await withCheckedContinuation { conditionalWaiters.append($0) }
+        }
+        for bookID in Array(pending.keys) {
+            await worker(bookID).value
+        }
+        guard pending.values.allSatisfy(\.isEmpty) else { return false }
+        do {
+            // Relaunched owners can retain a prepared disk intent without an in-memory queue.
+            // Settle it before the restore safety snapshot or refuse while its original remains.
+            try await store.settleLocalMutations()
+            return true
+        } catch { return false }
+    }
+
+    public func resumeAfterRestore() async {
+        await notifyObservers()
+        restoreSuspended = false
+    }
+
+    private func finishConditional() {
+        activeConditional -= 1
+        if activeConditional == 0 {
+            let waiters = conditionalWaiters
+            conditionalWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
+    }
+
     @discardableResult
     public func retryPendingChanges(bookID: BookID) async -> Result<
         Void, AnnotationPersistenceFailure
     > {
+        guard !restoreSuspended else {
+            return .failure(
+                AnnotationPersistenceFailure(
+                    message: "Annotation editing is paused while backup restore is in progress."
+                )
+            )
+        }
         await worker(bookID).value
         if hasPendingChanges(bookID: bookID) {
             return .failure(

@@ -79,7 +79,7 @@ struct PreferencesBackupParticipant: BackupParticipant {
     }
 
     func capture() async -> BackupParticipantCapture {
-        await MainActor.run {
+        var capture = await MainActor.run {
             let defaults = suiteName.flatMap(UserDefaults.init(suiteName:)) ?? .standard
             var files: [String: Data] = [:]
             var skipped = 0
@@ -112,8 +112,13 @@ struct PreferencesBackupParticipant: BackupParticipant {
             if let strip = defaults.data(forKey: InkToolStripPreferenceStore.key) {
                 files["inkToolStrip.json"] = strip
             }
+            // The pre-import configuration is retained user recovery material. Restore it
+            // aside for explicit recovery; never apply an old sync baseline or queue.
+            if let original = defaults.data(forKey: "configurationSync.backup") {
+                files["recovery/configuration-pre-import.json"] = original
+            }
             return BackupParticipantCapture(
-                status: files.isEmpty ? .empty : .complete,
+                status: skipped > 0 ? .unavailable : (files.isEmpty ? .empty : .complete),
                 message: skipped == 0
                     ? nil : "\(skipped) preference(s) had unexpected values and weren't included.",
                 counts: [
@@ -123,6 +128,54 @@ struct PreferencesBackupParticipant: BackupParticipant {
                 files: files
             )
         }
+        do { capture.consistencyToken = try Self.consistencyToken(capture) } catch {
+            capture.status = .unavailable
+            capture.message = "Preferences could not be captured consistently."
+        }
+        return capture
+    }
+
+    func captureConsistencyToken() async throws -> Data? {
+        guard let token = await capture().consistencyToken else {
+            throw BackupFailure("Preferences could not be captured consistently.")
+        }
+        return token
+    }
+
+    private static func consistencyToken(_ capture: BackupParticipantCapture) throws -> Data {
+        var files: [String: String] = [:]
+        for (path, data) in capture.files {
+            if path == "device.plist" {
+                let value = try PropertyListSerialization.propertyList(from: data, format: nil)
+                let canonical = try JSONSerialization.data(
+                    withJSONObject: canonicalPreferenceValue(value), options: [.sortedKeys]
+                )
+                files[path] = canonical.base64EncodedString()
+            } else {
+                files[path] = data.base64EncodedString()
+            }
+        }
+        return try JSONSerialization.data(withJSONObject: [
+            "status": capture.status.rawValue,
+            "message": capture.message as Any? ?? NSNull(),
+            "counts": capture.counts,
+            "files": files,
+        ], options: [.sortedKeys])
+    }
+
+    private static func canonicalPreferenceValue(_ value: Any) throws -> [String: Any] {
+        if let data = value as? Data { return ["type": "data", "value": data.base64EncodedString()] }
+        if let string = value as? String { return ["type": "string", "value": string] }
+        if let number = value as? NSNumber {
+            return ["type": "number", "encoding": String(cString: number.objCType), "value": number.stringValue]
+        }
+        if let array = value as? [Any] {
+            return ["type": "array", "value": try array.map(canonicalPreferenceValue)]
+        }
+        if let object = value as? [String: Any] {
+            return ["type": "object", "value": try object.mapValues(canonicalPreferenceValue)]
+        }
+        throw BackupFailure("Unsupported preference value in backup capture.")
     }
 
     func restore(
@@ -225,6 +278,11 @@ struct PreferencesBackupParticipant: BackupParticipant {
                 result.attention.append(
                     "\(damaged) backed-up preference(s) were invalid and weren't applied."
                 )
+            }
+            let known = Set(["device.plist", "inkTools.json", "inkToolStrip.json"])
+            for (path, data) in files where !known.contains(path) && !path.hasPrefix("units/") {
+                if !dryRun { try context.preserve(data, kind: kind, path: path) }
+                result.unchanged += 1
             }
             return result
         }

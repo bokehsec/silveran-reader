@@ -4,7 +4,7 @@ import Foundation
 /// Original bytes remain available for lossless recovery/export, including unknown payloads.
 public struct InkLoadResult: Sendable {
     public enum State: Sendable, Equatable {
-        case missing, valid, partiallyRecoverable, corrupt, unsupportedVersion, unreadable
+        case missing, valid, partiallyRecoverable, corrupt, unsupportedVersion, unreadable, pendingCommit
     }
 
     public let state: State
@@ -19,6 +19,28 @@ public struct InkPersistenceFailure: Error, LocalizedError, Sendable, Equatable 
     public var errorDescription: String? { message }
 }
 
+/// Retained conflicting draft; it is recovery material, never an automatically applied writer.
+/// The exact competing book bytes survive alongside the editor's expected and proposed section.
+public struct InkSectionDraftRecovery: Codable, Sendable, Equatable {
+    public let version: Int
+    public let bookID: BookID
+    public let href: String
+    public let expected: SectionInk
+    public let candidate: SectionInk
+    public let committedOriginal: Data?
+}
+
+/// Every committed local change remains an ordered causal transition, including deletion and
+/// immediate re-addition. Synced/restore writes never manufacture local delivery intent.
+public struct InkCommittedTransition: Codable, Sendable, Equatable {
+    public let operationID: UUID
+    public let sequence: UInt64
+    public let bookID: BookID
+    public let href: String
+    public let before: SectionInk?
+    public let after: SectionInk?
+}
+
 /// Owns the existing per-book JSON writer: Ink/V1/<source>/<book>.json.
 /// Reads, mutation and atomic replacement run without suspension once the root is resolved.
 /// Every query reads committed disk state. A save reuses the book this actor last committed
@@ -28,6 +50,7 @@ public struct InkPersistenceFailure: Error, LocalizedError, Sendable, Equatable 
 public actor InkActor {
     public static let shared = InkActor()
     private let fixedDirectory: URL?
+    private let mutationEpoch: AnnotationMutationEpoch
     /// The last committed book per file, with the stamp of the file this actor wrote.
     private var committed: [URL: CommittedInk] = [:]
 
@@ -40,8 +63,10 @@ public actor InkActor {
     private let writeFile: @Sendable (Data, URL) throws -> Void
     private let removeFile: @Sendable (URL) throws -> Void
 
-    public init(directory: URL? = nil) {
+    public init(directory: URL? = nil, mutationEpoch: AnnotationMutationEpoch? = nil) {
         fixedDirectory = directory
+        self.mutationEpoch =
+            mutationEpoch ?? (directory == nil ? .shared : AnnotationMutationEpoch())
         writeFile = { data, url in try data.write(to: url, options: .atomic) }
         removeFile = { try FileManager.default.removeItem(at: $0) }
     }
@@ -49,18 +74,30 @@ public actor InkActor {
     /// Fault injection stays at the same atomic-write boundary used in production.
     init(
         directory: URL,
+        mutationEpoch: AnnotationMutationEpoch = AnnotationMutationEpoch(),
         writeFile: @escaping @Sendable (Data, URL) throws -> Void,
         removeFile: @escaping @Sendable (URL) throws -> Void = {
             try FileManager.default.removeItem(at: $0)
         }
     ) {
         fixedDirectory = directory
+        self.mutationEpoch = mutationEpoch
         self.writeFile = writeFile
         self.removeFile = removeFile
     }
 
     public func load(bookID: BookID) async -> InkLoadResult {
-        read(await fileURL(bookID: bookID))
+        let url = await fileURL(bookID: bookID)
+        do {
+            try settleLocalMutations(bookID: bookID, file: url)
+            return read(url)
+        } catch {
+            let loaded = read(url)
+            return InkLoadResult(
+                state: .pendingCommit, ink: loaded.ink, original: loaded.original,
+                message: "An interrupted local ink save needs recovery. Editing and sync are paused to protect its original intent. " + error.localizedDescription
+            )
+        }
     }
 
     /// Compatibility viewing projection. Mutations always check `load` independently.
@@ -69,76 +106,260 @@ public actor InkActor {
     }
 
     @discardableResult
-    public func setSection(_ section: SectionInk, href: String, bookID: BookID) async -> Result<
-        Void, InkPersistenceFailure
-    > {
-        // Resolve the root before reading: no actor reentrancy between read and commit.
+    public func setSection(
+        _ section: SectionInk,
+        href: String,
+        bookID: BookID,
+        expected: SectionInk? = nil,
+        operationID: UUID = UUID()
+    ) async -> Result<Void, InkPersistenceFailure> {
+        // No suspension from journal validation through payload and completion persistence.
         let url = await fileURL(bookID: bookID)
-        let loaded: InkLoadResult
-        var fragments: [String: Data] = [:]
-        if let cached = committed[url], InkFileStamp(url) == cached.stamp {
-            loaded = InkLoadResult(state: .valid, ink: cached.ink, original: nil, message: nil)
-            fragments = cached.fragments
-        } else {
-            committed[url] = nil
-            loaded = read(url)
-        }
-        guard loaded.canEdit else {
-            return .failure(
-                InkPersistenceFailure(
-                    message:
-                        "Saved ink requires recovery and this edit could not be saved. Pending edits are kept in this reader; retry or export them before closing."
-                )
-            )
-        }
-        var candidate = loaded.ink
-        candidate.sections[href] = section.isEmpty ? nil : section
-        candidate.version = BookInk.currentVersion
         do {
-            committed[url] = nil
-            if candidate.isEmpty {
-                // Deletion is a commit too: errors must reach the session.
-                if loaded.state != .missing { try removeFile(url) }
-            } else {
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.sortedKeys]
-                // Reject invalid programmatic payloads just as strictly as disk payloads. The
-                // rest of the book was already validated when it was read or committed, so only
-                // the changed section and book-wide identities need checking.
-                let encodedSection = try encoder.encode(section)
-                _ = try decoder().decode(SectionInk.self, from: encodedSection)
-                guard candidate.hasUniqueIdentities else {
-                    throw InkPersistenceFailure(message: "Duplicate ink identity")
+            let journal = localJournal(file: url)
+            let existing = try journal.record(operationID: operationID, bookID: bookID)
+            if let existing {
+                let supplied = try encodedSection(section)
+                guard existing.scope == href, existing.intended == supplied,
+                    try (expected == nil || existing.expected == encodedSection(expected!))
+                else { throw InkPersistenceFailure(message: "This operation identity already belongs to a different ink edit.") }
+                try validateLocalRecord(existing)
+                try settleLocalMutations(bookID: bookID, file: url)
+                guard try journal.isCompleted(existing) else {
+                    throw InkPersistenceFailure(message: "The original local ink save is still incomplete.")
                 }
-                fragments[href] = section.isEmpty ? nil : encodedSection
-                for (key, value) in candidate.sections where fragments[key] == nil {
-                    fragments[key] = try encoder.encode(value)
-                }
-                let data = try Self.assemble(fragments, encoder: encoder)
-                try FileManager.default.createDirectory(
-                    at: url.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try writeFile(data, url)
-                if let stamp = InkFileStamp(url) {
-                    committed[url] = CommittedInk(
-                        ink: candidate,
-                        fragments: fragments,
-                        stamp: stamp
-                    )
-                }
+                return .success(())
+            }
+            try settleLocalMutations(bookID: bookID, file: url)
+            let loaded = committedRead(url)
+            guard loaded.canEdit else {
+                throw InkPersistenceFailure(message: "Saved ink requires recovery and this edit could not be saved.")
+            }
+            let before = loaded.ink.sections[href] ?? SectionInk()
+            if let expected, !Self.matchesPersistedSection(before, expected) {
+                let retained: Bool
+                do {
+                    try preserveDraft(section, expected: expected, loaded: loaded, href: href, bookID: bookID, file: url)
+                    retained = true
+                } catch { retained = false }
+                return .failure(InkPersistenceFailure(message: retained
+                    ? "Saved handwriting changed during sync, restore or another reader's edit. This reader's draft was saved separately for recovery. Export the pending edits before closing; retry cannot replace the changed saved copy."
+                    : "Saved handwriting changed during sync, restore or another reader's edit. A recovery copy could not be saved; pending edits remain only in this reader. Export them before closing. Retry cannot replace the changed saved copy."))
+            }
+            let intended = try encodedSection(section)
+            var candidate = loaded.ink
+            candidate.sections[href] = section.isEmpty ? nil : section
+            guard candidate.hasUniqueIdentities else { throw InkPersistenceFailure(message: "Duplicate ink identity") }
+            let original = try loaded.state == .missing ? nil : (loaded.original ?? Data(contentsOf: url))
+            let record = try journal.newRecord(
+                operationID: operationID, bookID: bookID, scope: href,
+                expected: encodedSection(before), intended: intended, original: original
+            )
+            try mutationEpoch.withMutation {
+                try journal.prepare(record)
+                try commitSection(section, href: href, loaded: loaded, file: url)
+                try journal.complete(record)
             }
             LocalDataChangeSignal.post(bookID: bookID)
             return .success(())
         } catch {
-            debugLog("[InkActor] Local ink commit failed: \(error)")
-            return .failure(
-                InkPersistenceFailure(
-                    message:
-                        "Ink could not be saved locally. Pending edits are kept in this reader; retry or export them before closing."
-                )
+            debugLog("[InkActor] Local ink transaction failed: \(error)")
+            return .failure(InkPersistenceFailure(message:
+                "Ink could not be saved locally. Pending edits and any durable original intent are retained; retry or export before closing. " + error.localizedDescription))
+        }
+    }
+
+    private func localJournal(file: URL) -> LocalAnnotationMutationJournal {
+        LocalAnnotationMutationJournal(
+            root: file.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("LocalMutations", isDirectory: true),
+            owner: "ink", mutationEpoch: mutationEpoch, writeFile: writeFile
+        )
+    }
+
+    private func encodedSection(_ section: SectionInk) throws -> Data? {
+        if section.isEmpty { return nil }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(section)
+        _ = try decoder().decode(SectionInk.self, from: data)
+        return data
+    }
+
+    private func sectionFromRecord(_ bytes: Data?) throws -> SectionInk {
+        if let bytes { return try decoder().decode(SectionInk.self, from: bytes) }
+        return SectionInk()
+    }
+
+    private func validateLocalRecord(_ record: AnnotationLocalMutationRecord) throws {
+        guard record.scope != nil else { throw InkPersistenceFailure(message: "Local ink intent has no section.") }
+        _ = try sectionFromRecord(record.expected)
+        _ = try sectionFromRecord(record.intended)
+        if let original = record.original {
+            let book = try decoder().decode(BookInk.self, from: original)
+            guard Self.matchesPersistedSection(book.sections[record.scope!] ?? SectionInk(), try sectionFromRecord(record.expected)) else {
+                throw InkPersistenceFailure(message: "Local ink original does not match its expected section.")
+            }
+        } else if record.expected != nil {
+            throw InkPersistenceFailure(message: "Local ink expected state has no original book.")
+        }
+    }
+
+    /// Settle the exact prepared intent. A payload already equal to intended needs only its
+    /// completion marker; a competing section is retained and refused. No synthetic transition.
+    private func settleLocalMutations(bookID: BookID, file: URL) throws {
+        let journal = localJournal(file: file)
+        for record in try journal.records(bookID: bookID) {
+            try validateLocalRecord(record)
+            if try journal.isCompleted(record) { continue }
+            let loaded = committedRead(file)
+            guard loaded.canEdit else { throw InkPersistenceFailure(message: "Interrupted ink save cannot replace protected ink.") }
+            let href = record.scope!
+            let before = try sectionFromRecord(record.expected)
+            let after = try sectionFromRecord(record.intended)
+            let current = loaded.ink.sections[href] ?? SectionInk()
+            let alreadyApplied = Self.matchesPersistedSection(current, after)
+            guard alreadyApplied || Self.matchesPersistedSection(current, before) else {
+                try preserveDraft(after, expected: before, loaded: loaded, href: href, bookID: bookID, file: file)
+                throw InkPersistenceFailure(message: "Interrupted local ink intent conflicts with saved ink and was retained separately.")
+            }
+            try mutationEpoch.withMutation {
+                try journal.prepare(record)
+                if !alreadyApplied { try commitSection(after, href: href, loaded: loaded, file: file) }
+                try journal.complete(record)
+            }
+            LocalDataChangeSignal.post(bookID: bookID)
+        }
+    }
+
+    private func committedRead(_ file: URL) -> InkLoadResult {
+        if let cached = committed[file], InkFileStamp(file) == cached.stamp {
+            return InkLoadResult(state: .valid, ink: cached.ink, original: nil, message: nil)
+        }
+        committed[file] = nil
+        return read(file)
+    }
+
+    private func commitSection(_ section: SectionInk, href: String, loaded: InkLoadResult, file: URL) throws {
+        var candidate = loaded.ink
+        candidate.sections[href] = section.isEmpty ? nil : section
+        candidate.version = BookInk.currentVersion
+        guard candidate.hasUniqueIdentities else { throw InkPersistenceFailure(message: "Duplicate ink identity") }
+        var fragments = committed[file]?.fragments ?? [:]
+        committed[file] = nil
+        if candidate.isEmpty {
+            if loaded.state != .missing { try removeFile(file) }
+            return
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        fragments[href] = try encodedSection(section)
+        for (key, value) in candidate.sections where fragments[key] == nil {
+            fragments[key] = try encoder.encode(value)
+        }
+        let data = try Self.assemble(fragments, encoder: encoder)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try writeFile(data, file)
+        if let stamp = InkFileStamp(file) {
+            committed[file] = CommittedInk(ink: candidate, fragments: fragments, stamp: stamp)
+        }
+    }
+
+    public func committedTransitions(bookID: BookID, afterSequence: UInt64) async throws -> [InkCommittedTransition] {
+        let file = await fileURL(bookID: bookID)
+        try settleLocalMutations(bookID: bookID, file: file)
+        let journal = localJournal(file: file)
+        let history = try journal.records(bookID: bookID)
+        guard afterSequence <= (history.last?.sequence ?? 0) else {
+            throw InkPersistenceFailure(message: "The consumed ink cursor is ahead of retained local mutation history. Sync is paused for recovery.")
+        }
+        return try history.filter { $0.sequence > afterSequence }.map { record in
+            try validateLocalRecord(record)
+            guard try journal.isCompleted(record) else { throw InkPersistenceFailure(message: "Local ink transition is not committed.") }
+            return InkCommittedTransition(
+                operationID: record.operationID, sequence: record.sequence, bookID: bookID, href: record.scope!,
+                before: try record.expected.map { try decoder().decode(SectionInk.self, from: $0) },
+                after: try record.intended.map { try decoder().decode(SectionInk.self, from: $0) }
             )
         }
+    }
+
+    public func localMutationBookIDs() async throws -> [BookID] {
+        let version = await versionRoot()
+        let arbitraryFile = version.appendingPathComponent("unused").appendingPathComponent("unused.json")
+        return try localJournal(file: arbitraryFile).bookIDs()
+    }
+
+    /// Swift Date's reference epoch differs from the Unix epoch used by the ink codec. Compare
+    /// exact persisted representations, so encode/decode quantization cannot invent a conflict.
+    /// Geometry, identities, placement and every other encoded field still compare exactly.
+    static func matchesPersistedSection(_ current: SectionInk, _ expected: SectionInk) -> Bool {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let currentBytes = try? encoder.encode(current),
+            let expectedBytes = try? encoder.encode(expected)
+        else { return false }
+        return currentBytes == expectedBytes
+    }
+
+    /// No suspension between stale-state detection and retention. Existing recovery originals
+    /// are compared as raw bytes and never decoded/re-encoded or replaced on disagreement.
+    private func preserveDraft(
+        _ candidate: SectionInk,
+        expected: SectionInk,
+        loaded: InkLoadResult,
+        href: String,
+        bookID: BookID,
+        file: URL
+    ) throws {
+        let original: Data?
+        if loaded.state == .missing {
+            original = nil
+        } else {
+            original = try loaded.original ?? Data(contentsOf: file)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let original,
+                try encoder.encode(decoder().decode(BookInk.self, from: original))
+                    == encoder.encode(loaded.ink)
+            else {
+                throw InkPersistenceFailure(message: "Saved ink changed again during recovery.")
+            }
+        }
+        let record = InkSectionDraftRecovery(
+            version: 1,
+            bookID: bookID,
+            href: href,
+            expected: expected,
+            candidate: candidate,
+            committedOriginal: original
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(record)
+        // Validate the proposed and expected sections at the same protected schema boundary.
+        _ = try decoder().decode(SectionInk.self, from: encoder.encode(candidate))
+        _ = try decoder().decode(SectionInk.self, from: encoder.encode(expected))
+        let folder = file.deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Recovery", isDirectory: true)
+        let destination = folder.appendingPathComponent(SyncPayloadCodec.hash(data) + ".json")
+        do {
+            let existing = try Data(contentsOf: destination)
+            guard existing == data else {
+                throw InkPersistenceFailure(
+                    message: "Existing ink recovery data requires preservation."
+                )
+            }
+            return
+        } catch {
+            let failure = error as NSError
+            guard
+                (failure.domain == NSCocoaErrorDomain && failure.code == NSFileReadNoSuchFileError)
+                    || (failure.domain == NSPOSIXErrorDomain && failure.code == 2)
+            else { throw error }
+        }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try mutationEpoch.withMutation { try writeFile(data, destination) }
     }
 
     /// JSON equivalent to encoding a current-version `BookInk`, built from already-encoded
@@ -159,12 +380,17 @@ public actor InkActor {
     /// write as local edits. Refuses ink that needs recovery; returns whether it was saved.
     public func applySynced(
         bookID: BookID,
+        validating precondition: (@Sendable (BookInk) -> Bool)? = nil,
         _ change: @Sendable (inout BookInk) -> Void
     ) async -> Bool {
         let url = await fileURL(bookID: bookID)
+        do { try settleLocalMutations(bookID: bookID, file: url) } catch { return false }
         committed[url] = nil
         let loaded = read(url)
         guard loaded.canEdit else { return false }
+        // The sync operation's journal precondition must be checked against the actual
+        // protected payload at commit, rather than an earlier snapshot across actor awaits.
+        guard precondition?(loaded.ink) ?? true else { return false }
         var candidate = loaded.ink
         change(&candidate)
         candidate.sections = candidate.sections.filter { !$0.value.isEmpty }
@@ -172,7 +398,9 @@ public actor InkActor {
         guard candidate.hasUniqueIdentities else { return false }
         do {
             if candidate.isEmpty {
-                if loaded.state != .missing { try removeFile(url) }
+                if loaded.state != .missing {
+                    try mutationEpoch.withMutation { try removeFile(url) }
+                }
             } else {
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.sortedKeys]
@@ -182,7 +410,7 @@ public actor InkActor {
                     at: url.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try writeFile(data, url)
+                try mutationEpoch.withMutation { try writeFile(data, url) }
             }
         } catch {
             debugLog("[InkActor] Applying synced ink failed: \(error)")
@@ -197,6 +425,11 @@ public actor InkActor {
         SilveranKit.storedBookIDs(in: await versionRoot())
     }
 
+    /// Backup must distinguish an empty collection from failed enumeration.
+    public func storedBookIDsForBackup() async throws -> [BookID] {
+        try SilveranKit.storedBookIDsForBackup(in: await versionRoot())
+    }
+
     /// Adds archived notes and marks whose IDs are not present locally. A local record with the
     /// same ID wins; differing archived copies are counted as conflicts. Never writes over ink
     /// that needs recovery.
@@ -206,6 +439,7 @@ public actor InkActor {
         guard let incoming = try? decoder().decode(BookInk.self, from: archived) else {
             return BackupRecordMerge(.archivedUnreadable)
         }
+        do { try settleLocalMutations(bookID: bookID, file: url) } catch { return BackupRecordMerge(.localNeedsRecovery) }
         committed[url] = nil
         let loaded = read(url)
         guard loaded.canEdit else { return BackupRecordMerge(.localNeedsRecovery) }
@@ -250,7 +484,7 @@ public actor InkActor {
                     at: url.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try writeFile(data, url)
+                try mutationEpoch.withMutation { try writeFile(data, url) }
                 LocalDataChangeSignal.post(bookID: bookID)
             } catch {
                 debugLog("[InkActor] Restoring ink failed: \(error)")

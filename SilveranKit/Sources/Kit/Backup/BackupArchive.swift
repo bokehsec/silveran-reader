@@ -73,12 +73,16 @@ public struct BackupParticipantCapture: Sendable {
     public var message: String?
     public var counts: [String: Int]
     public var files: [String: Data]
+    /// Process-local consistency evidence for the exact capture; never stored in an archive.
+    public var consistencyToken: Data?
     public init(
         status: BackupParticipantStatus,
         message: String? = nil,
         counts: [String: Int] = [:],
-        files: [String: Data] = [:]
+        files: [String: Data] = [:],
+        consistencyToken: Data? = nil
     ) {
+        self.consistencyToken = consistencyToken
         self.status = status
         self.message = message
         self.counts = counts

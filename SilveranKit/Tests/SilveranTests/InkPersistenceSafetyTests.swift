@@ -223,7 +223,7 @@ struct InkPersistenceSafetyTests {
         #expect(AnnotationJSON.sameContent(bytes, try encoder.encode(expected)))
     }
 
-    @Test("A successful section does not conceal another section's failed save")
+    @Test("A prepared failed section blocks successor commits without concealing either pending edit")
     @MainActor
     func independentPendingSections() async throws {
         let root = directory()
@@ -231,7 +231,11 @@ struct InkPersistenceSafetyTests {
         let store = InkActor(
             directory: root,
             writeFile: { data, url in
-                if String(decoding: data, as: UTF8.self).contains("bad") {
+                // Only the payload write fails, so "a" is prepared. Journal records carry hex
+                // digests that can contain "bad" by chance and must not be matched.
+                if !url.path.contains("/LocalMutations/"),
+                    String(decoding: data, as: UTF8.self).contains("bad")
+                {
                     throw CocoaError(.fileWriteOutOfSpace)
                 }
                 try data.write(to: url, options: .atomic)
@@ -243,7 +247,8 @@ struct InkPersistenceSafetyTests {
         session.apply(.addNote(href: "b", note: section("good").notes[0]))
         #expect(!(await session.flush()))
         #expect(session.committedInk.sections["a"] == nil)
-        #expect(session.committedInk.sections["b"] == section("good"))
+        #expect(session.committedInk.sections["b"] == nil)
+        #expect(session.ink.sections["b"] == section("good"))
         if case .failed = session.persistenceState {
         } else {
             Issue.record("Uncommitted sections must remain visible")

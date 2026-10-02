@@ -11,6 +11,8 @@ public enum HighlightMutation: Codable, Sendable {
     case add(Highlight)
     case update(Highlight)
     case repair(expected: Highlight, replacement: Highlight)
+    /// Conditional sync/replay command; never queues an unconditional future replacement.
+    case synchronize(id: UUID, expected: Highlight?, replacement: Highlight?)
     case recolor(id: UUID, color: HighlightColor)
     case editProperties(id: UUID, color: HighlightColor?, note: String?)
     case delete(UUID)
@@ -55,6 +57,30 @@ public enum HighlightMutation: Codable, Sendable {
                     )
                 }
                 highlights[index] = replacement
+            case .synchronize(let id, let expected, let replacement):
+                guard expected.map({ $0.id == id && $0.bookID == bookID }) ?? true,
+                    replacement.map({ $0.id == id && $0.bookID == bookID }) ?? true
+                else {
+                    throw failure("Synchronized annotation belongs to a different source/book.")
+                }
+                let current = highlights.first { $0.id == id }
+                func equivalent(_ lhs: Highlight?, _ rhs: Highlight?) throws -> Bool {
+                    switch (lhs, rhs) {
+                        case (nil, nil): return true
+                        case (.some(let a), .some(let b)):
+                            return try HighlightsCodec.equivalent(a, b)
+                        default: return false
+                    }
+                }
+                // Replay can recognize an already applied operation without inventing an edit.
+                if try equivalent(current, replacement) { break }
+                guard try equivalent(current, expected) else {
+                    throw failure(
+                        "This annotation changed while sync was applying it. Both versions are retained for retry."
+                    )
+                }
+                highlights.removeAll { $0.id == id }
+                if let replacement { highlights.append(replacement) }
             case .recolor(let id, let color):
                 guard let index = highlights.firstIndex(where: { $0.id == id }) else {
                     throw failure("The annotation is unavailable.")
@@ -93,7 +119,20 @@ public enum HighlightMutation: Codable, Sendable {
 public protocol HighlightStoring: Sendable {
     func loadHighlights(bookID: BookID) async throws -> [Highlight]?
     func mutateHighlights(_ mutation: HighlightMutation, bookID: BookID) async throws
+    func mutateHighlights(_ mutation: HighlightMutation, bookID: BookID, operationID: UUID)
+        async throws
+    func settleLocalMutations() async throws
     func highlightOriginal(bookID: BookID) async throws -> Data?
+}
+
+extension HighlightStoring {
+    public func settleLocalMutations() async throws {}
+    /// A fresh identity for callers without a retained command. The identity-carrying
+    /// requirement has no default: a default here was chosen over FilesystemActor's own
+    /// implementation and silently dropped retained command identities (BF-065).
+    public func mutateHighlights(_ mutation: HighlightMutation, bookID: BookID) async throws {
+        try await mutateHighlights(mutation, bookID: bookID, operationID: UUID())
+    }
 }
 
 extension CodingUserInfoKey {

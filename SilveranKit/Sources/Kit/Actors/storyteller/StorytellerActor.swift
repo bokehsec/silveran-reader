@@ -47,6 +47,31 @@ public actor StorytellerActor {
     private var username: String?
     private var password: String?
     public private(set) var accountScopeID: String?
+    public func matchingBookIdentity(for bookID: String) -> BookSourceBookIdentity? {
+        guard let accountScopeID, !accountScopeID.isEmpty, !bookID.isEmpty else { return nil }
+        guard let username, !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        let principal = SyncPayloadCodec.hash(
+            Data(
+                "storyteller-principal-v1\n\(username.trimmingCharacters(in: .whitespacesAndNewlines))"
+                    .utf8
+            )
+        )
+        return BookSourceBookIdentity(
+            namespace: "storyteller-book-id-v1",
+            identifier: bookID,
+            principalIdentity: principal
+        )
+    }
+
+    public func libraryConnectionDescriptor() -> BookSourceConnectionDescriptor? {
+        guard let apiBaseURL, let username else { return nil }
+        return BookSourceConnectionDescriptor(
+            serverURL: apiBaseURL.absoluteString,
+            username: username
+        )
+    }
     private var apiBaseURL: URL?
     private var accessToken: AccessToken?
     private(set) public var libraryMetadata: [BookMetadata] = []

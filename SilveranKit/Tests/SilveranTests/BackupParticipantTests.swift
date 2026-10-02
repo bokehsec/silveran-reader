@@ -83,11 +83,14 @@ struct BackupParticipantTests {
         let archive = try await archive(participant)
         let bytes = try BackupArchiveCodec.encode(archive)
         let text = String(
-            decoding: archive.files(for: "library.sources").values.first!,
+            decoding: archive.files(for: "library.sources")["sources.json"]!,
             as: UTF8.self
         )
-        #expect(!text.contains("top-secret-password"))
-        #expect(!text.contains(Data("grant".utf8).base64EncodedString()))
+        for captured in archive.files(for: "library.sources").values {
+            let capturedText = String(decoding: captured, as: UTF8.self)
+            #expect(!capturedText.contains("top-secret-password"))
+            #expect(!capturedText.contains(Data("grant".utf8).base64EncodedString()))
+        }
         #expect(bytes.range(of: Data("top-secret-password".utf8)) == nil)
         #expect(text.contains("https://books.invalid"))
 
@@ -216,6 +219,34 @@ struct PreferencesBackupTests {
         return (name, UserDefaults(suiteName: name)!)
     }
 
+    @Test("Skipped preferences make capture incomplete and pre-import originals restore aside")
+    func recoveryCompleteness() async throws {
+        let (sourceName, source) = suite()
+        let (targetName, target) = suite()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer {
+            source.removePersistentDomain(forName: sourceName)
+            target.removePersistentDomain(forName: targetName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let original = Data("{\"futureConfiguration\":true}".utf8)
+        source.set(original, forKey: "configurationSync.backup")
+        source.set(Date(), forKey: "EbookPlayerWindowWidth")
+        let capture = await PreferencesBackupParticipant(suiteName: sourceName).capture()
+        #expect(capture.status == .unavailable)
+        #expect(capture.files["recovery/configuration-pre-import.json"] == original)
+        let archive = try BackupArchiveCodec.manifest(appVersion: "test", deviceID: "test", deviceClass: "tablet",
+                                                     captures: [("preferences", 1, capture)])
+        #expect(!archive.manifest.isComplete)
+        let context = BackupRestoreContext(restoreID: UUID(), manifest: archive.manifest,
+                                           localDeviceClass: "tablet", recoveryDirectory: root)
+        _ = try await PreferencesBackupParticipant(suiteName: targetName).restore(
+            capture.files, schema: 1, context: context, dryRun: false
+        )
+        #expect(target.object(forKey: "configurationSync.backup") == nil)
+        #expect(try Data(contentsOf: root.appendingPathComponent("preferences/recovery/configuration-pre-import.json")) == original)
+    }
+
     @Test("Shared preferences restore anywhere; device ones only on the same kind of device")
     func scopes() async throws {
         let (sourceName, source) = suite()
@@ -328,6 +359,24 @@ struct PreferencesBackupTests {
         )
         #expect(!damaged.attention.isEmpty)
         #expect(other.object(forKey: InkToolStripPreferenceStore.key) == nil)
+    }
+
+    @Test("Preference consistency tokens ignore plist ordering but detect raw defaults changes")
+    func preferenceConsistencyToken() async throws {
+        let (name, defaults) = suite()
+        defer { UserDefaults().removePersistentDomain(forName: name) }
+        defaults.set(true, forKey: "EbookPlayerShowChapterSidebar")
+        defaults.set(["b": 20, "a": 10], forKey: "library.table.books.columnWidths")
+        let participant = PreferencesBackupParticipant(suiteName: name)
+        let first = await participant.capture()
+        let second = await participant.capture()
+        #expect(first.consistencyToken != nil)
+        #expect(first.consistencyToken == second.consistencyToken)
+        #expect(try await participant.captureConsistencyToken() == first.consistencyToken)
+        defaults.set("never captured", forKey: "contentServer.password")
+        #expect(try await participant.captureConsistencyToken() == first.consistencyToken)
+        defaults.set(false, forKey: "EbookPlayerShowChapterSidebar")
+        #expect(try await participant.captureConsistencyToken() != first.consistencyToken)
     }
 
     @Test("Only allowlisted archive-only keys are accepted")

@@ -41,8 +41,29 @@ public final class AppleConfigurationSyncCoordinator {
     /// While a backup restore runs, restored preferences become the local baseline instead of
     /// being published as new edits.
     private var publishingSuspended = false
+    private var activeImports = 0
+    private var importDrainWaiters: [CheckedContinuation<Void, Never>] = []
 
-    private static let enabledKey = "configurationSync.enabled"
+    nonisolated private static let enabledKey = "configurationSync.enabled"
+    nonisolated private static let offerKey = "configurationSync.offerToEnable"
+
+    /// Sets the switch's starting value once, before `shared` is first used (owner decision,
+    /// 2026-10-02): new installations start with sync on; an existing installation where the
+    /// person never chose keeps it off and is asked once. A choice already made never changes.
+    nonisolated public static func resolveStartingValue(freshInstall: Bool, defaults: UserDefaults = .standard)
+    {
+        guard defaults.object(forKey: enabledKey) == nil else { return }
+        defaults.set(freshInstall, forKey: enabledKey)
+        if !freshInstall { defaults.set(true, forKey: offerKey) }
+    }
+
+    /// True until the person answers the one-time question.
+    public var offersToEnable: Bool { !enabled && defaults.bool(forKey: Self.offerKey) }
+
+    public func answerOffer(turnOn: Bool) async {
+        defaults.removeObject(forKey: Self.offerKey)
+        if turnOn { await setEnabled(true) }
+    }
     private static let pendingKey = "configurationSync.pending"
     private static let accountKey = "configurationSync.account"
     private static let confirmationKey = "configurationSync.confirmAccount"
@@ -192,7 +213,7 @@ public final class AppleConfigurationSyncCoordinator {
     }
 
     public func foreground() async {
-        guard enabled else { return }
+        guard !publishingSuspended, enabled else { return }
         guard checkAccount(), cloud.synchronize() else {
             status =
                 requiresAccountConfirmation
@@ -206,7 +227,7 @@ public final class AppleConfigurationSyncCoordinator {
     /// Explicit export is the only operation that seeds every supported setting.
     /// A fresh device's default config is never automatically written at launch.
     public func useSettingsFromThisDevice() async {
-        guard enabled else { return }
+        guard !publishingSuspended, enabled else { return }
         guard cloud.synchronize() else {
             status = "iCloud is unavailable. Settings remain saved on this device."
             return
@@ -215,7 +236,7 @@ public final class AppleConfigurationSyncCoordinator {
         let currentGeneration = generation
         let owned = await settings.persistenceSnapshot()
         let config = owned.config
-        guard enabled, generation == currentGeneration else { return }
+        guard !publishingSuspended, enabled, generation == currentGeneration else { return }
         guard owned.loadResult.canPersist, owned.pendingChanges == nil else {
             status = "Settings require local recovery before they can be synchronized."
             return
@@ -262,10 +283,20 @@ public final class AppleConfigurationSyncCoordinator {
     }
 
     private func importCloud(initial: Bool) async {
+        guard !publishingSuspended, enabled else { return }
+        activeImports += 1
+        defer {
+            activeImports -= 1
+            if activeImports == 0 {
+                let waiters = importDrainWaiters
+                importDrainWaiters.removeAll()
+                for waiter in waiters { waiter.resume() }
+            }
+        }
         let currentGeneration = generation
         let values = cloud.values
         var config = await settings.config
-        guard enabled, generation == currentGeneration else { return }
+        guard !publishingSuspended, enabled, generation == currentGeneration else { return }
         let original = config
         var found = initial
         var rejected = false
@@ -290,7 +321,7 @@ public final class AppleConfigurationSyncCoordinator {
             }
             let patch = try ConfigurationPatch.difference(from: original, to: config)
             try await settings.applyPatch(patch, origin: .remote)
-            guard enabled, generation == currentGeneration else { return }
+            guard !publishingSuspended, enabled, generation == currentGeneration else { return }
             var changedDefaults = false
             for unit in ConfigurationDefaultsRegistry.units {
                 let key = unit.key(deviceClass: deviceClass)
@@ -323,7 +354,7 @@ public final class AppleConfigurationSyncCoordinator {
     }
 
     func recordLocalChange(from old: SilveranGlobalConfig, to new: SilveranGlobalConfig) async {
-        guard enabled, checkAccount(), !requiresAccountConfirmation else { return }
+        guard !publishingSuspended, enabled, checkAccount(), !requiresAccountConfirmation else { return }
         do {
             let changed = Set(try ConfigurationPatch.difference(from: old, to: new).fields.keys)
             for unit in ConfigurationSyncSchema.units where !changed.isDisjoint(with: unit.paths) {
@@ -336,9 +367,27 @@ public final class AppleConfigurationSyncCoordinator {
         } catch { status = "Some settings cannot be shared: \(error.localizedDescription)" }
     }
 
-    public func suspendPublishing() { publishingSuspended = true }
+    public func suspendPublishing() {
+        publishingSuspended = true
+        generation += 1
+        flushTask?.cancel()
+        status = "Settings sync is paused while annotations and settings are restored."
+    }
+
+    /// Close admission before waiting for any import already admitted to the settings owner.
+    /// The restore safety snapshot is captured only after that owner call has settled.
+    public func suspendPublishingAndDrain() async {
+        suspendPublishing()
+        if activeImports > 0 {
+            await withCheckedContinuation { importDrainWaiters.append($0) }
+        }
+    }
 
     public func resumePublishing() {
+        // The restored durable preferences are the new local baseline. A queue captured
+        // before the restore must not subsequently overwrite cloud values as new edits.
+        pending.removeAll()
+        savePending()
         refreshDefaultsCache()
         publishingSuspended = false
     }
@@ -403,7 +452,7 @@ public final class AppleConfigurationSyncCoordinator {
     }
 
     private func scheduleFlush() {
-        guard enabled, reconciled, !requiresAccountConfirmation, !pending.isEmpty else { return }
+        guard !publishingSuspended, enabled, reconciled, !requiresAccountConfirmation, !pending.isEmpty else { return }
         flushTask?.cancel()
         flushTask = Task { [weak self] in
             do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
@@ -412,14 +461,15 @@ public final class AppleConfigurationSyncCoordinator {
     }
 
     func flush() async {
+        guard !publishingSuspended else { return }
         let currentGeneration = generation
         let owned = await settings.persistenceSnapshot()
-        guard enabled, generation == currentGeneration else { return }
+        guard !publishingSuspended, enabled, generation == currentGeneration else { return }
         guard owned.loadResult.canPersist, owned.pendingChanges == nil else {
             status = "Settings require local recovery before they can be synchronized."
             return
         }
-        guard enabled, reconciled, !requiresAccountConfirmation, checkAccount(),
+        guard !publishingSuspended, enabled, reconciled, !requiresAccountConfirmation, checkAccount(),
             cloud.synchronize(), !pending.isEmpty
         else { return }
         do {

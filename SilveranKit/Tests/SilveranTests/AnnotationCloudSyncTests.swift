@@ -75,5 +75,54 @@ struct AnnotationCloudSyncTests {
         #expect(restored?.recordID == ck.recordID)
         #expect(restored?.recordType == AnnotationCloudSync.recordType)
     }
+
+    @Test("Book cards round-trip in an encrypted field and must match their record name")
+    func bookCardRecord() throws {
+        let card = LibraryBookCard(
+            bookID: BookID(sourceID: "8EF03404", uuid: "7764a235"),
+            sourceKind: .storyteller,
+            accountID: "configured-principal-v1:abc",
+            title: "A Title",
+            authors: ["An Author"],
+            fingerprints: ["ff", "aa", "ff"],
+            updatedAt: Date(timeIntervalSince1970: 1_790_000_000),
+            deviceID: "ipad"
+        )
+        #expect(card.fingerprints == ["aa", "ff"])
+        let ckRecord = CKRecord(
+            recordType: AnnotationCloudSync.cardRecordType,
+            recordID: CKRecord.ID(recordName: card.recordName, zoneID: AnnotationCloudSync.zoneID)
+        )
+        AnnotationCloudSync.populate(ckRecord, card: card)
+        #expect(ckRecord["payload"] == nil)
+        #expect(ckRecord.encryptedValues["payload"] != nil)
+        #expect(AnnotationCloudSync.card(from: ckRecord) == card)
+        let misnamed = CKRecord(
+            recordType: AnnotationCloudSync.cardRecordType,
+            recordID: CKRecord.ID(recordName: "book-other", zoneID: AnnotationCloudSync.zoneID)
+        )
+        AnnotationCloudSync.populate(misnamed, card: card)
+        #expect(AnnotationCloudSync.card(from: misnamed) == nil)
+    }
+
+    @Test("Future source card evidence is refused before typed decoding removes it")
+    func futureSourceEvidence() throws {
+        let source = LibrarySourceCard(
+            sourceID: "synthetic-source", kind: .storyteller, name: "Synthetic source",
+            serverURL: "https://example.invalid", username: "synthetic", accountID: "partition",
+            deviceName: "test", updatedAt: Date(timeIntervalSince1970: 1_000), deviceID: "test"
+        )
+        let record = CKRecord(recordType: AnnotationCloudSync.sourceRecordType,
+                              recordID: CKRecord.ID(recordName: source.recordName, zoneID: AnnotationCloudSync.zoneID))
+        AnnotationCloudSync.populate(record, source: source)
+        #expect(AnnotationCloudSync.sourceCard(from: record) == source)
+        let initial = try #require(record.encryptedValues["payload"] as? Data)
+        var object = try #require(JSONSerialization.jsonObject(with: initial) as? [String: Any])
+        object["futureIdentityEvidence"] = ["version": 2, "original": "preserve"]
+        let raw = try JSONSerialization.data(withJSONObject: object)
+        record.encryptedValues["payload"] = raw as NSData
+        #expect(AnnotationCloudSync.sourceCard(from: record) == nil)
+        #expect(record.encryptedValues["payload"] as? Data == raw)
+    }
 }
 #endif

@@ -76,7 +76,19 @@ public final class InkSession {
         didSet { onPersistenceStateChanged?() }
     }
     public var onPersistenceStateChanged: (() -> Void)?
-    public var canEdit: Bool { isOpen && loadResult?.canEdit == true }
+    public private(set) var restoreSuspendedReason: String?
+    public var canEdit: Bool {
+        isOpen && loadResult?.canEdit == true && restoreSuspendedReason == nil
+    }
+    private struct SectionCommand {
+        let operationID: UUID
+        let bookID: BookID
+        let href: String
+        let expected: SectionInk
+        let intended: SectionInk
+        let revision: UInt64
+    }
+    private var pendingCommands: [SectionCommand] = []
     private var pendingSections: [String: UInt64] = [:]
     private var revision: UInt64 = 0
     /// Notes and marks the page could not place in this edition, by section (kept, never deleted).
@@ -107,7 +119,7 @@ public final class InkSession {
     /// Strokes written since the Pencil last paused (OD-021). They stay on screen where they were
     /// written and become ink together when the writing lock releases, so nothing on the page
     /// moves mid-word. Their callers wait until then.
-    private var writtenStrokes: [InkStrokeInput] = []
+    private(set) var writtenStrokes: [InkStrokeInput] = []
     private var writtenStrokeWaiters: [CheckedContinuation<Void, Never>] = []
     public var hasPendingChanges: Bool { !pendingSections.isEmpty }
 
@@ -145,8 +157,8 @@ public final class InkSession {
     /// How far the eraser reaches, in points.
     public static let eraserRadius = 10.0
 
-    public var canUndo: Bool { !undoStack.isEmpty || !writtenStrokes.isEmpty }
-    public var canRedo: Bool { !redoStack.isEmpty }
+    public var canUndo: Bool { canEdit && (!undoStack.isEmpty || !writtenStrokes.isEmpty) }
+    public var canRedo: Bool { canEdit && !redoStack.isEmpty }
 
     private struct Entry {
         let href: String
@@ -214,7 +226,9 @@ public final class InkSession {
         ink = loaded.ink
         committedInk = loaded.ink
         persistenceState =
-            loaded.canEdit ? .saved : .recovery(loaded.message ?? "Saved ink requires recovery.")
+            restoreSuspendedReason.map { .recovery($0) }
+            ?? (loaded.canEdit
+                ? .saved : .recovery(loaded.message ?? "Saved ink requires recovery."))
         debugLog(
             "[InkSession] Opened \(bookID.uuid): \(ink.sections.count) section(s), migration pending: \(ink.needsMigration)"
         )
@@ -243,12 +257,53 @@ public final class InkSession {
         ink = loaded.ink
         committedInk = loaded.ink
         persistenceState =
-            loaded.canEdit ? .saved : .recovery(loaded.message ?? "Saved ink requires recovery.")
+            restoreSuspendedReason.map { .recovery($0) }
+            ?? (loaded.canEdit
+                ? .saved : .recovery(loaded.message ?? "Saved ink requires recovery."))
         undoStack.removeAll()
         redoStack.removeAll()
         onUndoStateChanged?()
         for href in readySections.sorted() { await prepare(href: href) }
         return true
+    }
+
+    /// Settle accepted work before a restore can replace durable state. The UI actor has no
+    /// suspension between flush success and closing the mutation gate.
+    @discardableResult
+    public func suspendForRestore() async -> Bool {
+        if restoreSuspendedReason != nil { return true }
+        // A live Pencil-down stroke has not reached finishStroke yet and cannot be settled.
+        guard !isWriting, await flush(), !isWriting else { return false }
+        setRestoreSuspended(true)
+        return true
+    }
+
+    /// Reload before reopening mutations, so the first new edit uses the restored baseline.
+    @discardableResult
+    public func resumeAfterRestore() async -> Bool {
+        guard restoreSuspendedReason != nil else { return true }
+        guard await reloadFromStore() else { return false }
+        setRestoreSuspended(false)
+        return true
+    }
+
+    /// ReadingSessionStore applies this gate to sessions created while a restore is active,
+    /// and removes it without reloading if preparation fails before any restore write.
+    func setRestoreSuspended(_ suspended: Bool) {
+        if suspended {
+            cancelSelection()
+            restoreSuspendedReason =
+                "Handwriting editing is paused while backup restore is in progress."
+            persistenceState = .recovery(restoreSuspendedReason!)
+        } else {
+            restoreSuspendedReason = nil
+            if !hasPendingChanges {
+                persistenceState =
+                    loadResult?.canEdit == false
+                    ? .recovery(loadResult?.message ?? "Saved ink requires recovery.") : .saved
+            }
+        }
+        onUndoStateChanged?()
     }
 
     /// The page loaded a section and is waiting for its ink.
@@ -394,7 +449,7 @@ public final class InkSession {
 
     private func commit(href: String, before: SectionInk, after: SectionInk, focus: String?) {
         ink.sections[href] = after.isEmpty ? nil : after
-        persist(href: href)
+        persist(href: href, before: before)
         reportMarginNotes()
         scheduleRender(href: href, focus: focus)
     }
@@ -417,22 +472,37 @@ public final class InkSession {
         }
     }
 
-    private func persist(href: String) {
+    private func persist(href: String, before: SectionInk) {
         guard let bookID else { return }
         revision += 1
-        let capturedRevision = revision
-        pendingSections[href] = capturedRevision
-        let section = section(href)
+        pendingSections[href] = revision
+        let command = SectionCommand(
+            operationID: UUID(), bookID: bookID, href: href,
+            expected: before, intended: section(href), revision: revision
+        )
+        pendingCommands.append(command)
         if case .failed = persistenceState {} else { persistenceState = .saving }
+        scheduleCommand(command)
+    }
+
+    private func scheduleCommand(_ command: SectionCommand) {
         let previous = persistTail
         persistTail = Task { [self, store] in
             await previous?.value
-            let result = await store.setSection(section, href: href, bookID: bookID)
+            // A failed predecessor keeps its exact identity and before/after transition.
+            // Later edits remain rendered/pending, but cannot collapse an erase into a re-add.
+            guard pendingCommands.first(where: { $0.href == command.href })?.operationID
+                == command.operationID else { return }
+            let result = await store.setSection(
+                command.intended, href: command.href, bookID: command.bookID,
+                expected: command.expected, operationID: command.operationID
+            )
             switch result {
                 case .success:
-                    committedInk.sections[href] = section.isEmpty ? nil : section
+                    committedInk.sections[command.href] = command.intended.isEmpty ? nil : command.intended
                     committedInk.version = BookInk.currentVersion
-                    if pendingSections[href] == capturedRevision { pendingSections[href] = nil }
+                    pendingCommands.removeAll { $0.operationID == command.operationID }
+                    if pendingSections[command.href] == command.revision { pendingSections[command.href] = nil }
                     if pendingSections.isEmpty { persistenceState = .saved }
                 case .failure(let error):
                     persistenceState = .failed(error.message)
@@ -440,11 +510,11 @@ public final class InkSession {
         }
     }
 
-    /// Retry the latest editing state of every uncommitted section through the same writer.
+    /// Retry every original uncommitted command in order, retaining its stable operation ID.
     @discardableResult
     public func retrySave() async -> Bool {
         await persistTail?.value
-        for href in pendingSections.keys.sorted() { persist(href: href) }
+        for command in pendingCommands { scheduleCommand(command) }
         return await flush()
     }
 
@@ -633,9 +703,8 @@ public final class InkSession {
     @discardableResult
     public func deleteInk(href: String, id: String) -> Bool {
         let current = section(href)
-        if let note = current.notes.first(where: { $0.id == id }) {
-            let strokes = note.strokes.indices.map { InkStrokeRef(noteId: id, index: $0) }
-            return apply(.erase(href: href, strokes: strokes, markIDs: [], at: now()))
+        if current.notes.contains(where: { $0.id == id }) {
+            return apply(.deleteNote(href: href, noteID: id))
         }
         guard current.marks.contains(where: { $0.id == id }) else { return false }
         return apply(.erase(href: href, strokes: [], markIDs: [id], at: now()))
@@ -952,7 +1021,7 @@ public final class InkSession {
     /// The eraser passed over `points` (web view coordinates): everything it touched goes, as one
     /// undo step. Runs in order with strokes.
     public func erase(points: [[Double]]) async {
-        guard !isDetaching else { return }
+        guard !isDetaching, restoreSuspendedReason == nil else { return }
         await commitWrittenStrokes()
         acceptedWork += 1
         let previous = strokeTail
@@ -981,7 +1050,7 @@ public final class InkSession {
     /// A Pencil stroke finished. The page decides what it is; the result is applied. Strokes are
     /// processed strictly in order, and this returns once the page has drawn the result.
     public func finishStroke(_ stroke: InkStrokeInput) async {
-        guard !isDetaching else { return }
+        guard !isDetaching, restoreSuspendedReason == nil else { return }
         acceptedWork += 1
         if isWriting {
             // Mid-word: hold it until the Pencil pauses (see `writtenStrokes`).
@@ -1021,7 +1090,8 @@ public final class InkSession {
         onUndoStateChanged?()
     }
 
-    private func processGroup(_ strokes: [InkStrokeInput], queuedAt: ContinuousClock.Instant) async {
+    private func processGroup(_ strokes: [InkStrokeInput], queuedAt: ContinuousClock.Instant) async
+    {
         guard canEdit, let engine else { return }
         let started = ContinuousClock.now
         let proposals: [InkProposal]?
@@ -1124,6 +1194,7 @@ public final class InkSession {
 
     /// The Pencil touched the page.
     public func penDown() {
+        guard restoreSuspendedReason == nil else { return }
         releaseTask?.cancel()
         releaseTask = nil
         isWriting = true

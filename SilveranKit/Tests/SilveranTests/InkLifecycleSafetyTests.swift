@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 @testable import SilveranKit
@@ -11,12 +12,15 @@ struct InkLifecycleSafetyTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let book = BookID(sourceID: "lifecycle", uuid: UUID().uuidString)
-        let ink = InkSession(
-            store: InkActor(
-                directory: root,
-                writeFile: { _, _ in throw CocoaError(.fileWriteOutOfSpace) }
-            )
+        let full = Mutex(true)
+        let store = InkActor(
+            directory: root,
+            writeFile: { data, url in
+                if full.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+                try data.write(to: url, options: .atomic)
+            }
         )
+        let ink = InkSession(store: store)
         ReadingSessionStore.shared.installInkSession(ink, for: book)
         await ink.open(bookID: book)
         let note = InkNote(
@@ -36,11 +40,15 @@ struct InkLifecycleSafetyTests {
                 note
             ]
         )
-        // Undoing to an empty document needs no write and lets the test release its retained session.
+        // Undo does not erase the failed add from history: each command replays in order with
+        // its own identity, so retry still needs storage even though the page is now empty.
         ink.undo()
+        #expect(!(await ink.retrySave()))
+        #expect(ink.hasPendingChanges)
+        full.withLock { $0 = false }
         #expect(await ink.retrySave())
+        #expect(await store.load(bookID: book).ink.isEmpty)
         ReadingSessionStore.shared.releaseInkIfSaved(for: book, session: ink)
-        #expect(ReadingSessionStore.shared.inkSession(for: book) === ink)
     }
 
     @Test("Callbacks from a replaced or detached bridge cannot update current orphan state")

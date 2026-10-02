@@ -324,6 +324,8 @@ public enum InkOperation: Sendable, Equatable {
     case convertMarkToNote(href: String, markID: String, at: Date)
     /// Removes strokes from notes (a note left with no strokes goes too) and whole marks.
     case erase(href: String, strokes: [InkStrokeRef], markIDs: [String], at: Date)
+    /// Removes a whole note, including one with no strokes, which `erase` cannot name.
+    case deleteNote(href: String, noteID: String)
     /// Moves and/or resizes strokes of one note (P5.3). The transform is limited to keep the
     /// strokes inside the note (`InkStrokeTransform.clamped`); a move that changes no point does
     /// nothing. Indexes that do not name a stroke are ignored.
@@ -344,7 +346,8 @@ public enum InkOperation: Sendable, Equatable {
     public var href: String {
         switch self {
             case .addNote(let href, _), .appendToNote(let href, _, _, _), .addMark(let href, _),
-                .erase(let href, _, _, _), .transformStrokes(let href, _, _, _, _),
+                .erase(let href, _, _, _), .deleteNote(let href, _),
+                .transformStrokes(let href, _, _, _, _),
                 .replaceSection(let href, _), .reanchorNote(let href, _, _, _),
                 .reanchorMark(let href, _, _, _), .reclassifyMark(let href, _, _),
                 .convertMarkToNote(let href, _, _):
@@ -367,7 +370,7 @@ public enum InkOperation: Sendable, Equatable {
             case .reanchorNote(_, let noteID, _, _): noteID
             case .reanchorMark(_, let markID, _, _): markID
             case .reclassifyMark(_, let markID, _), .convertMarkToNote(_, let markID, _): markID
-            case .erase, .replaceSection: nil
+            case .erase, .deleteNote, .replaceSection: nil
         }
     }
 
@@ -442,6 +445,13 @@ public enum InkOperation: Sendable, Equatable {
                 let markCount = section.marks.count
                 section.marks.removeAll { markIDs.contains($0.id) }
                 return changed || section.marks.count != markCount
+
+            case .deleteNote(_, let noteID):
+                guard let noteIndex = section.notes.firstIndex(where: { $0.id == noteID }) else {
+                    return false
+                }
+                section.notes.remove(at: noteIndex)
+                return true
 
             case .transformStrokes(_, let noteID, let indexes, let transform, let at):
                 guard let noteIndex = section.notes.firstIndex(where: { $0.id == noteID }) else {

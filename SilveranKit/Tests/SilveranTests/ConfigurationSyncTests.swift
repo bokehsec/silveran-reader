@@ -165,6 +165,30 @@ private final class ConfigurationTestEnvironment {
 
 @MainActor
 struct ConfigurationCoordinatorTests {
+    @Test func restoreGateBlocksIncomingPreferencesAndQueuedPublication() async throws {
+        let e = try ConfigurationTestEnvironment()
+        defer { e.cleanup() }
+        let sync = e.coordinator()
+        await sync.setEnabled(true)
+        await sync.useSettingsFromThisDevice()
+        e.cloud.writes.removeAll()
+        let original = await e.settings.config
+        var remote = original
+        remote.reading.fontSize = original.reading.fontSize + 3
+        try e.setRemote(remote, id: "reading.fontSize")
+        await sync.suspendPublishingAndDrain()
+        await sync.foreground()
+        await sync.receive(reason: NSUbiquitousKeyValueStoreServerChange)
+        await sync.flush()
+        await sync.useSettingsFromThisDevice()
+        #expect(await e.settings.config == original)
+        #expect(e.cloud.writes.isEmpty)
+        sync.resumePublishing()
+        await sync.foreground()
+        #expect(await e.settings.config.reading.fontSize == remote.reading.fontSize)
+        #expect(e.cloud.writes.isEmpty)
+    }
+
     @Test func localRecoveryBlocksExplicitSettingsPublication() async throws {
         let e = try ConfigurationTestEnvironment()
         defer { e.cleanup() }

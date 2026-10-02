@@ -23,6 +23,9 @@ struct BackupRestoreJournal: Codable, Sendable {
     let archiveFile: String
     var report: BackupRestoreReport
     var completedKinds: [String]
+    /// Owners are fully applied, but projection reload/publication resume still needs retry.
+    var resumePending: Bool? = nil
+    var discardRequested: Bool? = nil
 }
 
 /// Creates archives from the registered owners and restores them through the same owners.
@@ -43,9 +46,13 @@ public actor BackupService {
     private let deviceID: String
     private let deviceClass: String
     private let stateDirectory: URL
-    private let suspendPublishers: @Sendable () async -> Void
-    private let resumePublishers: @Sendable () async -> Void
+    private let suspendPublishers: @Sendable () async throws -> Void
+    private let resumePublishers: @Sendable () async throws -> Void
     private let prepareForRestore: @Sendable () async throws -> Void
+    private let prepareForResume: @Sendable () async throws -> Void
+    private let persistJournal: @Sendable (Data, URL) throws -> Void
+    private var restoreOperationInProgress = false
+    private let mutationEpoch: AnnotationMutationEpoch
 
     public init(
         participants: [any BackupParticipant],
@@ -53,9 +60,14 @@ public actor BackupService {
         deviceID: String,
         deviceClass: String,
         stateDirectory: URL,
-        suspendPublishers: @escaping @Sendable () async -> Void = {},
-        resumePublishers: @escaping @Sendable () async -> Void = {},
-        prepareForRestore: @escaping @Sendable () async throws -> Void = {}
+        suspendPublishers: @escaping @Sendable () async throws -> Void = {},
+        resumePublishers: @escaping @Sendable () async throws -> Void = {},
+        prepareForRestore: @escaping @Sendable () async throws -> Void = {},
+        prepareForResume: @escaping @Sendable () async throws -> Void = {},
+        mutationEpoch: AnnotationMutationEpoch = .shared,
+        persistJournal: @escaping @Sendable (Data, URL) throws -> Void = {
+            try $0.write(to: $1, options: .atomic)
+        }
     ) {
         self.participants = Dictionary(uniqueKeysWithValues: participants.map { ($0.kind, $0) })
         self.appVersion = appVersion
@@ -65,21 +77,53 @@ public actor BackupService {
         self.suspendPublishers = suspendPublishers
         self.resumePublishers = resumePublishers
         self.prepareForRestore = prepareForRestore
+        self.prepareForResume = prepareForResume
+        self.persistJournal = persistJournal
+        self.mutationEpoch = mutationEpoch
     }
 
     // MARK: Backup
 
     public func createArchive() async throws -> BackupArchive {
-        var captures: [(kind: String, schema: Int, capture: BackupParticipantCapture)] = []
-        for kind in participants.keys.sorted() {
-            let participant = participants[kind]!
-            captures.append((kind, participant.schema, await participant.capture()))
+        for _ in 0..<3 {
+            let before = mutationEpoch.snapshot()
+            guard before.isIdle else {
+                await Task.yield()
+                continue
+            }
+            var beforeTokens: [String: Data] = [:]
+            for kind in participants.keys.sorted() {
+                if let token = try await participants[kind]!.captureConsistencyToken() {
+                    beforeTokens[kind] = token
+                }
+            }
+            var captures: [(kind: String, schema: Int, capture: BackupParticipantCapture)] = []
+            for kind in participants.keys.sorted() {
+                let participant = participants[kind]!
+                captures.append((kind, participant.schema, await participant.capture()))
+            }
+            var tokensMatch = true
+            for item in captures {
+                let afterToken = try await participants[item.kind]!.captureConsistencyToken()
+                if beforeTokens[item.kind] != item.capture.consistencyToken
+                    || beforeTokens[item.kind] != afterToken {
+                    tokensMatch = false
+                }
+            }
+            let after = mutationEpoch.snapshot()
+            guard tokensMatch, after.isIdle, after.generation == before.generation else {
+                await Task.yield()
+                continue
+            }
+            return try BackupArchiveCodec.manifest(
+                appVersion: appVersion,
+                deviceID: deviceID,
+                deviceClass: deviceClass,
+                captures: captures
+            )
         }
-        return try BackupArchiveCodec.manifest(
-            appVersion: appVersion,
-            deviceID: deviceID,
-            deviceClass: deviceClass,
-            captures: captures
+        throw BackupFailure(
+            "Data changed while the backup was being captured. No complete backup was created; retry when changes have settled."
         )
     }
 
@@ -108,52 +152,97 @@ public actor BackupService {
     }
 
     public func restore(_ archive: BackupArchive) async throws -> BackupRestoreReport {
+        guard !restoreOperationInProgress else {
+            throw BackupFailure("Another restore operation is already running.")
+        }
+        restoreOperationInProgress = true
+        defer { restoreOperationInProgress = false }
         try BackupArchiveCodec.validate(archive)
-        if let pending = try pendingRestore(), !pending.finished {
+        if try await enforcePendingRestoreGuard() {
             throw BackupFailure(
                 "A previous restore didn't finish. Resume or discard it before starting another."
             )
         }
-        // Open editors save first, so the safety copy includes their work and nothing they
-        // hold in memory can later overwrite restored data.
-        try await prepareForRestore()
-        let restoreID = UUID()
-        try FileManager.default.createDirectory(
-            at: stateDirectory,
-            withIntermediateDirectories: true
-        )
-        // Keep the archive being restored so an interruption can resume without the source file.
-        let archiveFile = "restore-\(restoreID.uuidString).\(BackupArchiveCodec.fileExtension)"
-        try BackupArchiveCodec.write(
-            archive,
-            to: stateDirectory.appendingPathComponent(archiveFile)
-        )
-        // Safety point: the current state, captured before anything changes.
-        let safety = try await createArchive()
-        let safetyName =
-            "before-restore-\(restoreID.uuidString).\(BackupArchiveCodec.fileExtension)"
-        try BackupArchiveCodec.write(safety, to: safetyDirectory.appendingPathComponent(safetyName))
-        pruneSafetyArchives()
-        var report = emptyReport(archive, restoreID: restoreID)
-        report.safetyArchiveName = safetyName
-        let journal = BackupRestoreJournal(
-            restoreID: restoreID,
-            archiveFile: archiveFile,
-            report: report,
-            completedKinds: []
-        )
-        try save(journal)
-        return try await run(journal, archive: archive)
+        var durableJournal = false
+        do {
+            // The app hook settles pending edits and closes editor mutation admission.
+            try await prepareForRestore()
+            try await suspendPublishers()
+            let restoreID = UUID()
+            try FileManager.default.createDirectory(
+                at: stateDirectory,
+                withIntermediateDirectories: true
+            )
+            let archiveFile = "restore-\(restoreID.uuidString).\(BackupArchiveCodec.fileExtension)"
+            try BackupArchiveCodec.write(
+                archive,
+                to: stateDirectory.appendingPathComponent(archiveFile)
+            )
+            let safety = try await createArchive()
+            guard safety.manifest.isComplete else {
+                throw BackupFailure(
+                    "The current data could not be fully backed up. Nothing was restored; fix the backup failure and retry."
+                )
+            }
+            let safetyName =
+                "before-restore-\(restoreID.uuidString).\(BackupArchiveCodec.fileExtension)"
+            try BackupArchiveCodec.write(safety, to: safetyDirectory.appendingPathComponent(safetyName))
+            pruneSafetyArchives()
+            var report = emptyReport(archive, restoreID: restoreID)
+            report.safetyArchiveName = safetyName
+            let journal = BackupRestoreJournal(
+                restoreID: restoreID,
+                archiveFile: archiveFile,
+                report: report,
+                completedKinds: []
+            )
+            try save(journal)
+            durableJournal = true
+            return try await run(journal, archive: archive)
+        } catch {
+            // After the journal exists, partial restore state must remain quarantined.
+            if !durableJournal {
+                try? await prepareForResume()
+                try? await resumePublishers()
+            }
+            throw error
+        }
     }
 
     /// The last restore's report; unfinished means it was interrupted and can be resumed.
     public func pendingRestore() throws -> BackupRestoreReport? {
-        try loadJournal()?.report
+        guard let journal = try loadJournal() else { return nil }
+        var report = journal.report
+        if journal.resumePending == true { report.finished = false }
+        return report
+    }
+
+    /// Call before starting sync after launch. Unknown or unfinished restore state fails closed.
+    @discardableResult
+    public func enforcePendingRestoreGuard() async throws -> Bool {
+        do {
+            guard let journal = try loadJournal(), !journal.report.finished || journal.resumePending == true else { return false }
+            try await suspendPublishers()
+            return true
+        } catch {
+            try await suspendPublishers()
+            throw error
+        }
     }
 
     public func resumeRestore() async throws -> BackupRestoreReport {
-        guard let journal = try loadJournal(), !journal.report.finished else {
+        guard !restoreOperationInProgress else {
+            throw BackupFailure("Another restore operation is already running.")
+        }
+        restoreOperationInProgress = true
+        defer { restoreOperationInProgress = false }
+        _ = try await enforcePendingRestoreGuard()
+        guard let journal = try loadJournal(), !journal.report.finished || journal.resumePending == true else {
             throw BackupFailure("There's no unfinished restore.")
+        }
+        if journal.discardRequested == true {
+            try await completeDiscard(journal)
+            return journal.report
         }
         let archive = try BackupArchiveCodec.read(
             stateDirectory.appendingPathComponent(journal.archiveFile)
@@ -162,13 +251,26 @@ public actor BackupService {
         return try await run(journal, archive: archive)
     }
 
-    /// Forgets an unfinished restore. Anything already applied stays; the safety archive stays.
-    public func discardPendingRestore() throws {
+    /// Deliberately accepts the partially restored local state. Safety/recovery copies remain.
+    public func discardPendingRestore() async throws {
+        guard !restoreOperationInProgress else {
+            throw BackupFailure("A restore operation is still running.")
+        }
         guard let journal = try loadJournal() else { return }
+        try await completeDiscard(journal)
+    }
+
+    private func completeDiscard(_ start: BackupRestoreJournal) async throws {
+        var journal = start
+        journal.report.finished = true
+        journal.resumePending = true
+        journal.discardRequested = true
+        try save(journal)
+        try await completeResume(&journal)
+        try FileManager.default.removeItem(at: journalURL)
         try? FileManager.default.removeItem(
             at: stateDirectory.appendingPathComponent(journal.archiveFile)
         )
-        try FileManager.default.removeItem(at: journalURL)
     }
 
     public var safetyDirectory: URL {
@@ -192,38 +294,52 @@ public actor BackupService {
     {
         var journal = start
         let context = context(archive, restoreID: journal.restoreID)
-        await suspendPublishers()
-        do {
-            for kind in ordered(archive) where !journal.completedKinds.contains(kind) {
-                guard let entry = archive.manifest.participant(kind) else { continue }
-                if let participant = participants[kind] {
-                    journal.report.results.append(
-                        try await participant.restore(
-                            archive.files(for: kind),
-                            schema: entry.schema,
-                            context: context,
-                            dryRun: false
-                        )
+        try await suspendPublishers()
+        for kind in ordered(archive) where !journal.completedKinds.contains(kind) {
+            guard let entry = archive.manifest.participant(kind) else { continue }
+            if let participant = participants[kind] {
+                journal.report.results.append(
+                    try await participant.restore(
+                        archive.files(for: kind),
+                        schema: entry.schema,
+                        context: context,
+                        dryRun: false
                     )
-                } else {
-                    for (path, data) in archive.files(for: kind) {
-                        try context.preserve(data, kind: kind, path: path)
-                    }
+                )
+            } else {
+                for (path, data) in archive.files(for: kind) {
+                    try context.preserve(data, kind: kind, path: path)
                 }
-                journal.completedKinds.append(kind)
-                try save(journal)
             }
-        } catch {
-            await resumePublishers()
-            throw error
+            journal.completedKinds.append(kind)
+            try save(journal)
         }
+
         journal.report.finished = true
+        journal.resumePending = true
         try save(journal)
+        try await completeResume(&journal)
         try? FileManager.default.removeItem(
             at: stateDirectory.appendingPathComponent(journal.archiveFile)
         )
-        await resumePublishers()
         return journal.report
+    }
+
+    private func completeResume(_ journal: inout BackupRestoreJournal) async throws {
+        // Projections reload while editors and sync are still gated.
+        try await prepareForResume()
+        journal.resumePending = false
+        try save(journal)
+        do {
+            try await resumePublishers()
+        } catch {
+            // Generic callers may still have a failing release hook. Re-close admission
+            // before restoring the durable retry marker; production release is non-writing.
+            try? await suspendPublishers()
+            journal.resumePending = true
+            try save(journal)
+            throw error
+        }
     }
 
     private func ordered(_ archive: BackupArchive) -> [String] {
@@ -255,7 +371,8 @@ public actor BackupService {
             recoveryDirectory: stateDirectory.appendingPathComponent(
                 "RestoreRecovery/\(restoreID.uuidString)",
                 isDirectory: true
-            )
+            ),
+            mutationEpoch: mutationEpoch
         )
     }
 
@@ -269,15 +386,37 @@ public actor BackupService {
             at: stateDirectory,
             withIntermediateDirectories: true
         )
-        try encoder.encode(journal).write(to: journalURL, options: .atomic)
+        try persistJournal(encoder.encode(journal), journalURL)
     }
 
     private func loadJournal() throws -> BackupRestoreJournal? {
-        guard let data = try? Data(contentsOf: journalURL) else { return nil }
+        let data: Data
+        do {
+            data = try Data(contentsOf: journalURL)
+        } catch {
+            let failure = error as NSError
+            if (failure.domain == NSCocoaErrorDomain && failure.code == NSFileReadNoSuchFileError)
+                || (failure.domain == NSPOSIXErrorDomain && failure.code == 2) {
+                return nil
+            }
+            throw BackupFailure("The record of the last restore could not be read. Restore and sync remain paused to protect the current data.")
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        do { return try decoder.decode(BackupRestoreJournal.self, from: data) } catch {
-            throw BackupFailure("The record of the last restore is damaged.")
+        do {
+            let journal = try decoder.decode(BackupRestoreJournal.self, from: data)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            guard journal.restoreID == journal.report.restoreID,
+                journal.archiveFile == "restore-\(journal.restoreID.uuidString).\(BackupArchiveCodec.fileExtension)",
+                Set(journal.completedKinds).count == journal.completedKinds.count,
+                journal.completedKinds.allSatisfy(BackupArchiveCodec.isValidKind),
+                AnnotationJSON.sameContent(try encoder.encode(journal), data) else {
+                throw BackupFailure("The record of the last restore contains unsupported data.")
+            }
+            return journal
+        } catch {
+            throw BackupFailure("The record of the last restore is damaged or unsupported. Its original is preserved and sync remains paused.")
         }
     }
 

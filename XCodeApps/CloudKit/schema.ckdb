@@ -20,6 +20,15 @@ DEFINE SCHEMA
         GRANT READ TO "_world"
     );
 
+    RECORD TYPE LibraryBook (
+        "___createTime" TIMESTAMP,
+        "___recordID" REFERENCE QUERYABLE,
+        payload ENCRYPTED BYTES,
+        GRANT WRITE TO "_creator",
+        GRANT CREATE TO "_icloud",
+        GRANT READ TO "_world"
+    );
+
     RECORD TYPE BackupAsset (
         "___createTime" TIMESTAMP,
         "___recordID" REFERENCE QUERYABLE,

@@ -115,60 +115,29 @@ public final class AnnotationPlacementReview {
                 checkedHighlights[id] == original,
                 original.locator.href == issue.href
             else { throw changed() }
-            let destination = suggestion.href ?? issue.href
-            guard
-                destination == issue.href
-                    || (confirmingDestinationHref == destination && suggestion.placement != nil)
-            else { throw changed() }
-            let locator = suggestion.replacementLocator(for: original)
-            let placement: HighlightPlacement?
-            if let proposed = suggestion.placement {
-                try await verifyPlacement(bookID, category, proposed)
-                placement = try proposed.confirmingRepair(of: original)
-            } else {
-                guard original.placement == nil else { throw changed() }
-                placement = nil
-            }
-            let updated = Highlight(
-                id: original.id,
-                bookID: bookID,
-                locator: locator,
-                text: suggestion.text,
-                color: original.color,
-                note: original.note,
-                createdAt: original.createdAt,
-                placement: placement
+            let updated = try await AnnotationRepairCommands.prepareHighlight(
+                expected: original, suggestion: suggestion, checkedHref: issue.href,
+                confirmingDestinationHref: confirmingDestinationHref,
+                category: category, verifyPlacement: verifyPlacement
             )
-            try await bookmarks.confirmHighlightRepair(expected: original, replacement: updated)
-                .get()
+            try await AnnotationRepairCommands.commitHighlight(
+                expected: original, replacement: updated, owner: bookmarks
+            ).get()
             highlights = try await filesystem.loadHighlights(bookID: bookID) ?? []
         } else {
-            guard !session.isWriting, session.selection == nil, await session.flush(),
-                let answer = issue.ink, answer.id == issue.id, answer.kind == issue.kind,
+            guard let answer = issue.ink, answer.id == issue.id, answer.kind == issue.kind,
                 let original = ink.sections[issue.href]
             else { throw changed() }
-            let current = session.section(issue.href)
-            if issue.kind == "note" {
-                guard let note = original.notes.first(where: { $0.id == issue.id }),
-                    current.notes.first(where: { $0.id == issue.id }) == note
-                else { throw changed() }
-            } else if issue.kind == "mark" {
-                guard let mark = original.marks.first(where: { $0.id == issue.id }),
-                    current.marks.first(where: { $0.id == issue.id }) == mark
-                else { throw changed() }
-            } else {
-                throw changed()
+            switch try await AnnotationRepairCommands.commitInk(
+                session: session, href: issue.href, answer: answer, expected: original
+            ) {
+                case .saved:
+                    pendingRepairID = nil
+                    ink = session.ink
+                case .pending(let failure):
+                    pendingRepairID = issue.id
+                    throw failure
             }
-            guard session.acceptRepair(href: issue.href, answer: answer) else { throw changed() }
-            pendingRepairID = issue.id
-            guard await session.flush() else {
-                throw AnnotationPersistenceFailure(
-                    message:
-                        "The repair could not be saved. It is retained in the book's ink session. Use Retry Save; keep this review open until saved or export recovery from the reader."
-                )
-            }
-            pendingRepairID = nil
-            ink = session.ink
         }
     }
 
@@ -184,9 +153,6 @@ public final class AnnotationPlacementReview {
     }
 
     private func changed() -> AnnotationPersistenceFailure {
-        AnnotationPersistenceFailure(
-            message:
-                "This annotation changed since it was checked. Check placement again before repairing it."
-        )
+        AnnotationRepairCommands.changed()
     }
 }

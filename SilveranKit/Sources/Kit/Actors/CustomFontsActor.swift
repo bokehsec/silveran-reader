@@ -56,12 +56,14 @@ public actor CustomFontsActor {
 
     private let fileManager: FileManager
     private let fontsDirectory: URL
+    private let mutationEpoch: AnnotationMutationEpoch
 
     private var cachedFamilies: [CustomFontFamily] = []
     private var cachedFontFaceCSS: String = ""
     private var observers: [UUID: @Sendable @SilveranUIActor () -> Void] = [:]
 
-    public init(fileManager: FileManager = .default) {
+    public init(fileManager: FileManager = .default, mutationEpoch: AnnotationMutationEpoch = .shared) {
+        self.mutationEpoch = mutationEpoch
         self.fileManager = fileManager
         self.fontsDirectory = Self.defaultFontsDirectory(fileManager: fileManager)
 
@@ -73,7 +75,8 @@ public actor CustomFontsActor {
     }
 
     /// Tests and backup restore into an explicit directory.
-    init(fontsDirectory: URL, fileManager: FileManager = .default) {
+    init(fontsDirectory: URL, fileManager: FileManager = .default, mutationEpoch: AnnotationMutationEpoch = AnnotationMutationEpoch()) {
+        self.mutationEpoch = mutationEpoch
         self.fileManager = fileManager
         self.fontsDirectory = fontsDirectory
         try? Self.ensureFontsDirectory(fontsDirectory, using: fileManager)
@@ -95,6 +98,29 @@ public actor CustomFontsActor {
         }.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
+    public func fontFilesForBackup() throws -> [URL] {
+        let contents: [URL]
+        do {
+            contents = try fileManager.contentsOfDirectory(
+                at: fontsDirectory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            let failure = error as NSError
+            if (failure.domain == NSCocoaErrorDomain && failure.code == NSFileReadNoSuchFileError)
+                || (failure.domain == NSPOSIXErrorDomain && failure.code == 2) { return [] }
+            throw error
+        }
+        return try contents.filter { file in
+            guard Self.fontExtensions.contains(file.pathExtension.lowercased()) else { return false }
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                throw BackupFailure("A custom font could not be safely read.")
+            }
+            return true
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
     /// Adds a backed-up font file when no file of that name exists. An existing file is never
     /// replaced; a different one with the same name is reported as a conflict.
     public func restoreFont(named name: String, data: Data, dryRun: Bool) async -> BackupRecordMerge
@@ -112,10 +138,12 @@ public actor CustomFontsActor {
                 // Write fully under a hidden name, then move into place; the move fails
                 // rather than replacing a file that appeared meanwhile.
                 let partial = fontsDirectory.appendingPathComponent(".\(UUID().uuidString).partial")
-                try data.write(to: partial)
-                do { try fileManager.moveItem(at: partial, to: destination) } catch {
-                    try? fileManager.removeItem(at: partial)
-                    throw error
+                try mutationEpoch.withMutation {
+                    try data.write(to: partial)
+                    do { try fileManager.moveItem(at: partial, to: destination) } catch {
+                        try? fileManager.removeItem(at: partial)
+                        throw error
+                    }
                 }
             } catch {
                 return BackupRecordMerge(.localNeedsRecovery)
@@ -170,17 +198,28 @@ public actor CustomFontsActor {
             }
         }
 
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            try fileManager.removeItem(at: destinationURL)
+        // Stage beside the destination (hidden, so scans and backups skip it), then swap. A
+        // failed copy never removes a font the person already has (OD-032, BF-067).
+        let staged = fontsDirectory.appendingPathComponent(".\(UUID().uuidString).importing")
+        try mutationEpoch.withMutation {
+            do {
+                try fileManager.copyItem(at: sourceURL, to: staged)
+                if fileManager.fileExists(atPath: destinationURL.path) {
+                    _ = try fileManager.replaceItemAt(destinationURL, withItemAt: staged)
+                } else {
+                    try fileManager.moveItem(at: staged, to: destinationURL)
+                }
+            } catch {
+                try? fileManager.removeItem(at: staged)
+                throw error
+            }
         }
-
-        try fileManager.copyItem(at: sourceURL, to: destinationURL)
         await refreshFonts()
     }
 
     public func deleteVariant(_ variant: CustomFontVariant) async throws {
         if fileManager.fileExists(atPath: variant.fileURL.path) {
-            try fileManager.removeItem(at: variant.fileURL)
+            try mutationEpoch.withMutation { try fileManager.removeItem(at: variant.fileURL) }
         }
         await refreshFonts()
     }
@@ -188,7 +227,7 @@ public actor CustomFontsActor {
     public func deleteFamily(_ family: CustomFontFamily) async throws {
         for variant in family.variants {
             if fileManager.fileExists(atPath: variant.fileURL.path) {
-                try fileManager.removeItem(at: variant.fileURL)
+                try mutationEpoch.withMutation { try fileManager.removeItem(at: variant.fileURL) }
             }
         }
         await refreshFonts()

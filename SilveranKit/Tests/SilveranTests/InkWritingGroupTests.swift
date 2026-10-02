@@ -58,7 +58,11 @@ private final class GroupEngine: InkEngineCalling {
 struct InkWritingGroupTests {
     let book = BookID(sourceID: "source", uuid: "writing-groups")
 
-    fileprivate func open(_ engine: GroupEngine, directory: URL, delay: Duration = .milliseconds(60)) async
+    fileprivate func open(
+        _ engine: GroupEngine,
+        directory: URL,
+        delay: Duration = .milliseconds(60)
+    ) async
         -> InkSession
     {
         let session = InkSession(releaseDelay: delay, store: InkActor(directory: directory))
@@ -77,7 +81,9 @@ struct InkWritingGroupTests {
     func write(_ session: InkSession, _ x: Double) -> Task<Void, Never> {
         session.penDown()
         session.penUp()
-        return Task { await session.finishStroke(InkStrokeInput(points: [[x, 10], [x + 5, 30]])) }
+        return Task {
+            await session.finishStroke(InkStrokeInput(points: [[x, 10], [x + 5, 30]]))
+        }
     }
 
     @Test("Strokes written without pausing become one note, one undo step, when the Pencil pauses")
@@ -85,15 +91,18 @@ struct InkWritingGroupTests {
         let root = directory()
         defer { try? FileManager.default.removeItem(at: root) }
         let engine = GroupEngine()
-        // Long enough that a busy test machine checks "mid-word" before the pause ends.
-        let session = await open(engine, directory: root, delay: .milliseconds(600))
+        let session = await open(engine, directory: root)
         let strokes = [write(session, 10), write(session, 30), write(session, 50)]
+        // The Pencil touches down again before the pause ends, so no timer can commit the group
+        // while the mid-word state is checked, however slow the machine (OD-033).
+        session.penDown()
+        while session.writtenStrokes.count < strokes.count { await Task.yield() }
         // Mid-word nothing reaches the page, so nothing moves under the writer.
-        for _ in 0..<5 { await Task.yield() }
         #expect(engine.groups.isEmpty && engine.singles.isEmpty)
         #expect(session.section("c1").notes.isEmpty)
         #expect(session.canUndo, "the written strokes can be undone before they are committed")
         #expect(session.isWriting)
+        session.penUp()
         for stroke in strokes { await stroke.value }
         #expect(engine.groups.map(\.count) == [3])
         #expect(engine.singles.isEmpty)

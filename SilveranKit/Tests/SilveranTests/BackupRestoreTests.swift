@@ -41,6 +41,7 @@ struct BackupRestoreTests {
         let ink: InkActor
         let filesystem: FilesystemActor
         let settings: SettingsActor
+        let mutationEpoch: AnnotationMutationEpoch
         func service(deviceClass: String = "iPad", extra: [any BackupParticipant] = [])
             -> BackupService
         {
@@ -52,18 +53,21 @@ struct BackupRestoreTests {
                 appVersion: "test",
                 deviceID: root.lastPathComponent,
                 deviceClass: deviceClass,
-                stateDirectory: root.appendingPathComponent("Backup", isDirectory: true)
+                stateDirectory: root.appendingPathComponent("Backup", isDirectory: true),
+                mutationEpoch: mutationEpoch
             )
         }
     }
 
     func device() -> Device {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let mutationEpoch = AnnotationMutationEpoch()
         return Device(
             root: root,
-            ink: InkActor(directory: root.appendingPathComponent("Ink")),
-            filesystem: FilesystemActor(applicationSupportDirectory: root),
-            settings: SettingsActor(storageURL: root.appendingPathComponent("config.json"))
+            ink: InkActor(directory: root.appendingPathComponent("Ink"), mutationEpoch: mutationEpoch),
+            filesystem: FilesystemActor(applicationSupportDirectory: root, mutationEpoch: mutationEpoch),
+            settings: SettingsActor(storageURL: root.appendingPathComponent("config.json"), mutationEpoch: mutationEpoch),
+            mutationEpoch: mutationEpoch
         )
     }
 
@@ -328,7 +332,8 @@ struct BackupRestoreTests {
             deviceID: "t",
             deviceClass: "tablet",
             stateDirectory: target.root.appendingPathComponent("Backup"),
-            prepareForRestore: { throw BackupFailure("unsaved") }
+            prepareForRestore: { throw BackupFailure("unsaved") },
+            mutationEpoch: AnnotationMutationEpoch()
         )
         await #expect(throws: BackupFailure.self) { try await service.restore(archive) }
         #expect(await target.ink.ink(bookID: book).sections.isEmpty)

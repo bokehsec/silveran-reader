@@ -682,8 +682,10 @@ public actor SettingsActor {
     private let storageURL: URL
     private let readFile: @Sendable (URL) throws -> Data
     private let writeFile: @Sendable (Data, URL) throws -> Void
+    private let mutationEpoch: AnnotationMutationEpoch
 
-    public init(fileManager: FileManager = .default, storageURL: URL? = nil) {
+    public init(fileManager: FileManager = .default, storageURL: URL? = nil, mutationEpoch: AnnotationMutationEpoch? = nil) {
+        self.mutationEpoch = mutationEpoch ?? (storageURL == nil ? .shared : AnnotationMutationEpoch())
         self.fileManager = fileManager
         let resolvedURL = storageURL ?? Self.defaultStorageURL(fileManager: fileManager)
         self.storageURL = resolvedURL
@@ -697,8 +699,10 @@ public actor SettingsActor {
     init(
         storageURL: URL,
         readFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) },
-        writeFile: @escaping @Sendable (Data, URL) throws -> Void
+        writeFile: @escaping @Sendable (Data, URL) throws -> Void,
+        mutationEpoch: AnnotationMutationEpoch = AnnotationMutationEpoch()
     ) {
+        self.mutationEpoch = mutationEpoch
         fileManager = .default
         self.storageURL = storageURL
         self.readFile = readFile
@@ -1102,7 +1106,7 @@ public actor SettingsActor {
             }
             let previous = config
             try Self.ensureStorageDirectory(for: storageURL, using: fileManager)
-            try writeFile(bytes, storageURL)
+            try mutationEpoch.withMutation { try writeFile(bytes, storageURL) }
             LocalDataChangeSignal.post()
             config = updated
             loadResult = ConfigurationLoadResult(

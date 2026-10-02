@@ -81,21 +81,23 @@ struct CloudBackupTests {
 
     func device(_ cloud: FakeCloud, clock: BackupTestClock, id: String = "device-a") -> Device {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let ink = InkActor(directory: root.appendingPathComponent("Ink"))
+        let mutationEpoch = AnnotationMutationEpoch()
+        let ink = InkActor(directory: root.appendingPathComponent("Ink"), mutationEpoch: mutationEpoch)
         let service = BackupService(
             participants: [
                 LegacyAnnotationsBackupParticipant(
                     ink: ink,
-                    filesystem: FilesystemActor(applicationSupportDirectory: root)
+                    filesystem: FilesystemActor(applicationSupportDirectory: root, mutationEpoch: mutationEpoch)
                 ),
                 ConfigurationBackupParticipant(
-                    settings: SettingsActor(storageURL: root.appendingPathComponent("config.json"))
+                    settings: SettingsActor(storageURL: root.appendingPathComponent("config.json"), mutationEpoch: mutationEpoch)
                 ),
             ],
             appVersion: "t",
             deviceID: id,
             deviceClass: "tablet",
-            stateDirectory: root.appendingPathComponent("Backup")
+            stateDirectory: root.appendingPathComponent("Backup"),
+            mutationEpoch: mutationEpoch
         )
         let coordinator = CloudBackupCoordinator(
             transport: cloud,

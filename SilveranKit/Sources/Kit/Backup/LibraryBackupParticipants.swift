@@ -13,22 +13,59 @@ public struct SourceReconnection: Codable, Sendable, Hashable, Identifiable {
     public let username: String?
     /// Where a folder source used to be; access must be granted again.
     public let storagePathHint: String?
+
+    public init(
+        id: BookSourceID,
+        name: String,
+        kind: BookSourceKind,
+        serverURL: String?,
+        username: String?,
+        storagePathHint: String?
+    ) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.serverURL = serverURL
+        self.username = username
+        self.storagePathHint = storagePathHint
+    }
 }
 
 /// Sources waiting to be reconnected after a restore, persisted until the person acts on them.
 public actor SourceReconnectionStore {
     private let url: URL
-    public init(url: URL) { self.url = url }
+    private let mutationEpoch: AnnotationMutationEpoch
+    public init(url: URL, mutationEpoch: AnnotationMutationEpoch = AnnotationMutationEpoch()) {
+        self.url = url
+        self.mutationEpoch = mutationEpoch
+    }
 
     public func pending() -> [SourceReconnection] {
-        guard let data = try? Data(contentsOf: url),
-            let items = try? JSONDecoder().decode([SourceReconnection].self, from: data)
-        else { return [] }
+        (try? pendingForBackup()) ?? []
+    }
+
+    public func originalForBackup() throws -> Data? {
+        do { return try Data(contentsOf: url) } catch {
+            let failure = error as NSError
+            if (failure.domain == NSCocoaErrorDomain && failure.code == NSFileReadNoSuchFileError)
+                || (failure.domain == NSPOSIXErrorDomain && failure.code == 2) { return nil }
+            throw error
+        }
+    }
+
+    public func pendingForBackup() throws -> [SourceReconnection] {
+        guard let data = try originalForBackup() else { return [] }
+        let items = try JSONDecoder().decode([SourceReconnection].self, from: data)
+        guard Set(items.map(\.id)).count == items.count,
+            items.allSatisfy({ !$0.id.isEmpty }),
+            AnnotationJSON.sameContent(try JSONEncoder().encode(items), data) else {
+            throw BackupFailure("Source reconnection data contains unsupported fields and needs recovery.")
+        }
         return items
     }
 
     public func add(_ items: [SourceReconnection]) throws {
-        var current = pending()
+        var current = try pendingForBackup()
         for item in items where !current.contains(where: { $0.id == item.id }) {
             current.append(item)
         }
@@ -36,7 +73,7 @@ public actor SourceReconnectionStore {
     }
 
     public func remove(id: BookSourceID) throws {
-        try write(pending().filter { $0.id != id })
+        try write(pendingForBackup().filter { $0.id != id })
     }
 
     private func write(_ items: [SourceReconnection]) throws {
@@ -46,7 +83,9 @@ public actor SourceReconnectionStore {
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(items).write(to: url, options: .atomic)
+        try mutationEpoch.withMutation {
+            try encoder.encode(items).write(to: url, options: .atomic)
+        }
     }
 }
 
@@ -72,10 +111,26 @@ public struct SourcesBackupParticipant: BackupParticipant {
 
     public func capture() async -> BackupParticipantCapture {
         let records: [BookSourceRecord]
-        do { records = try await filesystem.loadBookSources() ?? [] } catch {
+        let originals: [String: Data] = [:]
+        do {
+            if let original = try await filesystem.bookSourcesOriginalForBackup() {
+                records = try JSONDecoder().decode([BookSourceRecord].self, from: original)
+                guard AnnotationJSON.sameContent(try JSONEncoder().encode(records), original) else {
+                    throw BackupFailure("The source registry contains unsupported fields. Its local original is preserved; no unclassified grants or secrets were archived.")
+                }
+            } else { records = [] }
+        } catch {
             return BackupParticipantCapture(
                 status: .unavailable,
-                message: "The list of sources couldn't be read."
+                message: "The list of sources couldn't be read.",
+                files: originals
+            )
+        }
+        let pending: [SourceReconnection]
+        do { pending = try await reconnections.pendingForBackup() } catch {
+            return BackupParticipantCapture(
+                status: .unavailable,
+                message: "Sources awaiting reconnection contain damaged or unsupported data. Their local original is preserved; no unclassified grants or secrets were archived."
             )
         }
         var items: [SourceReconnection] = []
@@ -99,7 +154,11 @@ public struct SourcesBackupParticipant: BackupParticipant {
                 )
             )
         }
-        guard !items.isEmpty else { return BackupParticipantCapture(status: .empty) }
+        let activeIDs = Set(items.map(\.id))
+        items.append(contentsOf: pending.filter { !activeIDs.contains($0.id) })
+        guard !items.isEmpty else {
+            return BackupParticipantCapture(status: originals.isEmpty ? .empty : .complete, files: originals)
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         guard let data = try? encoder.encode(items) else {
@@ -108,7 +167,7 @@ public struct SourcesBackupParticipant: BackupParticipant {
         return BackupParticipantCapture(
             status: .complete,
             counts: ["sources": items.count],
-            files: [Self.file: data]
+            files: originals.merging([Self.file: data]) { _, latest in latest }
         )
     }
 
@@ -119,9 +178,17 @@ public struct SourcesBackupParticipant: BackupParticipant {
         dryRun: Bool
     ) async throws -> BackupParticipantResult {
         var result = BackupParticipantResult(kind: kind)
+        if let original = files["registry-original.json"], !dryRun {
+            try context.preserve(original, kind: kind, path: "registry-original.json")
+        }
+        if let original = files["reconnections-original.json"], !dryRun {
+            try context.preserve(original, kind: kind, path: "reconnections-original.json")
+        }
         guard let data = files[Self.file] else { return result }
         guard schema == 1,
-            let archived = try? JSONDecoder().decode([SourceReconnection].self, from: data)
+            let archived = try? JSONDecoder().decode([SourceReconnection].self, from: data),
+            let reencoded = try? JSONEncoder().encode(archived),
+            AnnotationJSON.sameContent(reencoded, data)
         else {
             if !dryRun { try context.preserve(data, kind: kind, path: Self.file) }
             result.attention.append(
@@ -129,6 +196,8 @@ public struct SourcesBackupParticipant: BackupParticipant {
             )
             return result
         }
+        // Preserve exact source descriptors independently of reconnection projection.
+        if !dryRun { try context.preserve(data, kind: kind, path: Self.file) }
         let local = Set((try? await filesystem.loadBookSources())?.map(\.id) ?? [])
         let missing = archived.filter { !local.contains($0.id) }
         result.unchanged = archived.count - missing.count
@@ -155,8 +224,14 @@ public struct SmartShelvesBackupParticipant: BackupParticipant {
     public init(filesystem: FilesystemActor = .shared) { self.filesystem = filesystem }
 
     public func capture() async -> BackupParticipantCapture {
-        guard let original = await filesystem.smartShelvesOriginal() else {
-            return BackupParticipantCapture(status: .empty)
+        let original: Data
+        do {
+            guard let data = try await filesystem.smartShelvesOriginalForBackup() else {
+                return BackupParticipantCapture(status: .empty)
+            }
+            original = data
+        } catch {
+            return BackupParticipantCapture(status: .unavailable, message: "The smart shelf original could not be read.")
         }
         do {
             let shelves = try await filesystem.loadSmartShelves()
@@ -240,7 +315,11 @@ public struct FontsBackupParticipant: BackupParticipant {
         var files: [String: Data] = [:]
         var total = 0
         var omitted: [String] = []
-        for url in await fonts.fontFiles() {
+        let fontFiles: [URL]
+        do { fontFiles = try await fonts.fontFilesForBackup() } catch {
+            return BackupParticipantCapture(status: .unavailable, message: "The custom font inventory could not be read.")
+        }
+        for url in fontFiles {
             guard let data = try? Data(contentsOf: url) else {
                 omitted.append(url.lastPathComponent)
                 continue
@@ -254,10 +333,10 @@ public struct FontsBackupParticipant: BackupParticipant {
             files[url.lastPathComponent] = data
         }
         return BackupParticipantCapture(
-            status: files.isEmpty && omitted.isEmpty ? .empty : .complete,
+            status: !omitted.isEmpty ? .unavailable : (files.isEmpty ? .empty : .complete),
             message: omitted.isEmpty
                 ? nil
-                : "\(omitted.count) custom font(s) were too large to include and must be added again.",
+                : "\(omitted.count) custom font(s) could not be included and must be added again.",
             counts: ["fonts": files.count, "omitted": omitted.count],
             files: files
         )
@@ -302,31 +381,117 @@ public struct RecoveryMaterialBackupParticipant: BackupParticipant {
     public let kind = "recovery"
     public let schema = 1
     private let directories: [String: URL]
+    private let originalFiles: [String: URL]
+    private let readFile: @Sendable (URL) throws -> Data
 
     /// `directories` maps a stable label to a folder whose files are recovery originals.
-    public init(directories: [String: URL]) { self.directories = directories }
+    /// Missing folders are empty; any other enumeration/read failure makes capture incomplete.
+    public init(
+        directories: [String: URL],
+        originalFiles: [String: URL] = [:],
+        readFile: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) }
+    ) {
+        self.directories = directories
+        self.originalFiles = originalFiles
+        self.readFile = readFile
+    }
 
     public func capture() async -> BackupParticipantCapture {
         var files: [String: Data] = [:]
-        for (label, directory) in directories {
-            let urls =
-                (try? FileManager.default.contentsOfDirectory(
-                    at: directory,
-                    includingPropertiesForKeys: [.isRegularFileKey],
-                    options: [.skipsHiddenFiles]
-                )) ?? []
-            for url in urls
-            where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
-                if let data = try? Data(contentsOf: url) {
-                    files["\(label)/\(url.lastPathComponent)"] = data
-                }
+        var failures = 0
+        for label in directories.keys.sorted() {
+            guard BackupArchiveCodec.isValidRelativePath(label) else {
+                failures += 1
+                continue
             }
+            let directory = directories[label]!
+            do {
+                let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                guard values.isDirectory == true, values.isSymbolicLink != true else {
+                    failures += 1
+                    continue
+                }
+            } catch {
+                let failure = error as NSError
+                if (failure.domain == NSCocoaErrorDomain && failure.code == NSFileReadNoSuchFileError)
+                    || (failure.domain == NSPOSIXErrorDomain && failure.code == 2) {
+                    continue
+                }
+                failures += 1
+                continue
+            }
+            captureDirectory(directory, path: label, files: &files, failures: &failures)
+        }
+        for path in originalFiles.keys.sorted() {
+            guard BackupArchiveCodec.isValidRelativePath(path), files[path] == nil else {
+                failures += 1
+                continue
+            }
+            let url = originalFiles[path]!
+            do {
+                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                    failures += 1
+                    continue
+                }
+            } catch {
+                let failure = error as NSError
+                if (failure.domain == NSCocoaErrorDomain && failure.code == NSFileReadNoSuchFileError)
+                    || (failure.domain == NSPOSIXErrorDomain && failure.code == 2) { continue }
+                failures += 1
+                continue
+            }
+            do { files[path] = try readFile(url) } catch { failures += 1 }
         }
         return BackupParticipantCapture(
-            status: files.isEmpty ? .empty : .complete,
-            counts: ["files": files.count],
+            status: failures > 0 ? .unavailable : (files.isEmpty ? .empty : .complete),
+            message: failures > 0
+                ? "Some recovery originals could not be read and are missing from this backup."
+                : nil,
+            counts: ["files": files.count, "unreadable": failures],
             files: files
         )
+    }
+
+    private func captureDirectory(
+        _ directory: URL, path: String, files: inout [String: Data], failures: inout Int
+    ) {
+        let children: [URL]
+        do {
+            children = try FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]
+            )
+        } catch {
+            failures += 1
+            return
+        }
+        for child in children.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let childPath = "\(path)/\(child.lastPathComponent)"
+            do {
+                guard BackupArchiveCodec.isValidRelativePath(childPath) else {
+                    failures += 1
+                    continue
+                }
+                let values = try child.resourceValues(
+                    forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]
+                )
+                // A link could escape the declared inventory or form a traversal cycle.
+                guard values.isSymbolicLink != true else {
+                    failures += 1
+                    continue
+                }
+                if values.isDirectory == true {
+                    captureDirectory(child, path: childPath, files: &files, failures: &failures)
+                } else if values.isRegularFile == true {
+                    files[childPath] = try readFile(child)
+                } else {
+                    failures += 1
+                }
+            } catch {
+                failures += 1
+            }
+        }
     }
 
     public func restore(

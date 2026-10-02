@@ -11,6 +11,9 @@ public struct StorytellerServerSettingsView: View {
     @State private var sourceURLs: [BookSourceID: String] = [:]
     @State private var isLoading = false
     @State private var showingAddServer = false
+    /// Servers the person's other devices use, offered with their source IDs (ADR 012).
+    @State private var otherDeviceServers: [LibrarySourceCard] = []
+    @State private var connecting: SourceReconnection?
     #if os(macOS)
     @State private var editingSource: BookSourceRecord?
     #endif
@@ -65,6 +68,46 @@ public struct StorytellerServerSettingsView: View {
                     Label("Add Book Source", systemImage: "plus")
                 }
             }
+
+            if !otherDeviceServers.isEmpty {
+                Section {
+                    ForEach(otherDeviceServers, id: \.sourceID) { card in
+                        Button {
+                            connecting = SourceReconnection(
+                                id: card.sourceID,
+                                name: card.name,
+                                kind: card.kind,
+                                serverURL: card.serverURL,
+                                username: card.username,
+                                storagePathHint: nil
+                            )
+                        } label: {
+                            Label {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(card.name)
+                                    Text(otherDeviceDetail(card))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            } icon: {
+                                Image(systemName: "icloud.and.arrow.down")
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Connects to this server with the same identity, so annotations match your other devices")
+                    }
+                } header: {
+                    Text("From Your Other Devices")
+                } footer: {
+                    Text(
+                        "Connect to a server you already use on another device. Your books, annotations and handwriting then match on both devices. You'll enter the password here; passwords aren't stored in iCloud."
+                    )
+                }
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
@@ -74,6 +117,15 @@ public struct StorytellerServerSettingsView: View {
         .navigationTitle("Book Sources")
         .task {
             await loadSources()
+        }
+        .sheet(item: $connecting) { item in
+            NavigationStack {
+                BookSourceEditorView(source: nil, reconnection: item) {
+                    await loadSources()
+                    await AppAnnotationSync.refreshLibrary()
+                    await MainActor.run { connecting = nil }
+                }
+            }
         }
         .sheet(isPresented: $showingAddServer) {
             NavigationStack {
@@ -110,11 +162,23 @@ public struct StorytellerServerSettingsView: View {
                 urls[source.id] = credentials.url
             }
         }
+        let offered =
+            await AppAnnotationSync.offersOtherDeviceServers
+            ? await AppAnnotationSync.library.remoteSources()
+                .filter { card in !loadedSources.contains { $0.id == card.sourceID } }
+            : []
         await MainActor.run {
             sources = loadedSources
             sourceURLs = urls
+            otherDeviceServers = offered
             isLoading = false
         }
+    }
+
+    private func otherDeviceDetail(_ card: LibrarySourceCard) -> String {
+        let place = card.serverURL ?? "Storyteller server"
+        guard let device = card.deviceName, !device.isEmpty else { return place }
+        return "\(place) · on your \(device)"
     }
 
     private func sourceRow(for source: BookSourceRecord) -> some View {
