@@ -15,7 +15,15 @@ struct ThemeEditorView: View {
     init(settingsVM: SettingsViewModel, theme: ReaderTheme) {
         self.settingsVM = settingsVM
         self.theme = theme
-        self._draft = State(initialValue: theme)
+        // Highlight names are global, not per theme: edit the names in use everywhere.
+        var draft = theme
+        draft.userHighlightLabel1 = settingsVM.userHighlightLabel1
+        draft.userHighlightLabel2 = settingsVM.userHighlightLabel2
+        draft.userHighlightLabel3 = settingsVM.userHighlightLabel3
+        draft.userHighlightLabel4 = settingsVM.userHighlightLabel4
+        draft.userHighlightLabel5 = settingsVM.userHighlightLabel5
+        draft.userHighlightLabel6 = settingsVM.userHighlightLabel6
+        self._draft = State(initialValue: draft)
     }
 
     private var isBuiltInEdit: Bool { theme.isBuiltIn }
@@ -183,6 +191,9 @@ struct ThemeEditorView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("User Highlight Colors")
                 .font(.headline)
+            Text("Colors belong to this theme. Names apply to every theme.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Highlight Style")
@@ -394,6 +405,12 @@ struct ThemeEditorView: View {
     }
 
     private func saveEditing() {
+        settingsVM.userHighlightLabel1 = draft.userHighlightLabel1
+        settingsVM.userHighlightLabel2 = draft.userHighlightLabel2
+        settingsVM.userHighlightLabel3 = draft.userHighlightLabel3
+        settingsVM.userHighlightLabel4 = draft.userHighlightLabel4
+        settingsVM.userHighlightLabel5 = draft.userHighlightLabel5
+        settingsVM.userHighlightLabel6 = draft.userHighlightLabel6
         if isBuiltInEdit {
             settingsVM.updateBuiltInTheme(draft)
         } else {

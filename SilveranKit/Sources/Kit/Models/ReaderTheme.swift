@@ -132,7 +132,7 @@ public struct ReaderTheme: Codable, Equatable, Sendable, Identifiable {
 extension ReaderTheme {
     public static let builtInLight = ReaderTheme(
         id: "builtin-light",
-        name: "Light",
+        name: "Original",
         isBuiltIn: true,
         appearance: .light,
         backgroundColor: kDefaultBackgroundColorLight,
@@ -143,7 +143,7 @@ extension ReaderTheme {
 
     public static let builtInDark = ReaderTheme(
         id: "builtin-dark",
-        name: "Dark",
+        name: "Original Dark",
         isBuiltIn: true,
         appearance: .dark,
         backgroundColor: kDefaultBackgroundColorDark,
@@ -158,9 +158,88 @@ extension ReaderTheme {
         userHighlightColor6: kDefaultUserHighlightColorsDark[5],
     )
 
+    // Paired built-ins: each family has a light and a dark variant, and the reader's
+    // appearance mode picks between them. Colours only; fonts stay the reader's choice.
+    // IDs must not start with "builtin-light" or "builtin-dark": migrateThemeId folds
+    // those legacy prefixes into the Original pair.
+    public static let builtInPaper = pairedBuiltIn(
+        id: "builtin-paper",
+        name: "Paper",
+        isDark: false,
+        background: "#F7F3EA",
+        foreground: "#2E2A24"
+    )
+    public static let builtInPaperDark = pairedBuiltIn(
+        id: "builtin-paper-dark",
+        name: "Paper Dark",
+        isDark: true,
+        background: "#22201C",
+        foreground: "#DDD5C6"
+    )
+    public static let builtInCalm = pairedBuiltIn(
+        id: "builtin-calm",
+        name: "Calm",
+        isDark: false,
+        background: "#F1E4C9",
+        foreground: "#4B3A26"
+    )
+    public static let builtInCalmDark = pairedBuiltIn(
+        id: "builtin-calm-dark",
+        name: "Calm Dark",
+        isDark: true,
+        background: "#2B241B",
+        foreground: "#D8C3A0"
+    )
+    public static let builtInQuiet = pairedBuiltIn(
+        id: "builtin-quiet",
+        name: "Quiet",
+        isDark: false,
+        background: "#E4E4E2",
+        foreground: "#4A4A48"
+    )
+    public static let builtInQuietDark = pairedBuiltIn(
+        id: "builtin-quiet-dark",
+        name: "Quiet Dark",
+        isDark: true,
+        background: "#3A3A3C",
+        foreground: "#B4B4B6"
+    )
+
+    private static func pairedBuiltIn(
+        id: String,
+        name: String,
+        isDark: Bool,
+        background: String,
+        foreground: String,
+    ) -> ReaderTheme {
+        let palette = isDark ? kDefaultUserHighlightColorsDark : kDefaultUserHighlightColorsLight
+        return ReaderTheme(
+            id: id,
+            name: name,
+            isBuiltIn: true,
+            appearance: isDark ? .dark : .light,
+            backgroundColor: background,
+            foregroundColor: foreground,
+            highlightColor: isDark ? "#65A8EE" : "#254DF4",
+            readaloudHighlightMode: "text",
+            userHighlightColor1: palette[0],
+            userHighlightColor2: palette[1],
+            userHighlightColor3: palette[2],
+            userHighlightColor4: palette[3],
+            userHighlightColor5: palette[4],
+            userHighlightColor6: palette[5],
+        )
+    }
+
     public static let allBuiltIn: [ReaderTheme] = [
         .builtInLight,
         .builtInDark,
+        .builtInPaper,
+        .builtInPaperDark,
+        .builtInCalm,
+        .builtInCalmDark,
+        .builtInQuiet,
+        .builtInQuietDark,
     ]
 
     public static func effectiveBuiltIn(overrides: [ReaderTheme]) -> [ReaderTheme] {
@@ -224,4 +303,45 @@ extension ReaderTheme: Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
+}
+
+/// A built-in theme offered as one choice with a light and a dark variant. Selecting a
+/// family stores both variant IDs in the existing light/dark selections, so older
+/// clients and the sync schema keep their two-slot model.
+public struct ReaderThemeFamily: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let lightThemeId: String
+    public let darkThemeId: String
+
+    public func themeId(isDark: Bool) -> String {
+        isDark ? darkThemeId : lightThemeId
+    }
+
+    public static let original = ReaderThemeFamily(
+        id: "original",
+        name: "Original",
+        lightThemeId: ReaderTheme.builtInLight.id,
+        darkThemeId: ReaderTheme.builtInDark.id
+    )
+    public static let paper = ReaderThemeFamily(
+        id: "paper",
+        name: "Paper",
+        lightThemeId: ReaderTheme.builtInPaper.id,
+        darkThemeId: ReaderTheme.builtInPaperDark.id
+    )
+    public static let calm = ReaderThemeFamily(
+        id: "calm",
+        name: "Calm",
+        lightThemeId: ReaderTheme.builtInCalm.id,
+        darkThemeId: ReaderTheme.builtInCalmDark.id
+    )
+    public static let quiet = ReaderThemeFamily(
+        id: "quiet",
+        name: "Quiet",
+        lightThemeId: ReaderTheme.builtInQuiet.id,
+        darkThemeId: ReaderTheme.builtInQuietDark.id
+    )
+
+    public static let builtIn: [ReaderThemeFamily] = [.original, .paper, .calm, .quiet]
 }

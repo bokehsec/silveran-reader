@@ -83,6 +83,12 @@ public enum ConfigurationSyncSchema {
                 "reading.readaloudHighlightMode",
             ]
         ),
+        // Light/dark override follows the person across devices (owner decision, 2026-10-02).
+        Unit(
+            id: "reading.readerAppearance",
+            scope: .shared,
+            paths: ["reading.readerAppearance"]
+        ),
         Unit(id: "reading.fontSize", scope: .device, paths: ["reading.fontSize"]),
         Unit(id: "reading.fontFamily", scope: .device, paths: ["reading.fontFamily"]),
         Unit(id: "reading.lineSpacing", scope: .device, paths: ["reading.lineSpacing"]),

@@ -17,6 +17,8 @@ struct EbookPlayerTopToolbar: View {
     let sleepTimerType: SleepTimerType?
 
     @Binding var showCustomizePopover: Bool
+    @Binding var showOptionsSheet: Bool
+    @Binding var showSleepTimerSheet: Bool
     @Binding var showSearchSheet: Bool
     @Binding var showBookmarksPanel: Bool
     @Binding var showAudioSidebar: Bool
@@ -36,10 +38,7 @@ struct EbookPlayerTopToolbar: View {
     var onViewMarginNotes: (() -> Void)? = nil
     var marginOpen = false
 
-    let settingsVM: SettingsViewModel
-
-    @State private var showSleepTimerSheet = false
-    @State private var showOptionsSheet = false
+    @Bindable var settingsVM: SettingsViewModel
 
     private var isPad: Bool {
         UIDevice.current.userInterfaceIdiom == .pad
@@ -116,7 +115,6 @@ struct EbookPlayerTopToolbar: View {
                         .frame(width: 44, height: 44)
                         .accessibilityLabel("Handwriting tools")
                     }
-
 
                     if isPad, let onToggleMargin {
                         Button {
@@ -206,14 +204,10 @@ struct EbookPlayerTopToolbar: View {
                     .frame(width: 44, height: 44)
                     .sheet(isPresented: $showCustomizePopover) {
                         NavigationStack {
-                            ScrollView {
-                                EbookPlayerSettings(
-                                    settingsVM: settingsVM,
-                                    hasAudioNarration: hasAudioNarration,
-                                    onDismiss: nil,
-                                )
-                                .padding()
-                            }
+                            EbookPlayerSettings(
+                                settingsVM: settingsVM,
+                                readerColorScheme: colorScheme,
+                            )
                             .navigationTitle("Customize Reader")
                             .navigationBarTitleDisplayMode(.inline)
                             .toolbar {
@@ -224,7 +218,11 @@ struct EbookPlayerTopToolbar: View {
                                 }
                             }
                         }
-                        .presentationDetents([.fraction(0.7)])
+                        // iPhone: tall enough for every main-menu row, including More
+                        // Options, while the page stays visible above to preview changes.
+                        // iPad: the full form sheet; a fractional detent clips the menu.
+                        .presentationDetents(isPad ? [.large] : [.fraction(0.6), .large])
+                        .preferredColorScheme(colorScheme)
                     }
 
                     if isPad {
@@ -252,6 +250,14 @@ struct EbookPlayerTopToolbar: View {
                     .sheet(isPresented: $showOptionsSheet) {
                         optionsSheet
                     }
+                    #if DEBUG
+                    // QA hook paired with EbookPlayerView's; debug builds only.
+                    .task {
+                        if CommandLine.arguments.contains("-SilveranOpenDisplayOptions") {
+                            showOptionsSheet = true
+                        }
+                    }
+                    #endif
                 }
             }
             .padding(.horizontal, 8)
@@ -343,6 +349,25 @@ struct EbookPlayerTopToolbar: View {
                         ) {
                             Label("Show Stats Below", systemImage: "clock")
                         }
+                    }
+                }
+
+                Section("Page Turning") {
+                    Toggle(isOn: $settingsVM.enableMarginClickNavigation) {
+                        Label("Tap Margins to Turn Pages", systemImage: "hand.tap")
+                    }
+                    .onChange(of: settingsVM.enableMarginClickNavigation) { _, _ in
+                        settingsVM.save()
+                    }
+
+                    if hasAudioNarration {
+                        Toggle(isOn: $settingsVM.animatePageTurnsDuringReadaloud) {
+                            Label("Animate During Read-Aloud", systemImage: "book.pages")
+                        }
+                        .onChange(of: settingsVM.animatePageTurnsDuringReadaloud) { _, _ in
+                            settingsVM.save()
+                        }
+                        .disabled(settingsVM.scrollingMode || settingsVM.pageTurnStyle != "curl")
                     }
                 }
 

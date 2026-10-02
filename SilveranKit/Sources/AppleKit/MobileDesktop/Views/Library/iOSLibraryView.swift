@@ -69,6 +69,7 @@ public struct iOSLibraryView: View {
     @State private var showMetadataPermissionError = false
     @State private var metadataPermissionErrorMessage = ""
     @State private var settingsViewModel = SettingsViewModel()
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("coverPref.iOSLibrary") private var coverPrefRaw: String = CoverPreference
         .preferEbook.rawValue
     @Environment(MediaViewModel.self) private var mediaViewModel: MediaViewModel
@@ -538,6 +539,7 @@ public struct iOSLibraryView: View {
                     onClose: { PlayerPresenter.shared.dismissCard() },
                 )
                 .navigationBarTitleDisplayMode(.inline)
+                .environment(\.readerSystemColorScheme, colorScheme)
         }
     }
 

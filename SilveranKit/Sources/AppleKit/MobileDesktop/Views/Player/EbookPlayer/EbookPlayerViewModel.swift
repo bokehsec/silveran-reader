@@ -87,6 +87,19 @@ class EbookPlayerViewModel {
         ebookFileFormat == .cbz
     }
 
+    /// The bottom mini player carries audio controls and the comic page scrubber.
+    /// A plain ebook has neither, so it reads without one.
+    var showsMiniPlayer: Bool {
+        hasAudioNarration || isComicBook
+    }
+
+    #if os(iOS)
+    /// "Always Show" only pins a mini player that this book actually has.
+    var pinsMiniPlayer: Bool {
+        showsMiniPlayer && settingsVM.alwaysShowMiniPlayer
+    }
+    #endif
+
     private var _sidebarInitialized = false
     #if os(macOS)
     var showChapterSidebar: Bool = false {
@@ -134,6 +147,10 @@ class EbookPlayerViewModel {
     static let chromeAutoHideDelay: Duration = .seconds(5)
     #endif
     var showCustomizePopover = false
+    /// Display Options and the sleep timer are presented from the top bar. They live here
+    /// (not as toolbar state) so the bars stay up while they are open (BF-059).
+    var showDisplayOptions = false
+    var showSleepTimerSheet = false
     var commsBridge: ReaderCommsBridge? = nil
     /// Per-book lifecycle ownership keeps pending edits alive beyond a view or WebView.
     let inkSession: InkSession
@@ -556,7 +573,7 @@ class EbookPlayerViewModel {
 
     func handleToggleOverlay() {
         #if os(iOS)
-        if settingsVM.alwaysShowMiniPlayer {
+        if pinsMiniPlayer {
             isTopBarVisible.toggle()
             if !isTopBarVisible {
                 collapseCardTrigger += 1
@@ -575,12 +592,13 @@ class EbookPlayerViewModel {
     #if os(iOS)
     /// Whether the bars a center tap would hide are showing.
     private var isChromeVisible: Bool {
-        settingsVM.alwaysShowMiniPlayer ? isTopBarVisible : (isTopBarVisible || isReadingBarVisible)
+        pinsMiniPlayer ? isTopBarVisible : (isTopBarVisible || isReadingBarVisible)
     }
 
     /// Menus, panels, and sheets opened from the bars keep them on screen.
     var isChromeInUse: Bool {
-        showCustomizePopover || showSearchPanel || showBookmarksPanel || showAudioSheet
+        showCustomizePopover || showDisplayOptions || showSleepTimerSheet || showSearchPanel
+            || showBookmarksPanel || showAudioSheet
             || showTranslation || isAudioCardExpanded || pendingSelection != nil
             || pendingEditHighlight != nil || showServerPositionDialog
     }
@@ -608,7 +626,7 @@ class EbookPlayerViewModel {
         guard isChromeVisible, !isChromeInUse, !UIAccessibility.isVoiceOverRunning else { return }
         debugLog("[EbookPlayerViewModel] Auto-hiding reader bars after inactivity")
         withAnimation(.easeInOut(duration: 0.25)) {
-            if settingsVM.alwaysShowMiniPlayer {
+            if pinsMiniPlayer {
                 isTopBarVisible = false
                 collapseCardTrigger += 1
             } else {

@@ -78,6 +78,9 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
         public var readaloudHighlightMode: String
         public var tvSubtitleFontSize: Double
         public var tvReaderAppearance: TVReaderAppearance
+        /// Reader light/dark override: "system", "light" or "dark". Stored as a string so an
+        /// unknown future value decodes and is treated as "system" instead of failing.
+        public var readerAppearance: String
 
         public init(
             fontSize: Double = kDefaultFontSize,
@@ -114,6 +117,7 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
             readaloudHighlightMode: String = kDefaultReadaloudHighlightMode,
             tvSubtitleFontSize: Double = kDefaultTVSubtitleFontSize,
             tvReaderAppearance: TVReaderAppearance = TVReaderAppearance(),
+            readerAppearance: String = kDefaultReaderAppearance,
         ) {
             self.fontSize = fontSize
             self.fontFamily = fontFamily
@@ -153,6 +157,7 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
             self.readaloudHighlightMode = readaloudHighlightMode
             self.tvSubtitleFontSize = tvSubtitleFontSize
             self.tvReaderAppearance = tvReaderAppearance
+            self.readerAppearance = readerAppearance
         }
 
         public init(from decoder: Decoder) throws {
@@ -278,6 +283,9 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
                     ))
                         ?? kDefaultTVBackgroundStyle
                 )
+            readerAppearance =
+                (try? container?.decode(String.self, forKey: .readerAppearance))
+                ?? kDefaultReaderAppearance
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -291,7 +299,7 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
             case userHighlightLabel1, userHighlightLabel2, userHighlightLabel3
             case userHighlightLabel4, userHighlightLabel5, userHighlightLabel6
             case userHighlightMode, readaloudHighlightMode, tvSubtitleFontSize
-            case tvReaderAppearance
+            case tvReaderAppearance, readerAppearance
         }
 
         private enum LegacyCodingKeys: String, CodingKey {
@@ -565,8 +573,8 @@ public struct SilveranGlobalConfig: Codable, Equatable, Sendable {
         public var builtInThemeOverrides: [ReaderTheme]
 
         public init(
-            selectedLightThemeId: String = "builtin-light",
-            selectedDarkThemeId: String = "builtin-dark",
+            selectedLightThemeId: String = kDefaultLightThemeId,
+            selectedDarkThemeId: String = kDefaultDarkThemeId,
             customThemes: [ReaderTheme] = [],
             builtInThemeOverrides: [ReaderTheme] = [],
         ) {

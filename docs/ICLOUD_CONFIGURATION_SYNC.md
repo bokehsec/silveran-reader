@@ -13,7 +13,7 @@ Disabling sync retains local settings and does not delete the shared cloud store
 
 ## What follows the person
 
-- Shared: themes and their selected IDs/appearance values, highlight palettes and labels, accent color, playback speed, lock-to-audio, preferred media type, library audio-indicator preference, Storyteller sync interval/preferences, sidebar/home customization, and reviewed import preferences.
+- Shared: themes and their selected IDs/appearance values, the reader's System/Light/Dark choice (`reading.readerAppearance`, its own unit), highlight palettes and labels, accent color, playback speed, lock-to-audio, preferred media type, library audio-indicator preference, Storyteller sync interval/preferences, sidebar/home customization, and reviewed import preferences.
 - Shared within Mac/phone/tablet classes: reader typography and layout, reading-bar presentation, library layouts/sorting/covers/badges, and reviewed table preferences. A Mac layout does not override a phone layout.
 - Local: volume, window sizes, current book and panel state, download state, diagnostics, migrations, content-server settings, folder paths/bookmarks, and credentials. Missing fonts use the reader's existing CSS fallback without changing the stored preference.
 

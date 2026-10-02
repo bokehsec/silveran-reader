@@ -3,289 +3,436 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 #if os(iOS)
+/// The reader's Customize sheet: the handful of choices people change while reading.
+/// Everything else lives one level down in More Options.
 struct EbookPlayerSettings: View {
     @Bindable var settingsVM: SettingsViewModel
-    let hasAudioNarration: Bool
-    @Environment(\.colorScheme) private var colorScheme
+    /// The scheme the reader is showing (after the Light/Dark choice), so swatches preview
+    /// the variant the person will actually see.
+    let readerColorScheme: ColorScheme
 
-    let onDismiss: (() -> Void)?
+    private var isDark: Bool { readerColorScheme == .dark }
 
-    @State private var fontSizeInput: String = "20"
+    var body: some View {
+        List {
+            Section {
+                textSizeRow
+                NavigationLink {
+                    ReaderFontPickerView(settingsVM: settingsVM)
+                } label: {
+                    LabeledContent("Font", value: ReaderFontOptions.label(for: settingsVM.fontFamily))
+                }
+            }
+
+            Section("Appearance") {
+                Picker("Appearance", selection: appearanceBinding) {
+                    Text("System").tag(ReaderAppearanceMode.system)
+                    Text("Light").tag(ReaderAppearanceMode.light)
+                    Text("Dark").tag(ReaderAppearanceMode.dark)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                themeSwatches
+            }
+
+            Section {
+                Picker("Layout", selection: $settingsVM.scrollingMode) {
+                    Text("Pages").tag(false)
+                    Text("Scroll").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: settingsVM.scrollingMode) { _, _ in settingsVM.save() }
+
+                NavigationLink("More Options") {
+                    ReaderMoreOptionsView(settingsVM: settingsVM)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .listSectionSpacing(.compact)
+        .contentMargins(.top, 4, for: .scrollContent)
+    }
+
+    // MARK: Text size
+
+    private var textSizeRow: some View {
+        let smaller = ReaderTypography.smaller(than: settingsVM.fontSize)
+        let larger = ReaderTypography.larger(than: settingsVM.fontSize)
+        let percent = ReaderTypography.percentOfDefault(settingsVM.fontSize)
+        return HStack {
+            Button {
+                if let smaller { setFontSize(smaller) }
+            } label: {
+                Text("A")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 56, height: 32)
+            }
+            .disabled(smaller == nil)
+            .accessibilityLabel("Smaller text")
+
+            Spacer()
+            Text("\(percent)%")
+                .font(.body.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Spacer()
+
+            Button {
+                if let larger { setFontSize(larger) }
+            } label: {
+                Text("A")
+                    .font(.system(size: 24, weight: .medium))
+                    .frame(width: 56, height: 32)
+            }
+            .disabled(larger == nil)
+            .accessibilityLabel("Larger text")
+        }
+        .buttonStyle(.bordered)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Text size")
+        .accessibilityValue("\(percent) percent")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+                case .increment: if let larger { setFontSize(larger) }
+                case .decrement: if let smaller { setFontSize(smaller) }
+                @unknown default: break
+            }
+        }
+    }
+
+    private func setFontSize(_ size: Double) {
+        settingsVM.fontSize = size
+        settingsVM.save()
+    }
+
+    // MARK: Appearance and themes
+
+    private var appearanceBinding: Binding<ReaderAppearanceMode> {
+        Binding(
+            get: { settingsVM.appearanceMode },
+            set: { newValue in
+                settingsVM.appearanceMode = newValue
+                settingsVM.save()
+            },
+        )
+    }
+
+    private var customSwatchThemes: [ReaderTheme] {
+        settingsVM.customThemes.filter { $0.availableFor(colorScheme: isDark ? "dark" : "light") }
+    }
+
+    private var themeSwatches: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach(ReaderThemeFamily.builtIn) { family in
+                    let id = family.themeId(isDark: isDark)
+                    if let theme = settingsVM.resolveTheme(id: id) {
+                        ThemeSwatch(
+                            name: family.name,
+                            theme: theme,
+                            isSelected: settingsVM.activeThemeId(for: readerColorScheme) == id,
+                        ) {
+                            settingsVM.selectThemeFamily(family, for: readerColorScheme)
+                        }
+                    }
+                }
+                ForEach(customSwatchThemes) { theme in
+                    ThemeSwatch(
+                        name: theme.name,
+                        theme: theme,
+                        isSelected: settingsVM.activeThemeId(for: readerColorScheme) == theme.id,
+                    ) {
+                        settingsVM.selectCustomTheme(theme, for: readerColorScheme)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+}
+
+private struct ThemeSwatch: View {
+    let name: String
+    let theme: ReaderTheme
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color(hex: theme.backgroundColor) ?? .white)
+                    .frame(width: 64, height: 52)
+                    .overlay {
+                        Text("Aa")
+                            .font(.system(size: 20, weight: .semibold, design: .serif))
+                            .foregroundStyle(Color(hex: theme.foregroundColor) ?? .black)
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(
+                                isSelected ? Color.accentColor : Color.secondary.opacity(0.35),
+                                lineWidth: isSelected ? 3 : 1,
+                            )
+                    }
+                Text(name)
+                    .font(.caption)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: 68)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(name) theme")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+// MARK: - Font
+
+private struct ReaderFontPickerView: View {
+    @Bindable var settingsVM: SettingsViewModel
     @State private var customFamilies: [CustomFontFamily] = []
     @State private var showFontManager = false
 
     var body: some View {
-        iOSBody
+        List {
+            Section {
+                ForEach(ReaderFontOptions.generic + ReaderFontOptions.apple, id: \.value) { font in
+                    fontRow(label: font.label, value: font.value)
+                }
+            }
+            if !customFamilies.isEmpty || isUnlistedCustomFont {
+                Section("Your Fonts") {
+                    ForEach(customFamilies) { family in
+                        fontRow(label: family.name, value: family.name)
+                    }
+                    if isUnlistedCustomFont {
+                        fontRow(label: settingsVM.fontFamily, value: settingsVM.fontFamily)
+                    }
+                }
+            }
+            Section {
+                Button("Manage Your Fonts…") { showFontManager = true }
+            }
+        }
+        .contentMargins(.top, 4, for: .scrollContent)
+        .navigationTitle("Font")
+        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showFontManager) {
+            IOSFontManagerView(
+                customFamilies: $customFamilies,
+                selectedFont: $settingsVM.fontFamily,
+                onSave: { settingsVM.save() },
+            )
+        }
+        .task {
+            await CustomFontsActor.shared.refreshFonts()
+            customFamilies = await CustomFontsActor.shared.availableFamilies
+        }
     }
 
-    private var iOSBody: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Button {
-                    resetToDefaults()
-                } label: {
-                    Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
+    /// A custom font chosen on another device or since removed; keep it visible and selected.
+    private var isUnlistedCustomFont: Bool {
+        !ReaderFontOptions.isBuiltIn(settingsVM.fontFamily)
+            && !customFamilies.contains { $0.name == settingsVM.fontFamily }
+    }
 
-            Divider()
-
-            Text("Reader")
-                .font(.headline)
-                .foregroundStyle(.primary)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Font Size")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Slider(value: $settingsVM.fontSize, in: 8...60, step: 1)
-                        .onChange(of: settingsVM.fontSize) { _, newValue in
-                            fontSizeInput = String(Int(newValue))
-                            settingsVM.save()
-                        }
-                    TextField("Size", text: $fontSizeInput)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 50)
-                        .multilineTextAlignment(.trailing)
-                        .onSubmit {
-                            if let val = Double(fontSizeInput), val >= 8, val <= 60 {
-                                settingsVM.fontSize = val
-                                settingsVM.save()
-                            } else {
-                                fontSizeInput = String(Int(settingsVM.fontSize))
-                            }
-                        }
+    private func fontRow(label: String, value: String) -> some View {
+        Button {
+            settingsVM.fontFamily = value
+            settingsVM.save()
+        } label: {
+            HStack {
+                Text(label)
+                    .font(ReaderFontOptions.previewFont(for: value))
+                    .foregroundStyle(.primary)
+                Spacer()
+                if settingsVM.fontFamily == value {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(Color.accentColor)
                 }
             }
+        }
+        .tint(.primary)
+        .accessibilityAddTraits(settingsVM.fontFamily == value ? .isSelected : [])
+    }
+}
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Font")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker("Font", selection: $settingsVM.fontFamily) {
-                    ForEach(ReaderFontOptions.generic, id: \.value) { font in
-                        Text(font.label).tag(font.value)
-                    }
+// MARK: - More Options
 
-                    Divider()
-                    ForEach(ReaderFontOptions.apple, id: \.value) { font in
-                        Text(font.label).tag(font.value)
-                    }
+private struct ReaderMoreOptionsView: View {
+    @Bindable var settingsVM: SettingsViewModel
+    @State private var confirmReset = false
 
-                    if !customFamilies.isEmpty {
-                        Divider()
-                        ForEach(customFamilies) { family in
-                            Text(family.name).tag(family.name)
-                        }
-                    }
-
-                    if isCustomFont(settingsVM.fontFamily)
-                        && !customFamilies.contains(where: { $0.name == settingsVM.fontFamily })
-                    {
-                        Text(settingsVM.fontFamily).tag(settingsVM.fontFamily)
+    var body: some View {
+        List {
+            Section("Text") {
+                segmentedRow("Line Spacing") {
+                    Picker("Line Spacing", selection: lineSpacingBinding) {
+                        Text("Compact").tag(ReaderTypography.LineSpacing?.some(.compact))
+                        Text("Normal").tag(ReaderTypography.LineSpacing?.some(.normal))
+                        Text("Relaxed").tag(ReaderTypography.LineSpacing?.some(.relaxed))
                     }
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .onChange(of: settingsVM.fontFamily) { _, _ in
-                    settingsVM.save()
+                segmentedRow("Margins") {
+                    Picker("Margins", selection: marginsBinding) {
+                        Text("Narrow").tag(ReaderTypography.Margins?.some(.narrow))
+                        Text("Normal").tag(ReaderTypography.Margins?.some(.normal))
+                        Text("Wide").tag(ReaderTypography.Margins?.some(.wide))
+                    }
                 }
-
-                Button("Manage Fonts...") {
-                    showFontManager = true
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.blue)
-                .font(.caption)
-                .sheet(isPresented: $showFontManager) {
-                    IOSFontManagerView(
-                        customFamilies: $customFamilies,
-                        selectedFont: $settingsVM.fontFamily,
-                        onSave: { settingsVM.save() },
-                    )
-                }
+                Toggle("Justify Text", isOn: justifyBinding)
             }
 
-            Toggle("Single Column", isOn: singleColumnBinding)
-                .onChange(of: settingsVM.singleColumnMode) { _, _ in
-                    settingsVM.save()
+            Section {
+                segmentedRow("Page Turn") {
+                    Picker("Page Turn", selection: $settingsVM.pageTurnStyle) {
+                        Text("None").tag("none")
+                        Text("Slide").tag("slide")
+                        Text("Curl").tag("curl")
+                    }
+                    .onChange(of: settingsVM.pageTurnStyle) { _, _ in settingsVM.save() }
                 }
-                .disabled(settingsVM.scrollingMode)
-
-            Toggle("Scrolling Mode", isOn: $settingsVM.scrollingMode)
-                .onChange(of: settingsVM.scrollingMode) { _, _ in
-                    settingsVM.save()
-                }
-
-            Toggle("Margin Tap to Turn Pages", isOn: $settingsVM.enableMarginClickNavigation)
-                .onChange(of: settingsVM.enableMarginClickNavigation) { _, _ in
-                    settingsVM.save()
-                }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Page Turn")
-                Picker("Page Turn", selection: $settingsVM.pageTurnStyle) {
-                    Text("None").tag("none")
-                    Text("Slide").tag("slide")
-                    Text("Curl").tag("curl")
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .onChange(of: settingsVM.pageTurnStyle) { _, _ in
-                    settingsVM.save()
+                Toggle("Single Column", isOn: singleColumnBinding)
+            } header: {
+                Text("Pages")
+            } footer: {
+                if settingsVM.scrollingMode {
+                    Text("Page turns and columns apply when Layout is set to Pages.")
                 }
             }
             .disabled(settingsVM.scrollingMode)
 
-            Toggle(
-                "Animate Read-Aloud Page Turns",
-                isOn: $settingsVM.animatePageTurnsDuringReadaloud,
-            )
-            .onChange(of: settingsVM.animatePageTurnsDuringReadaloud) { _, _ in
-                settingsVM.save()
+            Section {
+                spacingSlider(
+                    "Word Spacing",
+                    value: $settingsVM.wordSpacing,
+                    range: -0.5...2.0,
+                    step: 0.1,
+                    format: { String(format: "%.1f em", $0) },
+                )
+                spacingSlider(
+                    "Letter Spacing",
+                    value: $settingsVM.letterSpacing,
+                    range: -0.1...0.5,
+                    step: 0.01,
+                    format: { String(format: "%.2f em", $0) },
+                )
+            } header: {
+                Text("Accessibility")
+            } footer: {
+                Text("Extra space between words or letters can make text easier to follow.")
             }
-            .disabled(settingsVM.scrollingMode || settingsVM.pageTurnStyle != "curl")
 
-            labeledSlider(
-                label: "Line Spacing",
-                value: $settingsVM.lineSpacing,
-                range: 1.0...2.5,
-                step: 0.1,
-                formatter: { String(format: "%.1f", $0) },
-            )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Text Alignment")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker("Text Alignment", selection: $settingsVM.textAlignment) {
-                    Image(systemName: "text.alignleft").tag("left")
-                    Image(systemName: "text.justify").tag("justify")
-                    Image(systemName: "text.alignright").tag("right")
+            Section {
+                NavigationLink("Manage Themes") {
+                    ManageThemesView(settingsVM: settingsVM)
                 }
+            }
+
+            Section {
+                Button("Reset Text & Layout") { confirmReset = true }
+            } footer: {
+                Text("Restores size, font, spacing, margins and page settings. Themes are kept.")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .contentMargins(.top, 4, for: .scrollContent)
+        .navigationTitle("More Options")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "Reset text and layout to the defaults?",
+            isPresented: $confirmReset,
+            titleVisibility: .visible,
+        ) {
+            Button("Reset", role: .destructive) { resetTextAndLayout() }
+        }
+    }
+
+    private var lineSpacingBinding: Binding<ReaderTypography.LineSpacing?> {
+        Binding(
+            get: { ReaderTypography.LineSpacing.matching(settingsVM.lineSpacing) },
+            set: { newValue in
+                guard let newValue else { return }
+                settingsVM.lineSpacing = newValue.value
+                settingsVM.save()
+            },
+        )
+    }
+
+    private var marginsBinding: Binding<ReaderTypography.Margins?> {
+        Binding(
+            get: {
+                ReaderTypography.Margins.matching(
+                    leftRight: settingsVM.marginLeftRight,
+                    topBottom: settingsVM.marginTopBottom,
+                )
+            },
+            set: { newValue in
+                guard let newValue else { return }
+                settingsVM.marginLeftRight = newValue.leftRight
+                settingsVM.marginTopBottom = newValue.topBottom
+                settingsVM.save()
+            },
+        )
+    }
+
+    private var justifyBinding: Binding<Bool> {
+        Binding(
+            get: { settingsVM.textAlignment == "justify" },
+            set: { newValue in
+                settingsVM.textAlignment = newValue ? "justify" : "left"
+                settingsVM.save()
+            },
+        )
+    }
+
+    private var singleColumnBinding: Binding<Bool> {
+        Binding(
+            get: { settingsVM.singleColumnMode || settingsVM.scrollingMode },
+            set: { newValue in
+                settingsVM.singleColumnMode = newValue
+                settingsVM.save()
+            },
+        )
+    }
+
+    /// A label above a full-width segmented control, so rows line up at every width.
+    private func segmentedRow(
+        _ title: String,
+        @ViewBuilder picker: () -> some View,
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+            picker()
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .onChange(of: settingsVM.textAlignment) { _, _ in
-                    settingsVM.save()
-                }
-            }
-
-            Divider()
-
-            labeledSlider(
-                label: "Margins (Left/Right)",
-                value: $settingsVM.marginLeftRight,
-                range: 0...30,
-                step: 1,
-                formatter: { "\(Int($0))%" },
-            )
-
-            labeledSlider(
-                label: "Margins (Top/Bottom)",
-                value: $settingsVM.marginTopBottom,
-                range: 0...30,
-                step: 1,
-                formatter: { "\(Int($0))%" },
-            )
-
-            Divider()
-
-            labeledSlider(
-                label: "Word Spacing",
-                value: $settingsVM.wordSpacing,
-                range: -0.5...2.0,
-                step: 0.1,
-                formatter: { String(format: "%.1fem", $0) },
-            )
-
-            labeledSlider(
-                label: "Letter Spacing",
-                value: $settingsVM.letterSpacing,
-                range: -0.1...0.5,
-                step: 0.01,
-                formatter: { String(format: "%.2fem", $0) },
-            )
-
-            Divider()
-
-            Text("Themes")
-                .font(.headline)
-                .foregroundStyle(.primary)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Light Mode Theme")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker("Light Mode Theme", selection: $settingsVM.selectedLightThemeId) {
-                    ForEach(settingsVM.lightThemes) { theme in
-                        Text(theme.name).tag(theme.id)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .onChange(of: settingsVM.selectedLightThemeId) { _, _ in
-                    settingsVM.applyActiveTheme(for: colorScheme)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Dark Mode Theme")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Picker("Dark Mode Theme", selection: $settingsVM.selectedDarkThemeId) {
-                    ForEach(settingsVM.darkThemes) { theme in
-                        Text(theme.name).tag(theme.id)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .onChange(of: settingsVM.selectedDarkThemeId) { _, _ in
-                    settingsVM.applyActiveTheme(for: colorScheme)
-                }
-            }
-
-            NavigationLink {
-                ManageThemesView(settingsVM: settingsVM)
-            } label: {
-                Label("Manage Themes...", systemImage: "paintpalette")
-            }
         }
-        .onAppear {
-            fontSizeInput = String(Int(settingsVM.fontSize))
-            Task {
-                await loadCustomFonts()
-            }
-        }
+        .padding(.vertical, 2)
     }
 
-    private func loadCustomFonts() async {
-        await CustomFontsActor.shared.refreshFonts()
-        customFamilies = await CustomFontsActor.shared.availableFamilies
-    }
-
-    @ViewBuilder
-    private func labeledSlider(
-        label: String,
+    private func spacingSlider(
+        _ title: String,
         value: Binding<Double>,
         range: ClosedRange<Double>,
         step: Double,
-        formatter: (Double) -> String,
+        format: @escaping (Double) -> String,
     ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(label): \(formatter(value.wrappedValue))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Slider(value: value, in: range, step: step)
-                .onChange(of: value.wrappedValue) { _, _ in
-                    settingsVM.save()
-                }
+            LabeledContent(title, value: format(value.wrappedValue))
+            Slider(value: value, in: range, step: step) {
+                Text(title)
+            }
+            .accessibilityValue(format(value.wrappedValue))
+            .onChange(of: value.wrappedValue) { _, _ in settingsVM.save() }
         }
     }
 
-    private func resetToDefaults() {
+    /// Resets only what this menu shows. Display Options (overlay, mini player, page-turn
+    /// taps) and the theme are separate choices and are left alone (BF-057).
+    private func resetTextAndLayout() {
         settingsVM.fontSize = kDefaultFontSize
         settingsVM.fontFamily = kDefaultFontFamily
         settingsVM.lineSpacing = kDefaultLineSpacing
@@ -294,36 +441,10 @@ struct EbookPlayerSettings: View {
         settingsVM.wordSpacing = kDefaultWordSpacing
         settingsVM.letterSpacing = kDefaultLetterSpacing
         settingsVM.textAlignment = kDefaultTextAlignment
-        settingsVM.enableMarginClickNavigation = kDefaultEnableMarginClickNavigation
+        settingsVM.singleColumnMode = kDefaultSingleColumnMode
         settingsVM.scrollingMode = kDefaultScrollingMode
         settingsVM.pageTurnStyle = kDefaultPageTurnStyle
-        settingsVM.animatePageTurnsDuringReadaloud = kDefaultAnimatePageTurnsDuringReadaloud
-        settingsVM.enableReadingBar = kDefaultReadingBarEnabled
-        settingsVM.showProgressBar = kDefaultShowProgressBar
-        settingsVM.showProgress = kDefaultShowProgress
-        settingsVM.showTimeRemainingInBook = kDefaultShowTimeRemainingInBook
-        settingsVM.showTimeRemainingInChapter = kDefaultShowTimeRemainingInChapter
-        settingsVM.showPageNumber = kDefaultShowPageNumber
-        settingsVM.overlayTransparency = kDefaultOverlayTransparency
-        settingsVM.singleColumnMode = kDefaultSingleColumnMode
-        settingsVM.showPlayerControls = kDefaultShowPlayerControlsIOS
-        settingsVM.showOverlaySkipBackward = kDefaultShowOverlaySkipBackward
-        settingsVM.showOverlaySkipForward = kDefaultShowOverlaySkipForward
-        settingsVM.showOverlayPlayPause = kDefaultShowOverlayPlayPause
-        settingsVM.lockViewToAudio = kDefaultLockViewToAudio
-
         settingsVM.save()
-    }
-
-    private func isCustomFont(_ fontFamily: String) -> Bool {
-        !ReaderFontOptions.isBuiltIn(fontFamily)
-    }
-
-    private var singleColumnBinding: Binding<Bool> {
-        Binding(
-            get: { settingsVM.singleColumnMode || settingsVM.scrollingMode },
-            set: { settingsVM.singleColumnMode = $0 },
-        )
     }
 }
 

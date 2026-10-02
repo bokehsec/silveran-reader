@@ -42,6 +42,94 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-059 — Display Options and the sleep timer closed on their own after a few seconds
+
+- Date: 2026-10-02
+- Status: Fixed; verified in the iPhone simulator
+- Platforms: Apple (iOS reader)
+- Components: `SilveranKit/Sources/AppleKit/MobileDesktop/Views/Player/EbookPlayer/EbookPlayerViewModel.swift` (`showDisplayOptions`, `showSleepTimerSheet`, `isChromeInUse`), `EbookPlayerTopToolbar.swift`, `EbookPlayerView.swift`
+- Related links: [READER_CUSTOMIZATION.md](docs/READER_CUSTOMIZATION.md)
+
+#### Symptom
+
+Opening Display Options (…) or the sleep timer from the reader's top bar, then leaving it open, closed the sheet by itself about five seconds after the bars last changed. Reproduced in the simulator by opening Display Options with the debug hook and taking screenshots every 2 s: present at 2 s and 4 s, gone from 6 s.
+
+#### Root cause
+
+The reader hides its bars after 5 s of inactivity unless `EbookPlayerViewModel.isChromeInUse` says a menu is open. Both sheets are presented by `EbookPlayerTopToolbar`, which exists only while `isTopBarVisible` is true. Their state was private `@State` in the toolbar, so `isChromeInUse` could not see it. The auto-hide removed the toolbar, and SwiftUI dismissed the sheets it was presenting. Customize, search and bookmarks were already lifted to the view model, which is why they stayed open.
+
+#### Change
+
+`showDisplayOptions` and `showSleepTimerSheet` moved to `EbookPlayerViewModel` and are passed to the toolbar as bindings, like `showCustomizePopover`. Both now count in `isChromeInUse`. The auto-hide delay, centre-tap toggling and the sheets' contents are unchanged.
+
+#### Validation
+
+- Simulator: unsigned Debug build, "Silveran Customize QA iPhone" (iOS 18.6), synthetic "Phase 5 Field Notes" EPUB, launched with `-SilveranOpenDisplayOptions`. Screenshots at 2, 4, 6, 8, 10 and 14 s all show the sheet open (before the fix it was gone from 6 s).
+- `xcodebuild … -scheme "Silveran Reader (iOS)" … CODE_SIGNING_ALLOWED=NO build` succeeded.
+- The sleep timer sheet follows the same path but was not exercised (the fixture has no narration). No unit test: `EbookPlayerViewModel` is not constructed in the test suite.
+
+#### Compatibility and follow-up
+
+None known.
+
+### BF-058 — Highlight colour names changed when switching themes
+
+- Date: 2026-10-02
+- Status: Fixed; automated and simulator verified
+- Platforms: Apple (iOS, macOS view model); stored data shared
+- Components: `SilveranKit/Sources/AppleKit/MobileDesktop/SettingsViewModel.swift` (`applyThemeValues`), `SilveranKit/Sources/AppleKit/MobileDesktop/Views/Settings/ThemeEditorView.swift`
+- Related links: [READER_CUSTOMIZATION.md](docs/READER_CUSTOMIZATION.md)
+
+#### Symptom
+
+A person who renamed a highlight colour (e.g. Yellow → "Quotes") on one theme saw the default name again after switching to another theme. Their highlights kept the same colour slot, but the meaning they had given it disappeared from the highlight menu. With only Light and Dark this was rare; with four theme families it would happen on every theme change.
+
+#### Root cause
+
+Each `ReaderTheme` stores the six highlight names alongside its colours, and `applyThemeValues` copied all of them into the active settings. The names describe what a colour means to the reader, which does not depend on how the page looks.
+
+#### Change
+
+`applyThemeValues` no longer copies names; the active names are global. The iOS/macOS theme editor shows the global names, with the caption "Colors belong to this theme. Names apply to every theme". On save, it writes the names globally. The name fields stored in themes are kept for compatibility, but they are no longer applied. Colours, highlight style and theme storage are unchanged.
+
+#### Validation
+
+- New test `ReaderThemeSelectionTests.switchingThemesKeepsHighlightNames` (isolated `SettingsActor` in a temporary directory): rename slot 1, switch to the Quiet family, and the name and new background are both kept. `swift test` passed 468 tests.
+- Simulator theme switching (iPhone, iOS 18.6) showed no change in highlight names. The theme editor's name fields were not exercised in the simulator.
+
+#### Compatibility and follow-up
+
+Older builds still copy a theme's names when switching themes, and those names sync through the appearance unit. Updated devices keep whatever names arrive. The macOS Settings theme editor in `SettingsView.swift` (macOS-only path) still edits names per theme. Not changed; iOS was in scope.
+
+### BF-057 — Reader "Reset to Defaults" also reset Display Options
+
+- Date: 2026-10-02
+- Status: Fixed; verified in the iPhone simulator
+- Platforms: Apple (iOS reader)
+- Components: `SilveranKit/Sources/AppleKit/MobileDesktop/Views/Player/EbookPlayer/EbookPlayerSettings.swift` (`ReaderMoreOptionsView.resetTextAndLayout`)
+- Related links: [READER_CUSTOMIZATION.md](docs/READER_CUSTOMIZATION.md)
+
+#### Symptom
+
+Customize Reader › Reset to Defaults also turned settings from the separate Display Options (…) sheet back on or off: book progress, page number, time remaining, mini player, overlay buttons, transparency and lock-to-audio. It did not reset the theme, the one choice people expect a reset to touch. There was no confirmation.
+
+#### Root cause
+
+`EbookPlayerSettings.resetToDefaults` reset every reader-adjacent field the view model held, not just the ones on that screen.
+
+#### Change
+
+The redesigned Customize sheet moved Reset into More Options as "Reset Text & Layout", behind a confirmation. It resets size, font, line spacing, margins, word/letter spacing, alignment, single column, scrolling and page-turn style. Display Options fields and the theme/Light-Dark choice are untouched, and the footer says so.
+
+#### Validation
+
+Simulator (iPhone, iOS 18.6, synthetic EPUB): set Relaxed/Wide/Charter/117%, then Reset. All returned to Normal/Normal/100%, while Light + Calm stayed selected. Display Options toggles were unchanged.
+
+#### Compatibility and follow-up
+
+None known.
+
+
 ### BF-055 — The wide margin could stay open while the toolbar said Closed
 
 - Date: 2026-10-01

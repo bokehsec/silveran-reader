@@ -33,13 +33,28 @@ extension Notification.Name {
 }
 #endif
 
+private struct ReaderSystemColorSchemeKey: EnvironmentKey {
+    static let defaultValue: ColorScheme? = nil
+}
+
+extension EnvironmentValues {
+    /// The device's color scheme, set by whoever presents the reader. The reader can pin
+    /// its own presentation to Light or Dark, after which its `colorScheme` no longer
+    /// reports the device; this value still does.
+    var readerSystemColorScheme: ColorScheme? {
+        get { self[ReaderSystemColorSchemeKey.self] }
+        set { self[ReaderSystemColorSchemeKey.self] = newValue }
+    }
+}
+
 private struct PendingSelectionWrapper: Identifiable {
     let selection: TextSelectionMessage
     var id: String { selection.cfi }
 }
 
 public struct EbookPlayerView: View {
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorScheme) private var environmentColorScheme
+    @Environment(\.readerSystemColorScheme) private var readerSystemColorScheme
     @Environment(\.scenePhase) private var scenePhase
     #if os(macOS)
     @Environment(\.openSettings) private var openSettings
@@ -97,6 +112,17 @@ public struct EbookPlayerView: View {
     }
 
     public var body: some View {
+        readerBody
+            .environment(\.colorScheme, colorScheme)
+            #if os(iOS)
+        // Pins the reader's presentation (its sheets and web view included) without
+        // touching the library behind it. Only when the presenter told us the real
+        // system scheme; otherwise the preference would feed back into its own input.
+        .preferredColorScheme(readerSystemColorScheme == nil ? nil : colorScheme)
+            #endif
+    }
+
+    private var readerBody: some View {
         Group {
             #if os(macOS)
             mainLayout
@@ -154,6 +180,18 @@ public struct EbookPlayerView: View {
         .statusBarHidden(!viewModel.isTopBarVisible)
         .persistentSystemOverlays(viewModel.isTopBarVisible ? .automatic : .hidden)
         .onAppear { viewModel.scheduleChromeAutoHide() }
+            #if DEBUG
+        // QA hook: simulator taps arrive after the bars auto-hide, so the Customize sheet
+        // cannot be reached by tapping. Debug builds only.
+        .task {
+            let arguments = CommandLine.arguments
+            let customize = arguments.contains("-SilveranOpenCustomizeReader")
+            guard customize || arguments.contains("-SilveranOpenDisplayOptions") else { return }
+            try? await Task.sleep(for: .seconds(2))
+            viewModel.isTopBarVisible = true
+            viewModel.showCustomizePopover = customize
+        }
+            #endif
         .onChange(of: viewModel.isTopBarVisible) { _, _ in viewModel.scheduleChromeAutoHide() }
         .onChange(of: viewModel.isReadingBarVisible) { _, _ in viewModel.scheduleChromeAutoHide() }
         .onChange(of: viewModel.isChromeInUse) { _, _ in viewModel.scheduleChromeAutoHide() }
@@ -368,6 +406,16 @@ public struct EbookPlayerView: View {
         }
     }
 
+    /// The device scheme, as seen by the presenter outside the reader's own override.
+    private var systemColorScheme: ColorScheme {
+        readerSystemColorScheme ?? environmentColorScheme
+    }
+
+    /// The scheme the reader shows: the person's Light/Dark choice, or the system's.
+    private var colorScheme: ColorScheme {
+        viewModel.settingsVM.effectiveReaderColorScheme(system: systemColorScheme)
+    }
+
     #if os(macOS)
     private let leftSidebarWidth: CGFloat = 260
     private let leftSidebarTotalWidth: CGFloat = 261
@@ -544,8 +592,8 @@ public struct EbookPlayerView: View {
     #if os(iOS)
     /// The draggable mini player is on screen at the bottom.
     private var isMiniPlayerShowing: Bool {
-        !(isPad && viewModel.showAudioSidebar)
-            && (viewModel.settingsVM.alwaysShowMiniPlayer || viewModel.isReadingBarVisible)
+        viewModel.showsMiniPlayer && !(isPad && viewModel.showAudioSidebar)
+            && (viewModel.pinsMiniPlayer || viewModel.isReadingBarVisible)
     }
     #endif
 
@@ -621,7 +669,7 @@ public struct EbookPlayerView: View {
             }
 
             #if os(iOS)
-            let alwaysShowMini = viewModel.settingsVM.alwaysShowMiniPlayer
+            let alwaysShowMini = viewModel.pinsMiniPlayer
             let shouldShowStatsOverlay =
                 !viewModel.showAudioSidebar && !viewModel.isTopBarVisible
 
@@ -668,6 +716,8 @@ public struct EbookPlayerView: View {
                     sleepTimerRemaining: viewModel.mediaOverlayManager?.sleepTimerRemaining,
                     sleepTimerType: viewModel.mediaOverlayManager?.sleepTimerType,
                     showCustomizePopover: $viewModel.showCustomizePopover,
+                    showOptionsSheet: $viewModel.showDisplayOptions,
+                    showSleepTimerSheet: $viewModel.showSleepTimerSheet,
                     showSearchSheet: $viewModel.showSearchPanel,
                     showBookmarksPanel: $viewModel.showBookmarksPanel,
                     showAudioSidebar: $viewModel.showAudioSidebar,
@@ -697,7 +747,7 @@ public struct EbookPlayerView: View {
                 .transition(.opacity)
             }
 
-            if !(isPad && viewModel.showAudioSidebar) {
+            if viewModel.showsMiniPlayer && !(isPad && viewModel.showAudioSidebar) {
                 draggableAudioCard
                     .simultaneousGesture(chromeInteractionGesture)
             }
@@ -797,7 +847,7 @@ public struct EbookPlayerView: View {
         let currentChapterTitle = pm?.selectedChapterId.flatMap { index in
             viewModel.bookStructure[safe: index]?.label
         }
-        let alwaysShow = viewModel.settingsVM.alwaysShowMiniPlayer
+        let alwaysShow = viewModel.pinsMiniPlayer
         let isPresentedBinding = Binding(
             get: { alwaysShow || self.viewModel.isReadingBarVisible },
             set: { newValue in

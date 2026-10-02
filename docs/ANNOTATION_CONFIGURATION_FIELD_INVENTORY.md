@@ -38,6 +38,7 @@ Date: 2026-09-30. This is a source-derived policy inventory for P0.2, not an imp
 | `reading.userHighlightLabel6` | `String` | Include | shared | Compatible devices | Private configuration |
 | `reading.userHighlightMode` | `String` | Include | shared | Compatible devices | Private configuration |
 | `reading.readaloudHighlightMode` | `String` | Include | shared | Compatible devices | Private configuration |
+| `reading.readerAppearance` | `String` (`system`/`light`/`dark`; unknown reads as `system`) | Include | shared | Compatible devices | Private configuration |
 | `reading.tvSubtitleFontSize` | `Double` | Include | local only | TV class only | Private configuration |
 | `reading.tvReaderAppearance.fontFamily` | `String` | Include | local only | TV class only | Font reference; include permitted custom font asset |
 | `reading.tvReaderAppearance.backgroundStyle` | `String` | Include | local only | TV class only | Private configuration |
@@ -69,7 +70,7 @@ Date: 2026-09-30. This is a source-derived policy inventory for P0.2, not an imp
 | `sync.metadataRefreshIntervalSeconds` | `Double` | Include | shared | Compatible devices | Private configuration |
 | `sync.autoSyncToNewerServerPosition` | `Bool` | Include | shared | Compatible devices | Private configuration |
 | `themes.selectedLightThemeId` | `String` | Include | shared | Compatible devices | Private configuration |
-| `themes.selectedDarkThemeId` | `String` | Include | shared | Compatible devices | Private configuration |
+| `themes.selectedDarkThemeId` | `String` | Include | shared | Compatible devices | Private configuration. Built-in families store paired IDs (e.g. `builtin-paper`/`builtin-paper-dark`); a receiver without that built-in rejects the appearance unit |
 | `themes.customThemes` | `[ReaderTheme]` | Include | shared | Compatible devices | Include every nested theme field; see table below |
 | `themes.builtInThemeOverrides` | `[ReaderTheme]` | Include | shared | Compatible devices | Include every nested theme field; see table below |
 | `library.showAudioIndicator` | `Bool` | Include | shared | Compatible devices | Private configuration |

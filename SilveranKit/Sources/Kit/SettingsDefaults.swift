@@ -20,6 +20,10 @@ public let kDefaultScrollingMode = false
 public let kDefaultPageTurnStyle = "curl"
 public let kPageTurnStyleValues = ["none", "slide", "curl"]
 public let kDefaultAnimatePageTurnsDuringReadaloud = false
+/// Fresh installs start on the Paper theme pair (owner decision, 2026-10-02).
+public let kDefaultLightThemeId = "builtin-paper"
+public let kDefaultDarkThemeId = "builtin-paper-dark"
+public let kDefaultReaderAppearance = ReaderAppearanceMode.system.rawValue
 
 // Slot order is defined by HighlightColor's case order: Pink, Orange, Yellow,
 // Green, Blue, Purple. These palettes are indexed by that position and must

@@ -28,6 +28,7 @@ public final class SettingsViewModel {
     public var scrollingMode: Bool = kDefaultScrollingMode
     public var pageTurnStyle: String = kDefaultPageTurnStyle
     public var animatePageTurnsDuringReadaloud: Bool = kDefaultAnimatePageTurnsDuringReadaloud
+    public var readerAppearance: String = kDefaultReaderAppearance
 
     public var defaultPlaybackSpeed: Double = kDefaultPlaybackSpeed
     public var defaultVolume: Double = kDefaultVolume
@@ -82,8 +83,8 @@ public final class SettingsViewModel {
     public var userHighlightMode: String = kDefaultUserHighlightMode
     public var readaloudHighlightMode: String = kDefaultReadaloudHighlightMode
 
-    public var selectedLightThemeId: String = "builtin-light"
-    public var selectedDarkThemeId: String = "builtin-dark"
+    public var selectedLightThemeId: String = kDefaultLightThemeId
+    public var selectedDarkThemeId: String = kDefaultDarkThemeId
     public var customThemes: [ReaderTheme] = []
     public var builtInThemeOverrides: [ReaderTheme] = []
 
@@ -188,6 +189,7 @@ public final class SettingsViewModel {
         scrollingMode = config.reading.scrollingMode
         pageTurnStyle = config.reading.pageTurnStyle
         animatePageTurnsDuringReadaloud = config.reading.animatePageTurnsDuringReadaloud
+        readerAppearance = config.reading.readerAppearance
 
         defaultPlaybackSpeed = config.playback.defaultPlaybackSpeed
         defaultVolume = config.playback.defaultVolume
@@ -323,15 +325,36 @@ public final class SettingsViewModel {
         userHighlightColor4 = theme.userHighlightColor4
         userHighlightColor5 = theme.userHighlightColor5
         userHighlightColor6 = theme.userHighlightColor6
-        userHighlightLabel1 = theme.userHighlightLabel1
-        userHighlightLabel2 = theme.userHighlightLabel2
-        userHighlightLabel3 = theme.userHighlightLabel3
-        userHighlightLabel4 = theme.userHighlightLabel4
-        userHighlightLabel5 = theme.userHighlightLabel5
-        userHighlightLabel6 = theme.userHighlightLabel6
+        // Highlight names describe what a colour means to the reader, not how it looks,
+        // so they stay put when the theme changes (BF-058).
         userHighlightMode = theme.userHighlightMode
         customCSS = theme.customCSS
         save()
+    }
+
+    public var appearanceMode: ReaderAppearanceMode {
+        get { ReaderAppearanceMode(storedValue: readerAppearance) }
+        set { readerAppearance = newValue.rawValue }
+    }
+
+    /// The colour scheme the reader shows, given the device's current scheme.
+    public func effectiveReaderColorScheme(system: ColorScheme) -> ColorScheme {
+        appearanceMode.isDark(systemIsDark: system == .dark) ? .dark : .light
+    }
+
+    /// Selects a built-in family: both variants are stored so switching light/dark later
+    /// keeps the same look.
+    public func selectThemeFamily(_ family: ReaderThemeFamily, for colorScheme: ColorScheme) {
+        selectedLightThemeId = family.lightThemeId
+        selectedDarkThemeId = family.darkThemeId
+        applyActiveTheme(for: colorScheme)
+    }
+
+    /// Selects a custom theme for every appearance it supports.
+    public func selectCustomTheme(_ theme: ReaderTheme, for colorScheme: ColorScheme) {
+        if theme.availableFor(colorScheme: "light") { selectedLightThemeId = theme.id }
+        if theme.availableFor(colorScheme: "dark") { selectedDarkThemeId = theme.id }
+        applyActiveTheme(for: colorScheme)
     }
 
     public func selectTheme(id: String, for colorScheme: ColorScheme) {
@@ -457,6 +480,7 @@ public final class SettingsViewModel {
         result.reading.scrollingMode = scrollingMode
         result.reading.pageTurnStyle = pageTurnStyle
         result.reading.animatePageTurnsDuringReadaloud = animatePageTurnsDuringReadaloud
+        result.reading.readerAppearance = readerAppearance
         result.playback.defaultPlaybackSpeed = defaultPlaybackSpeed
         result.playback.defaultVolume = defaultVolume
         result.playback.statsExpanded = statsExpanded
