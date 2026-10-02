@@ -1,5 +1,5 @@
 import { resolveAnchor, anchorForBoundary, buildTextIndex } from "./InkAnchoring.js";
-import { strokeAttributes } from "./InkStrokeShape.js";
+import { strokeAttributes, MAX_WIDTH_FACTOR } from "./InkStrokeShape.js";
 import { bbox, round1 } from "./InkLayout.js";
 import { toDoc, visibleLines, columnLines, caretAt } from "./InkGeometry.js";
 
@@ -100,39 +100,166 @@ const lineAt = (doc, index, at) => {
   return { left: rect.left, top: rect.top, bottom: rect.bottom, range: line };
 };
 
-/** Overlapping drawing extents form one presentation group, independently per column. */
-export const groupMarginPlacements = entries => {
-  const columns = new Map();
-  for (const entry of entries) {
-    const key = entry.gutter.left;
-    if (!columns.has(key)) columns.set(key, []);
-    columns.get(key).push(entry);
+/** Space kept clear between displayed margin ink and tiles (BF-054). */
+export const MARGIN_CLEARANCE = 4;
+/** How far a tile may move from its line to avoid displayed ink before that ink is hidden instead. */
+const TILE_SHIFT = 48;
+
+/**
+ * The painted extent of strokes in their own coordinates: sample bounds widened by the widest a
+ * pen gets under pressure (plus its outline) or by half the highlighter's width. Null for no ink.
+ */
+export const inkBounds = strokes => {
+  let result = null;
+  for (const stroke of strokes ?? []) {
+    if (!stroke.points?.length) continue;
+    const box = bbox(stroke.points);
+    const half = (stroke.width ?? 2) / 2;
+    const pad = stroke.tool === "highlighter" ? half : half * MAX_WIDTH_FACTOR + 0.3;
+    result = {
+      left: Math.min(result?.left ?? Infinity, box.left - pad),
+      top: Math.min(result?.top ?? Infinity, box.top - pad),
+      right: Math.max(result?.right ?? -Infinity, box.right + pad),
+      bottom: Math.max(result?.bottom ?? -Infinity, box.bottom + pad),
+    };
   }
-  const groups = [];
-  for (const entries of columns.values()) {
-    entries.sort((a, b) => a.line.top - b.line.top || a.note.id.localeCompare(b.note.id));
-    let group = null;
-    for (const entry of entries) {
-      const bottom = entry.line.top + Math.max(ICON_SIZE, entry.height);
-      if (!group || entry.line.top >= group.bottom + 8) {
-        group = { entries: [], top: entry.line.top, bottom, gutter: entry.gutter };
-        groups.push(group);
-      }
-      group.entries.push(entry);
-      group.bottom = Math.max(group.bottom, bottom);
+  return result;
+};
+
+const overlaps = (a, b, clearance = 0) =>
+  a.left < b.right + clearance && b.left < a.right + clearance &&
+  a.top < b.bottom + clearance && b.top < a.bottom + clearance;
+
+/** Distance from a point to a rectangle; 0 inside it. */
+const distanceTo = (r, x, y) => Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
+
+/** A tile's place beside its line: centred in the gutter and on the line. */
+export const tileRect = (gutter, line) => {
+  const left = gutter.left + Math.max(0, (gutter.width - ICON_SIZE) / 2);
+  const top = line.top + Math.max(0, (line.bottom - line.top - ICON_SIZE) / 2);
+  return { left, top, right: left + ICON_SIZE, bottom: top + ICON_SIZE };
+};
+
+/**
+ * Where a margin note's drawing goes: its canvas origin (stored coordinates start there), the
+ * scale, and the painted ink on the page. Null when it is not drawn as handwriting: no ink, or
+ * too tall for the rest of the page unless it is the focused note, which is fitted instead.
+ */
+export const marginCanvas = (entry, { focused = false } = {}) => {
+  const { note, line, gutter, room } = entry;
+  const width = drawingWidth(gutter.width);
+  const ink = inkBounds(note.strokes);
+  const box = bbox(note.strokes.flatMap(s => s.points ?? []));
+  if (!ink || !Number.isFinite(box.bottom)) return null;
+  const naturalHeight = Math.max(1, box.bottom + 8);
+  const widthScale = Math.min(1, width / (note.refWidth || width || 1));
+  if (!focused && naturalHeight * widthScale > room) return null;
+  const scale = focused ? Math.min(widthScale, room / naturalHeight) : widthScale;
+  const left = gutter.left + MARGIN_INSET;
+  const top = line.top;
+  return {
+    left, top, scale, width, height: naturalHeight * scale,
+    ink: { left: left + ink.left * scale, top: top + ink.top * scale, right: left + ink.right * scale, bottom: top + ink.bottom * scale },
+  };
+};
+
+/** Candidate tile positions near `rect` in the gutter, nearest first; the first one free is used. */
+const tileCandidates = (rect, gutter) => {
+  const xs = [...new Set([
+    rect.left,
+    gutter.left + gutter.width - MARGIN_INSET - ICON_SIZE,
+    gutter.left + MARGIN_INSET,
+  ].filter(x => x >= gutter.left && x + ICON_SIZE <= gutter.left + gutter.width))];
+  if (!xs.length) xs.push(rect.left);
+  const out = [];
+  for (let shift = 0; shift <= TILE_SHIFT; shift += 4) {
+    for (const dy of shift ? [-shift, shift] : [0]) {
+      const top = rect.top + dy;
+      if (top < 0) continue;
+      for (const left of xs) out.push({ left, top, right: left + ICON_SIZE, bottom: top + ICON_SIZE });
     }
   }
-  return groups;
+  return out;
+};
+
+/**
+ * What the margin of one column shows (BF-054): every note whose painted ink fits clear of the
+ * ink already shown is drawn, in passage order (the older note first on one line) with the
+ * focused note before all; the rest are counted
+ * in tiles beside their lines. A tile never covers shown ink: it moves a little within the gutter,
+ * or the ink under it is hidden in it. `expanded` false (or a gutter too narrow to write in) shows
+ * every note as a tile. Entries are `{ note, line, gutter, room }`; nothing in them is changed.
+ * Returns `{ drawn: [{ entry, canvas }], tiles: [{ entries, rect }] }`, the one description of
+ * what is on the page that drawing, tap routing and continued writing all use.
+ */
+/** Passage order; on one line the older note first, so later writing never displaces it. */
+const byPassage = (a, b) => a.line.top - b.line.top ||
+  (a.note.createdAt ?? 0) - (b.note.createdAt ?? 0) || a.note.id.localeCompare(b.note.id);
+
+export const layoutMarginColumn = (entries, { expanded = false, focusedId = null } = {}) => {
+  const ordered = [...entries].sort(byPassage);
+  const canDraw = expanded && ordered.length > 0 && drawingWidth(ordered[0].gutter.width) >= ICON_SIZE * 2;
+  const focused = canDraw ? ordered.find(e => e.note.id === focusedId) ?? null : null;
+  let drawn = [];
+  let hidden = [];
+  if (canDraw) {
+    for (const entry of focused ? [focused, ...ordered.filter(e => e !== focused)] : ordered) {
+      const canvas = marginCanvas(entry, { focused: entry === focused });
+      if (canvas && !drawn.some(d => overlaps(d.canvas.ink, canvas.ink, MARGIN_CLEARANCE))) drawn.push({ entry, canvas });
+      else hidden.push(entry);
+    }
+  } else {
+    hidden = ordered;
+  }
+  for (;;) {
+    // Hidden notes whose tiles would touch share one tile, at the first one's line.
+    hidden.sort(byPassage);
+    const clusters = [];
+    for (const entry of hidden) {
+      const rect = tileRect(entry.gutter, entry.line);
+      const last = clusters[clusters.length - 1];
+      if (last && rect.top < last.bottom + MARGIN_CLEARANCE) {
+        last.entries.push(entry);
+        last.bottom = Math.max(last.bottom, rect.bottom);
+      } else {
+        clusters.push({ entries: [entry], rect, bottom: rect.bottom });
+      }
+    }
+    const occupied = drawn.map(d => d.canvas.ink);
+    const tiles = [];
+    let changed = false;
+    for (const cluster of clusters) {
+      const free = r => !occupied.some(o => overlaps(o, r, MARGIN_CLEARANCE));
+      const rect = canDraw ? tileCandidates(cluster.rect, cluster.entries[0].gutter).find(free) : (free(cluster.rect) ? cluster.rect : null);
+      if (rect) {
+        tiles.push({ entries: cluster.entries, rect });
+        occupied.push(rect);
+        continue;
+      }
+      // No room nearby: hide the shown ink in the way (never the focused note) and lay out again.
+      const inWay = drawn.filter(d => d.entry !== focused && overlaps(d.canvas.ink, cluster.rect, MARGIN_CLEARANCE));
+      if (inWay.length) {
+        drawn = drawn.filter(d => !inWay.includes(d));
+        hidden.push(...inWay.map(d => d.entry));
+        changed = true;
+        break;
+      }
+      tiles.push({ entries: cluster.entries, rect: cluster.rect });
+      occupied.push(cluster.rect);
+    }
+    if (!changed) return { drawn, tiles };
+  }
 };
 
 /** The margin notes of one section document, in a layer of their own above the text. */
 export class MarginLayer {
   #doc;
   #root;
-  /** id -> { left, top, scale, width, height, icon } as drawn (section-document coordinates). */
+  /** id -> { left, top, scale, width, height, ink } of each note drawn as handwriting. */
   #placed = new Map();
   #ranges = new Map();
-  #iconGroups = [];
+  /** [{ ids, rect }] for each tile, in section-document coordinates. */
+  #tiles = [];
   #focused = null;
   #notes = [];
   #index = null;
@@ -174,10 +301,10 @@ export class MarginLayer {
     this.#root.replaceChildren();
     this.#placed.clear();
     this.#ranges.clear();
-    this.#iconGroups = [];
+    this.#tiles = [];
     const orphaned = [];
     const frame = columnFrame(this.#doc);
-    const entries = [];
+    const columns = new Map();
     for (const note of this.#notes) {
       const at = this.#index ? resolveAnchor(this.#index.text, note.anchor) : null;
       if (at == null) { orphaned.push(note.id); continue; }
@@ -185,40 +312,21 @@ export class MarginLayer {
       if (!line || !frame) continue;
       this.#ranges.set(note.id, line.range);
       const gutter = gutterAt(frame, line.left);
-      const width = drawingWidth(gutter.width);
-      const box = bbox(note.strokes.flatMap(s => s.points));
-      const height = Number.isFinite(box.bottom) ? (box.bottom + 8) * Math.min(1, width / (note.refWidth || width || 1)) : 0;
       const room = Math.max(1, (this.#doc.defaultView?.innerHeight ?? Infinity) - line.top - 4);
-      entries.push({ note, line, gutter, height, fits: height <= room });
+      if (!columns.has(gutter.left)) columns.set(gutter.left, []);
+      columns.get(gutter.left).push({ note, line, gutter, room });
     }
-    if (!entries.some(e => e.note.id === this.#focused)) this.#focused = null;
-    for (const group of groupMarginPlacements(entries)) {
-      const first = group.entries[0];
-      const expanded = this.#options.expanded && drawingWidth(group.gutter.width) >= ICON_SIZE * 2;
-      const focused = group.entries.find(e => e.note.id === this.#focused);
-      if (expanded && ((group.entries.length === 1 && first.fits) || focused)) {
-        const chosen = focused ?? first;
-        this.#drawNote(chosen.note, chosen.gutter, chosen.line);
-      }
-      if ((!expanded || group.entries.length > 1 || !first.fits) && group.gutter.width >= ICON_SIZE) {
-        this.#drawIcon(first.note, first.gutter, first.line, group.entries.map(e => e.note.id), expanded && !!focused);
-      }
+    if (![...columns.values()].some(c => c.some(e => e.note.id === this.#focused))) this.#focused = null;
+    for (const entries of columns.values()) {
+      const { drawn, tiles } = layoutMarginColumn(entries, { expanded: this.#options.expanded, focusedId: this.#focused });
+      for (const { entry, canvas } of drawn) this.#drawNote(entry.note, canvas);
+      for (const { entries: members, rect } of tiles) this.#drawIcon(members.map(e => e.note.id), rect);
     }
     return orphaned;
   }
 
-  #drawNote(note, gutter, line) {
-    const width = drawingWidth(gutter.width);
-    const box = bbox(note.strokes.flatMap(s => s.points));
-    const room = Math.max(1, (this.#doc.defaultView?.innerHeight ?? Infinity) - line.top - 4);
-    const naturalHeight = Number.isFinite(box.bottom) ? Math.max(1, box.bottom + 8) : 1;
-    const scale = Math.min(1, width / (note.refWidth || width), room / naturalHeight);
-    const left = gutter.left + MARGIN_INSET;
-    const top = line.top;
-    const height = Number.isFinite(box.bottom) ? (box.bottom + 8) * scale : 0;
-    // Ink may reach into the text or past the gutter (MARGIN_REACH): taps there are on the note.
-    const inkLeft = Number.isFinite(box.left) ? Math.min(0, box.left * scale) : 0;
-    const inkRight = Number.isFinite(box.right) ? Math.max(width, box.right * scale) : width;
+  #drawNote(note, canvas) {
+    const { left, top, scale } = canvas;
     const g = this.#doc.createElementNS(SVG_NS, "g");
     g.setAttribute("transform", `translate(${left} ${top}) scale(${scale})`);
     g.dataset.id = note.id;
@@ -230,16 +338,14 @@ export class MarginLayer {
       g.appendChild(path);
     }
     this.#root.appendChild(g);
-    this.#placed.set(note.id, { left, top, scale, width, height, icon: false, inkLeft, inkRight });
+    this.#placed.set(note.id, canvas);
   }
 
-  #drawIcon(note, gutter, line, ids = [note.id], above = false) {
-    const left = gutter.left + Math.max(0, (gutter.width - ICON_SIZE) / 2);
-    const top = above ? Math.max(0, line.top - ICON_SIZE - 4) : line.top + Math.max(0, (line.bottom - line.top - ICON_SIZE) / 2);
+  #drawIcon(ids, rect) {
     const icon = this.#doc.createElementNS(SVG_NS, "g");
-    icon.setAttribute("transform", `translate(${left} ${top}) scale(${ICON_SIZE / 16})`);
+    icon.setAttribute("transform", `translate(${rect.left} ${rect.top}) scale(${ICON_SIZE / 16})`);
     icon.setAttribute("opacity", "0.8");
-    icon.dataset.id = ids.length > 1 ? `cluster:${note.id}` : note.id;
+    icon.dataset.id = ids.length > 1 ? `cluster:${ids[0]}` : ids[0];
     // A small pencil on a rounded tile. Built element by element: chapters are XHTML, where
     // markup strings assigned to an SVG element do not reliably become SVG shapes.
     const shape = (name, attributes) => {
@@ -259,9 +365,7 @@ export class MarginLayer {
       icon.appendChild(text);
     }
     this.#root.appendChild(icon);
-    const placement = { left, top, scale: 1, width: ICON_SIZE, height: ICON_SIZE, icon: true };
-    this.#iconGroups.push({ ids, placement });
-    for (const id of ids) if (!this.#placed.has(id)) this.#placed.set(id, placement);
+    this.#tiles.push({ ids, rect });
   }
 
   focusNote(id) {
@@ -271,11 +375,17 @@ export class MarginLayer {
     return true;
   }
 
+  /**
+   * The notes of the tile at (x, y): the tile touched, else the nearest within `slop` points
+   * (an enlarged target never takes a tap from a tile actually touched). Empty if none.
+   */
   iconIDsAt(x, y, slop = 14) {
-    for (const { ids, placement: p } of this.#iconGroups) {
-      if (x >= p.left - slop && x <= p.left + p.width + slop && y >= p.top - slop && y <= p.top + p.height + slop) return ids;
+    let best = null;
+    for (const tile of this.#tiles) {
+      const d = distanceTo(tile.rect, x, y);
+      if (d <= slop && (!best || d < best.d)) best = { d, ids: tile.ids };
     }
-    return [];
+    return best?.ids ?? [];
   }
 
   /** The id of the margin icon at (x, y), within `slop` points; null if none. */
@@ -283,20 +393,15 @@ export class MarginLayer {
     return this.iconIDsAt(x, y, slop)[0] ?? null;
   }
 
-  /** True when (x, y) is on a drawn margin note or icon. */
+  /** True when (x, y) is on shown margin ink or a tile, within `slop` points (not blank canvas). */
   contains(x, y, slop = 12) {
-    for (const p of this.#placed.values()) {
-      const from = p.left + (p.inkLeft ?? 0);
-      const to = p.left + (p.inkRight ?? p.width);
-      if (x >= from - slop && x <= to + slop && y >= p.top - slop && y <= p.top + p.height + slop) return true;
-    }
-    return false;
+    for (const p of this.#placed.values()) if (distanceTo(p.ink, x, y) <= slop) return true;
+    return this.#tiles.some(t => distanceTo(t.rect, x, y) <= slop);
   }
 
-  /** Where a drawn (expanded) note is: `{ left, top, scale, width, height }`, or null. */
+  /** Where a note drawn as handwriting is: `{ left, top, scale, width, height, ink }`, or null. */
   placement(id) {
-    const p = this.#placed.get(id);
-    return p && !p.icon ? p : null;
+    return this.#placed.get(id) ?? null;
   }
 
   /** The line a margin note sits beside, as a DOM range (to scroll to it). */
@@ -331,6 +436,8 @@ export class MarginLayer {
 export const MARGIN_SHARE = 0.5;
 /** ...and it reaches no further into the text than this share of the column's width. */
 export const MARGIN_REACH = 0.3;
+/** Writing continues a shown margin note only within this many points of its ink, sideways. */
+export const APPEND_REACH = 48;
 
 /**
  * The margin writing area beside the column holding `x` (section-document coordinates): the
@@ -374,14 +481,23 @@ export const proposeMarginGroup = ({ doc, href, strokes, viewportWidth, layer, n
     points: pts.map(([x, y, ...rest]) => [round1((x - left) / scale), round1((y - top) / scale), ...rest]),
   }));
 
-  // Next to (or just under) a margin note already here: continue it.
+  // Next to (or just under) the shown ink of a margin note here: continue it. The nearest ink
+  // owns the writing; when two are about as near, neither is guessed and a new note is made.
+  const owners = [];
   for (const note of notes.filter(n => n.placement === "margin")) {
     const p = layer?.placement(note.id);
-    if (!p || Math.abs(p.left - (gutter.left + MARGIN_INSET)) > 1) continue;
-    const bottom = p.top + Math.max(p.height, 24);
-    if (bb.top >= p.top - 12 && bb.top <= bottom + 24) {
-      return { op: "append", section: href, noteId: note.id, strokes: local(p.left, p.top, p.scale) };
-    }
+    if (!p?.ink || Math.abs(p.left - (gutter.left + MARGIN_INSET)) > 1) continue;
+    const bottom = Math.max(p.ink.bottom, p.top + 24);
+    if (bb.top < Math.min(p.top, p.ink.top) - 12 || bb.top > bottom + 24) continue;
+    if (bb.left > p.ink.right + APPEND_REACH || bb.right < p.ink.left - APPEND_REACH) continue;
+    const dx = Math.max(p.ink.left - bb.right, 0, bb.left - p.ink.right);
+    const dy = Math.max(p.ink.top - bb.bottom, 0, bb.top - p.ink.bottom);
+    owners.push({ note, p, distance: Math.hypot(dx, dy) });
+  }
+  owners.sort((a, b) => a.distance - b.distance);
+  if (owners.length && !(owners.length > 1 && owners[1].distance - owners[0].distance < MARGIN_CLEARANCE)) {
+    const { note, p } = owners[0];
+    return { op: "append", section: href, noteId: note.id, strokes: local(p.left, p.top, p.scale) };
   }
 
   // Otherwise a new note beside the line at the top of the writing.

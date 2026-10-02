@@ -515,3 +515,17 @@ Final increment verification: the cancellation-aware build passed `scripts/test`
 - Owner decision: automatic, for new and existing notes, on both sides (recorded in the Pencil plan). Implemented in the layout only (`InkLayout.wrapSide`, `noteOrigin`); stored ink, anchors, sync and backup are unchanged, and older app versions show full-width boxes.
 - Verification: 4 new web unit tests (left, right, wide/centred/narrow, scaled), 175 web tests; real-WebKit word test for left/right/centred writing (wrap side, text beside the note, ink in place); 439 Swift tests / 50 suites; unsigned iOS build. QA iPad simulator: a left word wraps text on its right, a right word wraps text on its left, a centred word stays full width; the in-reader ink self-test passes (210 checks) on each run. Real Pencil/device acceptance is still owed (checklist 73).
 - The first launch after an install again ran the previous reader scripts (OD-023 updated with evidence).
+
+### 2026-10-01 — Margin collision patch withdrawn; interaction review blocks reapplication
+
+- P5.2/BF-053: the owner withdrew the collision adjustment after placement issues. It remains removed. The [full review](MARGIN_NOTE_PATCH_REVIEW.md) records five baseline/candidate interaction regressions; four are also reproduced in native WebKit. Existing visibility suites still pass (175 baseline/182 candidate), demonstrating their previous coverage gap.
+- No replacement is implemented or accepted. Final drawing/tile/focus geometry must agree with writing ownership and tap routing before changing collision visibility again. Original false grouping remains unresolved.
+- Separate margin transition investigation: ordinary open/close worked on the isolated QA iPad, while fault injection establishes lost-acknowledgement trapping and mode/resize state disagreement (OD-027/028). A scratch transition prototype passes 5/5; it is not a delivered fix. The owner's original stuck-open trigger remains unconfirmed.
+- Simulator observations are limited to the installed QA build/synthetic fixture. Real Pencil, iPhone interaction, VoiceOver, replacement collision usability and remaining Phase 5 release gates stay open.
+
+### 2026-10-01 — Crowded margins show every clear note (BF-054)
+
+- P5.2: owner chose "draw everything that fits clear, count only the rest" (Pencil plan decision). `InkMargin.layoutMarginColumn` is now the one layout that drawing, tile taps, page-tap suppression and continued writing read, which resolves the BF-053 review's reapplication blockers. Stored notes, anchors and bridge payloads are unchanged.
+- Code implemented; automated verification: WebHarness 185 pass; BF-053 review audit 5/5 pass; iOS component suite 104/104 on iPad Pro 11-inch (M5) iOS 26.2, including the new native crowded-margin WebKit test.
+- Simulator usability: checked on clones of the QA iPad and iPhone with the synthetic Ink Latency Fixture. Five real-pipeline margin words, including two side by side at one passage, are all shown. Synthetic overlapping copies are counted in a tile that covers no ink, and the tile opens the margin sheet. Focus editing, the closed margin and the iPhone narrow gutter also work. Details are in BF-054.
+- Still open: real Pencil writing beside shown notes, VoiceOver, signed-device acceptance (checklist 65), and margin open/close state recovery (OD-027/028). Phase 5 remains in progress.

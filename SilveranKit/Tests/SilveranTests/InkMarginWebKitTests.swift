@@ -90,6 +90,85 @@ struct InkMarginWebKitTests {
         #expect(cases as? String == "margin:inside,margin:overlaps,text,text")
     }
 
+    @Test("Crowded open margin shows clear drawings, counts the rest and routes writing (BF-054)")
+    func crowdedOpenMargin() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CrowdedMargin-\(UUID().uuidString)"
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.copyItem(at: KitResources.webResourcesDirectory(), to: root)
+        let words = (1...160).map { "word\($0)" }.joined(separator: " ")
+        let html = """
+            <!doctype html><html><head><meta charset="utf-8">
+            <style>html{margin:0;padding:0 \
+            82px;box-sizing:border-box;width:656px;height:1100px;column-width:492px;column-gap:164px;
+            column-fill:auto;}body{margin:0;font:22px Georgia,serif;line-height:1.45;}</style>
+            </head><body><p>\(words)</p><script type="module">
+            import { MarginLayer, proposeMarginStroke } from './InkMargin.js';
+            import { buildTextIndex, makeAnchor } from './InkAnchoring.js';
+            const index = buildTextIndex(document.body);
+            const anchor = makeAnchor(index.text, 0);
+            const note = (id, x, y) => ({ id, placement: 'margin', refWidth: 70, anchor,
+              strokes: [{ tool: 'pen', color: '#111111', width: 2, points: [[x, y, .2], [x + 20, y + 20, .4]] }] });
+            window.notes = [note('left', 2, 20), note('right', 46, 20), note('over1', 2, 90), note('over2', 6, 95)];
+            window.layer = new MarginLayer(document);
+            window.layer.setNotes(window.notes, index, { expanded: true });
+            window.propose = proposeMarginStroke;
+            window.ready = true;
+            </script></body></html>
+            """
+        let file = root.appendingPathComponent("crowded-margin.html")
+        try Data(html.utf8).write(to: file)
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+        let view = WKWebView(
+            frame: CGRect(x: 0, y: 0, width: 820, height: 1180),
+            configuration: config
+        )
+        defer { view.stopLoading() }
+        view.loadFileURL(file, allowingReadAccessTo: root)
+        var ready = false
+        for _ in 0..<200 {
+            if (try? await view.evaluateJavaScript("window.ready === true")) as? Bool == true {
+                ready = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        try #require(ready)
+        let answer = try await view.callAsyncJavaScript(
+            """
+            const groups = [...document.querySelectorAll('.silveran-margin-layer > g')];
+            const shown = groups.filter(g => window.layer.placement(g.dataset.id));
+            const tiles = groups.filter(g => !window.layer.placement(g.dataset.id));
+            const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+            const painted = shown.map(g => g.getBoundingClientRect());
+            const covered = tiles.some(t => painted.some(p => meets(t.getBoundingClientRect(), p)));
+            const tile = tiles[0]?.getBoundingClientRect();
+            const tapped = tile ? window.layer.iconIDsAt(tile.x + tile.width / 2, tile.y + tile.height / 2).join('+') : 'none';
+            const ask = points => {
+              const p = window.propose({ doc: document, href: 'ch', viewportWidth: innerWidth, layer: window.layer,
+                notes: window.notes, stroke: { tool: 'pen', color: '#111111', width: 2, points } });
+              return p.op === 'append' ? `append:${p.noteId}` : `${p.op}:${p.placement ?? p.reason}`;
+            };
+            const right = window.layer.placement('right').ink;
+            const left = window.layer.placement('left').ink;
+            const mid = (left.right + right.left) / 2;
+            return [
+              shown.map(g => g.dataset.id).sort().join('+'),
+              tiles.length, covered ? 'covered' : 'clear', tapped,
+              ask([[right.left + 4, right.top + 4], [right.left + 12, right.top + 12]]),
+              ask([[mid - 2, left.bottom + 18], [mid + 2, left.bottom + 22]]),
+            ].join(',');
+            """,
+            arguments: [:],
+            in: nil,
+            contentWorld: .page
+        )
+        #expect(answer as? String == "left+over1+right,1,clear,over2,append:right,note:margin")
+    }
+
     @Test("WebKit lays out a reachable counted margin icon in a scrolling phone width")
     func actualScrollingMargin() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(

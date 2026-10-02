@@ -42,6 +42,74 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-054 — Margin notes hidden behind a count although they did not overlap
+
+- Date: 2026-10-01
+- Status: Fixed; simulator usability checked on iPad and iPhone; real Pencil and VoiceOver acceptance pending
+- Platforms: Shared EPUB renderer (all platforms using `InkMargin.js`); verified on iPadOS/iOS simulators and iOS WebKit component tests
+- Components: `SilveranKit/Sources/Kit/Resources/WebResources/InkMargin.js` (`layoutMarginColumn`, `marginCanvas`, `inkBounds`, `tileRect`, `MarginLayer.redraw/iconIDsAt/contains/placement`, `proposeMarginGroup`), `SilveranKit/Tests/WebHarness/inkMargin.test.mjs`, `SilveranKit/Tests/SilveranTests/InkMarginWebKitTests.swift`
+- Related links: [BF-053](#bf-053--false-margin-collision-adjustment-withdrawn-after-placement-review), [patch review](docs/MARGIN_NOTE_PATCH_REVIEW.md), [owner decision](docs/PENCIL_INK_IMPLEMENTATION_PLAN.md#product-decisions-settled), P5.2
+
+#### Symptom and root cause
+
+With the wide margin open, several margin notes near one passage were replaced by a small blue count tile (the owner's screenshot showed "4") even though their handwriting did not overlap. Grouping measured each note from the top of its attached line to the bottom of its ink, with an 8 pt allowance, and joined any notes whose vertical bands touched, transitively; horizontal position was ignored. Blank space above the ink, and drawings side by side at one passage, therefore counted as collisions, and any group of two or more hid all of its handwriting. A tall note also hid notes after it because its band included its full canvas.
+
+BF-053's attempted fix changed only the grouping. Writing ownership, tile taps, page-tap suppression and focused drawing kept their own, different geometry, so it could append writing to the wrong note, put a tile over ink, let a focused drawing cross another, and route a tap to a neighbouring tile.
+
+#### Change
+
+One layout per column, `layoutMarginColumn`, now decides what the margin shows, and every consumer reads it:
+
+- Notes are drawn in passage order. On one line the oldest note goes first, and a focused note goes before all. A note is drawn when its painted ink (sample bounds widened by the widest pressure line, or half a highlighter's width) stays 4 pt clear of ink already shown. A note too tall for the rest of the page is drawn only when focused, fitted to the page as before.
+- Notes not drawn are counted in tiles beside their lines; tiles that would touch merge. A tile never covers shown ink. It tries nearby positions within the gutter, up to 48 pt from its line; failing that, the shown note in the way is counted in the tile instead (never the focused note). With the margin closed, or a gutter too narrow to write in, every note is a tile, one per line, sized by the tile and not by hidden drawing height.
+- `iconIDsAt` returns the tile actually touched, else the nearest within the slop. `contains` (page-tap suppression) uses painted ink and tiles, not blank canvas. `placement` returns the drawn canvas plus its painted `ink` bounds.
+- `proposeMarginGroup` continues the shown note whose ink is nearest the new writing, within the old vertical rule and 48 pt sideways. When the two nearest are within 4 pt of each other it starts a new note rather than guessing. Coordinates are still relative to the owning note's canvas origin and scale.
+
+Unchanged: stored notes, anchors, coordinates, identities and the bridge payloads; the margin open/close state handling (OD-027/028); the native margin sheet, which still lists exactly the IDs a tile reports.
+
+#### Validation
+
+- `cd SilveranKit/Tests/WebHarness && node --test *.test.mjs`: **185 pass**, 0 fail (175 before). New and updated cases cover: separated drawings at one passage, beside and below each other; overlapping drawings counted without covering shown ink; writing over the right of two notes continues that note, and equidistant writing does not append; a focused oversized drawing hides what it would cross; blank canvas not blocking taps; a tap inside the second of two tiles; collapsed tiles following lines; pressure width counting toward collisions; the older note winning a tie. The two existing tests that encoded "hide all on overlap" were updated to the owner's decision.
+- The five BF-053 review cases (`/Users/rob/.codex/patches/silveran-margin-notes-2026-10-01/review-evidence/audit.template.mjs`), copied unchanged into the harness: **5/5 pass** (they failed against the BF-053 candidate).
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=C1412372-BC80-4B3A-882D-19EBD1575327' scripts/iostest`: **104/104 pass** on iPad Pro 11-inch (M5), iOS 26.2 (result summary checked). The new "Crowded open margin shows clear drawings, counts the rest and routes writing (BF-054)" is present in the results. With real WebKit text layout, it checks that three clear drawings are shown, the overlapping one is counted in one tile that covers no ink, a tap on the tile returns that note, writing over the right note continues it, and equidistant writing makes a new margin note.
+- Simulator usability, unsigned Debug build from `SilveranValidation.xcodeproj` (OD-017 path), on clones of the QA devices (`Silveran BF-054 Margin iPad` `B1CD09F6-F83C-4964-A721-64FD56EE1F56`, cloned from QA iPad A16 iOS 18.6; `Silveran BF-054 Margin iPhone` `8D572C5E-77E1-40B1-9DFD-FB6BF647EA7B`, cloned from QA iPhone). The fixture was the synthetic Ink Latency Fixture, chapter "A Long Chapter", and the QA devices themselves were not changed. Results:
+  - Five margin words were written through the real pipeline with `-SilveranInkDemoStroke`: three stacked, one beside the first at the same passage, one lower. All five were shown with the margin open and no tile, where the old rule would have counted the side-by-side pair.
+  - Two overlapping synthetic copies of one note were then added to the clone's ink file. The original stayed drawn, the copies were counted in a "2" tile placed clear of ink, and tapping it opened "Margin notes" listing them. "Edit This Note in Margin" showed the chosen note in its place with the others counted.
+  - With the margin closed, the tiles showed one per line (2, 3, 1, 1). On the iPhone the tiles were legible in the narrow gutter, and the "2" tile opened the sheet.
+- Limitations: no real Pencil or palm input, so a person writing beside a shown note was simulated, not exercised. VoiceOver was not checked. The macOS `scripts/test` build is currently broken by unrelated in-progress mini-player edits in `EbookPlayerViewModel.swift`, so the Swift suite was run through the iOS component host instead.
+
+#### Compatibility and follow-up
+
+No data or migration change; older app versions keep their own grouping for the same notes. Real-device Pencil acceptance (checklist 65) and the margin state issues OD-027/028 remain open.
+
+### BF-053 — False margin collision adjustment withdrawn after placement review
+
+- Date: 2026-10-01
+- Status: Reverted; superseded by BF-054 (replacement implemented)
+- Platforms: Shared EPUB renderer; native macOS WebKit comparison; iPad QA toggle inspected; real Pencil/iPhone app acceptance pending
+- Components: Former `InkMargin.js` collision patch, note append/hit/focus consumers, saved synthetic comparison tests
+- Related links: [full patch review and closing investigation](docs/MARGIN_NOTE_PATCH_REVIEW.md), P5.2
+
+#### Symptom and root cause
+
+The original user screenshot showed four margin notes hidden by a count despite available space. Canvas-origin intervals count blank space and can group clear drawings. The withdrawn patch changed grouping to painted bounds and collapsed tile rectangles without reconciling the existing canvas-based append/hit logic or the final replacement badge/focused drawing geometry.
+
+#### Change and rollback
+
+The candidate was implemented, withdrawn, briefly reapplied on request, then withdrawn again after the owner reported other placement issues. It remains removed. The saved patch outside the repository is retained for historical comparison, **not recommended for reapplication**. Review found wrong-note append proposals, count badges covering separate ink, oversized focus crossing other visible ink, collapsed icons stealing a neighboring icon's tap, and newly exposed blank canvas areas changing reader tap routing. No original anchor, sample or persisted annotation was intentionally changed by the candidate; however, using its wrong append proposal for new writing could save samples under the wrong note ID.
+
+#### Validation
+
+- Isolated baseline/candidate copies: existing suites pass 175/182 tests respectively, but **five new interaction cases pass on the baseline and fail with the patch**. Native macOS WebKit confirms wrong append target, badge/focus overlap and wrong individual icon target.
+- Independent margin-state audit: both versions pass ordinary close and thin-gutter checks but fail scrolling, resize and failed-acknowledgement recovery. A scratch JS transition prototype passes 5/5; no prototype is applied to production.
+- QA iPad A16/iOS 18.6, installed unsigned Debug bundle `com.robwilliams.SilveranReaderRobTest`, synthetic Ink Latency Fixture: wide margin opened (113→175 pages) and closed through the accessible toolbar (restored width/113 pages). Logs confirm `open:false,expanded:false,gap:0%`. Original owner failure trigger remains unconfirmed. No annotations were edited.
+- Exact fixtures, commands, outputs, limitations and replacement requirements are in the linked review. Synthetic evidence is retained under `/Users/rob/.codex/patches/silveran-margin-notes-2026-10-01/review-evidence/`. `git diff --check` passed. No full Swift rebuild is claimed for this documentation-only review.
+
+#### Compatibility and follow-up
+
+No data migration. The runtime stays on the pre-patch algorithm. Replace the patch only after final presentation and input ownership agree and the new interaction regressions pass. Fix margin transition/state recovery separately; never treat an isolated visibility test as writing or usability acceptance.
+
+
 ### BF-052 — The first margin note of a chapter was written into the text instead of the margin
 
 - Date: 2026-10-01
