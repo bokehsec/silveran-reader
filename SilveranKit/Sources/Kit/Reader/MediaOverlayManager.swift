@@ -1018,6 +1018,10 @@ public final class MediaOverlayManager {
         else { return }
         let entry = section.mediaOverlay[cachedEntryIndex]
         debugLog("[MOM] Writing finished; catching up to \(entry.textId)")
-        await sendHighlightCommand(sectionIndex: cachedSectionIndex, textId: entry.textId, seekToLocation: true)
+        await sendHighlightCommand(
+            sectionIndex: cachedSectionIndex,
+            textId: entry.textId,
+            seekToLocation: true
+        )
     }
 }

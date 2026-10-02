@@ -26,7 +26,8 @@ public enum InkStrokeOutline {
         if p <= neutralPressure {
             return minWidthFactor + (1 - minWidthFactor) * (p / neutralPressure)
         }
-        return 1 + (maxWidthFactor - 1) * (min(p, fullPressure) - neutralPressure) / (fullPressure - neutralPressure)
+        return 1 + (maxWidthFactor - 1) * (min(p, fullPressure) - neutralPressure)
+            / (fullPressure - neutralPressure)
     }
 
     /// The closed outline of a pen stroke as [x, y] pairs. `points` are [x, y, pressure?]; `size` is
@@ -34,7 +35,9 @@ public enum InkStrokeOutline {
     public static func outline(points: [[Double]], size: Double) -> [[Double]] {
         var pts: [[Double]] = []
         for p in points where p.count >= 2 {
-            if let last = pts.last, hypot(p[0] - last[0], p[1] - last[1]) < minPointDistance { continue }
+            if let last = pts.last, hypot(p[0] - last[0], p[1] - last[1]) < minPointDistance {
+                continue
+            }
             pts.append(p)
         }
         guard !pts.isEmpty else { return [] }
@@ -46,7 +49,14 @@ public enum InkStrokeOutline {
             radii.append(i == 0 ? target : radii[i - 1] + radiusSmoothing * (target - radii[i - 1]))
         }
 
-        func arc(_ cx: Double, _ cy: Double, _ r: Double, _ from: Double, _ to: Double, _ segments: Int) -> [[Double]] {
+        func arc(
+            _ cx: Double,
+            _ cy: Double,
+            _ r: Double,
+            _ from: Double,
+            _ to: Double,
+            _ segments: Int
+        ) -> [[Double]] {
             (0...segments).map { i in
                 let a = from + (to - from) * (Double(i) / Double(segments))
                 return [cx + r * cos(a), cy + r * sin(a)]
@@ -54,12 +64,16 @@ public enum InkStrokeOutline {
         }
 
         if pts.count == 1 {
-            return Array(arc(pts[0][0], pts[0][1], radii[0], 0, 2 * .pi, capSegments * 2).dropLast())
+            return Array(
+                arc(pts[0][0], pts[0][1], radii[0], 0, 2 * .pi, capSegments * 2).dropLast()
+            )
         }
 
         let tangents: [[Double]] = pts.indices.map { i in
-            let a = pts[max(0, i - 1)], b = pts[min(pts.count - 1, i + 1)]
-            let dx = b[0] - a[0], dy = b[1] - a[1]
+            let a = pts[max(0, i - 1)]
+            let b = pts[min(pts.count - 1, i + 1)]
+            let dx = b[0] - a[0]
+            let dy = b[1] - a[1]
             let length = hypot(dx, dy)
             let l = length == 0 ? 1 : length
             return [dx / l, dy / l]
@@ -67,7 +81,8 @@ public enum InkStrokeOutline {
         var left: [[Double]] = []
         var right: [[Double]] = []
         for (i, p) in pts.enumerated() {
-            let tx = tangents[i][0], ty = tangents[i][1]
+            let tx = tangents[i][0]
+            let ty = tangents[i][1]
             left.append([p[0] - ty * radii[i], p[1] + tx * radii[i]])
             right.append([p[0] + ty * radii[i], p[1] - tx * radii[i]])
         }
@@ -75,9 +90,24 @@ public enum InkStrokeOutline {
         let n = pts.count - 1
         let endAngle = atan2(tangents[n][1], tangents[n][0])
         let startAngle = atan2(tangents[0][1], tangents[0][0])
-        let endCap = arc(pts[n][0], pts[n][1], radii[n], endAngle + .pi / 2, endAngle - .pi / 2, capSegments)
-        let startCap = arc(pts[0][0], pts[0][1], radii[0], startAngle - .pi / 2, startAngle - 3 * .pi / 2, capSegments)
+        let endCap = arc(
+            pts[n][0],
+            pts[n][1],
+            radii[n],
+            endAngle + .pi / 2,
+            endAngle - .pi / 2,
+            capSegments
+        )
+        let startCap = arc(
+            pts[0][0],
+            pts[0][1],
+            radii[0],
+            startAngle - .pi / 2,
+            startAngle - 3 * .pi / 2,
+            capSegments
+        )
         // Left side forward, round the end, right side back, round the start.
-        return left + endCap.dropFirst().dropLast() + right.reversed() + startCap.dropFirst().dropLast()
+        return left + endCap.dropFirst().dropLast() + right.reversed()
+            + startCap.dropFirst().dropLast()
     }
 }

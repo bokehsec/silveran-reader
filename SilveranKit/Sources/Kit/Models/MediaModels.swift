@@ -463,7 +463,10 @@ public struct BookLocator: Codable, Sendable, Hashable {
                 fragments = try container.decodeIfPresent([String].self, forKey: .fragments)
                 progression = try container.decodeIfPresent(Double.self, forKey: .progression)
                 position = try container.decodeIfPresent(Int.self, forKey: .position)
-                totalProgression = try container.decodeIfPresent(Double.self, forKey: .totalProgression)
+                totalProgression = try container.decodeIfPresent(
+                    Double.self,
+                    forKey: .totalProgression
+                )
                 cssSelector = try container.decodeIfPresent(String.self, forKey: .cssSelector)
                 partialCfi = try container.decodeIfPresent(String.self, forKey: .partialCfi)
                 domRange = try container.decodeIfPresent(DomRange.self, forKey: .domRange)

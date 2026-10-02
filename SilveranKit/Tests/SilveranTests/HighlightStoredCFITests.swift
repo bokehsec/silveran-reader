@@ -36,7 +36,10 @@ struct HighlightStoredCFITests {
 
     @Test func fallsBackToEPUBCFIFragment() {
         // Readium-style locators keep the CFI only in fragments; the repair list dropped these.
-        let value = highlight(partialCfi: nil, fragments: ["chapter-anchor", "epubcfi(/6/4!/4/2/1:0)"])
+        let value = highlight(
+            partialCfi: nil,
+            fragments: ["chapter-anchor", "epubcfi(/6/4!/4/2/1:0)"]
+        )
         #expect(value.storedCFI == "epubcfi(/6/4!/4/2/1:0)")
     }
 

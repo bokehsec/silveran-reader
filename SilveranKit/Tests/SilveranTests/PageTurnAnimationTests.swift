@@ -73,42 +73,87 @@ struct PageTurnPolicyTests {
     @Test func curlAnimatesOnlyAllowedTriggers() {
         #expect(
             PageTurnPolicy.shouldAnimate(
-                effectiveStyle: "curl", trigger: .user, animateReadaloudTurns: false))
+                effectiveStyle: "curl",
+                trigger: .user,
+                animateReadaloudTurns: false
+            )
+        )
         #expect(
             !PageTurnPolicy.shouldAnimate(
-                effectiveStyle: "curl", trigger: .readaloud, animateReadaloudTurns: false))
+                effectiveStyle: "curl",
+                trigger: .readaloud,
+                animateReadaloudTurns: false
+            )
+        )
         #expect(
             PageTurnPolicy.shouldAnimate(
-                effectiveStyle: "curl", trigger: .readaloud, animateReadaloudTurns: true))
+                effectiveStyle: "curl",
+                trigger: .readaloud,
+                animateReadaloudTurns: true
+            )
+        )
         #expect(
             !PageTurnPolicy.shouldAnimate(
-                effectiveStyle: "curl", trigger: .programmatic, animateReadaloudTurns: true))
+                effectiveStyle: "curl",
+                trigger: .programmatic,
+                animateReadaloudTurns: true
+            )
+        )
     }
 
     @Test func nonCurlStylesNeverUseAnimator() {
         for style in ["none", "slide"] {
             #expect(
                 !PageTurnPolicy.shouldAnimate(
-                    effectiveStyle: style, trigger: .user, animateReadaloudTurns: true))
+                    effectiveStyle: style,
+                    trigger: .user,
+                    animateReadaloudTurns: true
+                )
+            )
         }
     }
 
     @Test func effectiveStyleFallsBack() {
         #expect(
-            PageTurnPolicy.effectiveStyle(requested: "curl", scrollingMode: false, hasAnimator: true)
-                == "curl")
+            PageTurnPolicy.effectiveStyle(
+                requested: "curl",
+                scrollingMode: false,
+                hasAnimator: true
+            )
+                == "curl"
+        )
         #expect(
-            PageTurnPolicy.effectiveStyle(requested: "curl", scrollingMode: false, hasAnimator: false)
-                == "none")
+            PageTurnPolicy.effectiveStyle(
+                requested: "curl",
+                scrollingMode: false,
+                hasAnimator: false
+            )
+                == "none"
+        )
         #expect(
-            PageTurnPolicy.effectiveStyle(requested: "slide", scrollingMode: true, hasAnimator: true)
-                == "none")
+            PageTurnPolicy.effectiveStyle(
+                requested: "slide",
+                scrollingMode: true,
+                hasAnimator: true
+            )
+                == "none"
+        )
         #expect(
-            PageTurnPolicy.effectiveStyle(requested: "slide", scrollingMode: false, hasAnimator: false)
-                == "slide")
+            PageTurnPolicy.effectiveStyle(
+                requested: "slide",
+                scrollingMode: false,
+                hasAnimator: false
+            )
+                == "slide"
+        )
         #expect(
-            PageTurnPolicy.effectiveStyle(requested: "bogus", scrollingMode: false, hasAnimator: true)
-                == "none")
+            PageTurnPolicy.effectiveStyle(
+                requested: "bogus",
+                scrollingMode: false,
+                hasAnimator: true
+            )
+                == "none"
+        )
     }
 
     @Test func parsesTurnOutcome() {
@@ -119,7 +164,9 @@ struct PageTurnPolicyTests {
 
     @Test func settingsDecodeDefaultsAndNormalize() throws {
         let legacy = try JSONDecoder().decode(
-            SilveranGlobalConfig.Reading.self, from: Data("{}".utf8))
+            SilveranGlobalConfig.Reading.self,
+            from: Data("{}".utf8)
+        )
         #expect(legacy.pageTurnStyle == kDefaultPageTurnStyle)
         #expect(legacy.animatePageTurnsDuringReadaloud == kDefaultAnimatePageTurnsDuringReadaloud)
 
@@ -221,7 +268,9 @@ struct PageTurnBridgeTests {
 
     @Test func marginClickNavDecodesWithoutSource() throws {
         let message = try JSONDecoder().decode(
-            MarginClickNavMessage.self, from: Data(#"{"direction":"left"}"#.utf8))
+            MarginClickNavMessage.self,
+            from: Data(#"{"direction":"left"}"#.utf8)
+        )
         #expect(message.direction == "left")
         #expect(message.source == nil)
     }

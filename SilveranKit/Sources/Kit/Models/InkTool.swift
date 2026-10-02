@@ -51,7 +51,11 @@ public struct InkToolSettings: Codable, Sendable, Hashable {
     public var highlighter: InkTool
     public var selected: InkTool.Mode
 
-    public init(pen: InkTool = .pen, highlighter: InkTool = .highlighter, selected: InkTool.Mode = .pen) {
+    public init(
+        pen: InkTool = .pen,
+        highlighter: InkTool = .highlighter,
+        selected: InkTool.Mode = .pen
+    ) {
         self.pen = pen
         self.highlighter = highlighter
         self.selected = selected

@@ -183,7 +183,9 @@ struct LibraryAnnotationRepairView: View {
             try await owner.prepare()
             let chapters = try await inspector.open(bookID: book.bookID, category: category)
             let order = Dictionary(uniqueKeysWithValues: chapters.map { ($0.href, $0.index) })
-            chapterNames = Dictionary(chapters.map { ($0.href, $0.displayName) }) { first, _ in first }
+            chapterNames = Dictionary(chapters.map { ($0.href, $0.displayName) }) { first, _ in
+                first
+            }
             let hrefs = owner.hrefs.sorted {
                 (order[$0] ?? Int.max, $0) < (order[$1] ?? Int.max, $1)
             }
