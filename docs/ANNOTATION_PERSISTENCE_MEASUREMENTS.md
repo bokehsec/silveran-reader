@@ -73,6 +73,8 @@ Physical bytes written and retained recovery growth have no accepted numerical c
 
 ## Open acceptance
 
+- **2026-10-02 rerun on committed `fea56d2` was stopped (OD-034).** After 28 minutes at full CPU and 7 GB memory the large workload had 56 journal records totalling 163 MB for a 4.3 MB book (medium: 52 / 43 MB for 716 KB; small: 37 / 1.7 MB for 28 KB). Each local ink record stores the whole book's ink, history is never pruned, and every save re-reads and decodes all of it. A retention/compaction design (ADR 013 revision) must land before this harness can produce a current report.
+
 - Rerun the revised owners/local command journal on a frozen Mac tree and retain separate observations; repeat under a release build before qualifying the proposed Mac budget.
 - Set and exercise numerical budgets on named real iPad/iPhone hardware with isolated synthetic content, not the user's annotations.
 - Extend the fixture corpus with consensually captured Pencil input and reflow; measure renderer/input latency separately from asynchronous durability.
