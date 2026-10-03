@@ -384,9 +384,14 @@ public func normalizedUserRating(_ rating: Double?) -> Double? {
 public protocol BookSourceActor: BookSourceIdentityProviding {
     var sourceRecord: BookSourceRecord { get async }
     var connectionStatus: ConnectionStatus { get async }
+    /// Update the display-name fallback without changing source/account identity or access.
+    func updateSourceDisplayName(_ name: String) async
     /// Stable local ownership or conservative configured-principal namespace; nil stays unverified.
     /// Backends expose identity through this contract without leaking credentials to shared owners.
 
+    /// Fetches and publishes a complete listing through the adapter's existing cache owner.
+    /// The shared service must not publish it a second time. Persistent adapters return nil
+    /// when publication fails and preserve unreadable-entry evidence in their own boundary.
     func fetchLibraryInformation() async -> [BookMetadata]?
 
     func fetchCoverImage(

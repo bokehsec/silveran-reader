@@ -41,7 +41,9 @@ public enum ActivitySource: String, Hashable, Sendable {
 
 public actor StorytellerActor {
 
-    private let sourceRecordValue: BookSourceRecord
+    private var sourceRecordValue: BookSourceRecord
+    private let publishLibraryCache:
+        @Sendable ([BookMetadata], BookSourceID, Set<String>) async throws -> Void
     private var observers: (@Sendable () -> Void)? = nil
 
     private var username: String?
@@ -115,7 +117,19 @@ public actor StorytellerActor {
     public init(
         sourceRecord: BookSourceRecord,
         session: URLSession? = nil,
+        publishLibraryCache:
+            @escaping @Sendable ([BookMetadata], BookSourceID, Set<String>) async throws -> Void = {
+                metadata,
+                sourceID,
+                unreadable in
+                try await LocalMediaActor.shared.updateSourceCacheMetadata(
+                    metadata,
+                    replacingSourceID: sourceID,
+                    unreadableUUIDs: unreadable
+                )
+            },
     ) {
+        self.publishLibraryCache = publishLibraryCache
         self.sourceRecordValue = sourceRecord
         let delegate = StorytellerDownloadDelegate()
         let configuration: URLSessionConfiguration = {
@@ -791,44 +805,14 @@ public actor StorytellerActor {
             }
 
             do {
-                let wrapper = try decoder.decode(
-                    LenientArrayWrapper<StorytellerBookMetadataPayload>.self,
-                    from: response.data,
-                )
-                libraryMetadata = wrapper.values.map { payload in
-                    payload.scoped(to: sourceRecordValue.id)
-                }
-
-                if let jsonArray = try? JSONSerialization.jsonObject(with: response.data) as? [Any]
-                {
-                    let totalCount = jsonArray.count
-                    if totalCount > libraryMetadata.count {
-                        let skipped = totalCount - libraryMetadata.count
-                        debugLog(
-                            "[StorytellerActor] WARNING: Skipped \(skipped) book(s) due to decode errors (loaded \(libraryMetadata.count)/\(totalCount))"
-                        )
-                    }
-                    let decodedUUIDs = Set(libraryMetadata.map(\.uuid))
-                    lastListingUnreadableUUIDs = Set(
-                        jsonArray.compactMap { ($0 as? [String: Any])?["uuid"] as? String }
-                    ).subtracting(decodedUUIDs)
-                } else {
-                    lastListingUnreadableUUIDs = []
-                }
+                _ = try await publishLibraryListing(response.data)
             } catch {
-                debugLog("[StorytellerActor] DECODE ERROR in fetchLibraryInformation:")
-                debugLog("[StorytellerActor] Error: \(error)")
+                debugLog("[StorytellerActor] Failed to decode or persist library listing: \(error)")
                 if let decodingError = error as? DecodingError {
                     logDetailedDecodingError(decodingError, data: response.data)
                 }
-                throw error
+                return nil
             }
-
-            try? await LocalMediaActor.shared.updateSourceCacheMetadata(
-                libraryMetadata,
-                replacingSourceID: sourceRecordValue.id,
-                unreadableUUIDs: lastListingUnreadableUUIDs,
-            )
 
             await recordNetworkSuccess()
             return libraryMetadata
@@ -836,6 +820,35 @@ public actor StorytellerActor {
             logStorytellerError("fetchLibraryInformation", error: error)
             return nil
         }
+    }
+
+    /// One publication boundary for both direct adapter callers and the shared service.
+    /// Cache errors propagate; the adapter's last successful listing stays available.
+    @discardableResult
+    func publishLibraryListing(_ data: Data) async throws -> [BookMetadata] {
+        let wrapper = try decoder.decode(
+            LenientArrayWrapper<StorytellerBookMetadataPayload>.self,
+            from: data
+        )
+        let metadata = wrapper.values.map { payload in
+            var book = payload.scoped(to: sourceRecordValue.id)
+            book.source = book.source ?? sourceRecordValue.name
+            return book
+        }
+        let decodedUUIDs = Set(metadata.map(\.uuid))
+        let jsonArray = try JSONSerialization.jsonObject(with: data) as? [Any] ?? []
+        let unreadableUUIDs = Set(
+            jsonArray.compactMap { ($0 as? [String: Any])?["uuid"] as? String }
+        ).subtracting(decodedUUIDs)
+        if jsonArray.count > metadata.count {
+            debugLog(
+                "[StorytellerActor] WARNING: Skipped \(jsonArray.count - metadata.count) book(s) due to decode errors (loaded \(metadata.count)/\(jsonArray.count))"
+            )
+        }
+        try await publishLibraryCache(metadata, sourceRecordValue.id, unreadableUUIDs)
+        libraryMetadata = metadata
+        lastListingUnreadableUUIDs = unreadableUUIDs
+        return metadata
     }
 
     /// Downloads the cover image from `/api/v2/books/{bookId}/cover`.
@@ -2980,6 +2993,10 @@ public actor StorytellerActor {
 extension StorytellerActor: BookSourceActor {
     public var sourceRecord: BookSourceRecord {
         sourceRecordValue
+    }
+
+    public func updateSourceDisplayName(_ name: String) {
+        sourceRecordValue.name = name
     }
 
     public func resolveLocalMedia(

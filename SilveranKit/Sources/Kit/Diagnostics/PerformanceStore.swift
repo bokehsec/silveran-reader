@@ -12,8 +12,11 @@ public struct PerformanceHistory: Codable, Sendable {
     public func validate() throws {
         guard schema == 1, reports.count <= 4096, evicted >= 0, evicted <= 1_000_000_000,
             dropped.keys.allSatisfy({
-                ["corruptHistory", "invalidPayload", "storage", "payloadCapacity", "oversized"]
-                    .contains($0)
+                [
+                    "corruptHistory", "invalidPayload", "storage", "payloadCapacity", "oversized",
+                    "cleared",
+                ]
+                .contains($0)
             }),
             dropped.values.allSatisfy({ $0 >= 0 && $0 <= 1_000_000_000 })
         else { throw PerformanceReportError.corrupt }
@@ -94,9 +97,14 @@ public final class PerformanceStore {
     public func ingest(_ report: PerformanceReport, now: Date = Date()) {
         do {
             try report.validate()
-            guard report.end > history.clearedThrough,
-                report.end >= now.addingTimeInterval(-30 * 86400)
-            else { return }
+            // A report ending before Clear history describes cleared time. Honour the clear,
+            // but count it so the export shows the gap instead of silently missing a day.
+            guard report.end > history.clearedThrough else {
+                noteDrop("cleared")
+                try persist(now: now)
+                return
+            }
+            guard report.end >= now.addingTimeInterval(-30 * 86400) else { return }
             guard
                 !history.reports.contains(where: {
                     $0.source == report.source && $0.identity == report.identity
@@ -116,7 +124,8 @@ public final class PerformanceStore {
     }
     public func noteDrop(_ reason: String, count: Int = 1) {
         // Finite caller vocabulary only.
-        guard ["payloadCapacity", "oversized", "invalidPayload", "storage"].contains(reason) else {
+        guard ["payloadCapacity", "oversized", "invalidPayload", "storage", "cleared"].contains(reason)
+        else {
             return
         }
         history.dropped[reason, default: 0] = min(
@@ -145,7 +154,7 @@ public final class PerformanceStore {
         history.evicted += oldCount - history.reports.count
         history.reports.sort { $0.end < $1.end }
         var data = try PerformanceJSON.encode(history)
-        // Half the physical cap reserves room for atomic replacement and one export snapshot.
+        // A third of the physical cap leaves room for atomic replacement and one export snapshot.
         let normalizedLimit = (limit - min(64 * 1024, limit / 8)) / 3
         while data.count > normalizedLimit || history.reports.count > 4096, !history.reports.isEmpty
         {

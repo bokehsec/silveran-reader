@@ -224,3 +224,19 @@ ED-2 retains the original operation scope as follow-up gaps: full async Foliate/
 ## Continuation — 2026-10-03 (after handoff)
 
 Reran all automated checks (portable 638/81, WebHarness 229, comparison tool 6, PerformanceDiagnosticsTests 13/13 on the iPhone and iPad QA simulators) and ran the first visible iPhone simulator pass. It found and fixed two defects: missing foreground context at launch/after enable or clear ([BF-083](../BUGFIX_LOG.md)) and share-sheet staging cleanup that also blocked Clear history ([BF-084](../BUGFIX_LOG.md)). Smaller usability changes: Title Case row/title, “Saved summaries” label, timestamped export filenames and build-labelled comparison warnings. Exact results and the remaining iPad/VoiceOver/landscape checks are in the [evidence index](evidence/energy-diagnostics-2026-10-03/README.md). ED-5 is unchanged: it needs physical devices, optimized builds and a real delivered daily payload.
+
+## Build fix — 2026-10-03
+
+The watchOS device build (32-bit `Int`) failed on the 10¹² work-total cap. Work totals are now `Int64` ([BF-085](../BUGFIX_LOG.md)); report JSON is unchanged. Portable suite 638/81 passed; the watchOS device compile is still to be confirmed.
+
+## Conformance review — 2026-10-03
+
+A review of the code against this plan found operations reported with misleading outcomes ([BF-086](../BUGFIX_LOG.md)) and loss paths that skipped the required explicit drop counts ([BF-087](../BUGFIX_LOG.md)). Both are fixed. The fixes were verified with portable 639/81, WebHarness 230, the comparison tool and iPhone components 14/14.
+
+Product default: a MetricKit report that arrives after **Clear history** but covers earlier time is discarded, as before, but now counted as `cleared`. This is open for the owner to revisit.
+
+Still open, unchanged: iPad components and interaction, VoiceOver/landscape, the Instruments marker trace (ED-2), ED-5 and the watchOS device compile (BF-085).
+
+## First owner iPad report investigation — 2026-10-03
+
+The owner supplied a physical iPad development export containing 11 partial activity summaries, with no MetricKit/resource intervals. The [investigation](IPAD_PERFORMANCE_INVESTIGATION_2026-10-03.md) confirms repeated unchanged library derivations, duplicate source-cache publication and an ungated periodic library loop. BF-088 adds bounded exact-input snapshot reuse and records existing cache-hit/miss scalars on `library.index`; the subsequent BF-089/090 increment consolidates source-cache publication and gates full-library polling by active surfaces. Cache-owner failure atomicity and dedicated incoming-position polling remain OD-049/050. Reading-position failures still require existing response logs (OD-046). This is actionable operation evidence, not ED-5 baseline, overhead or battery acceptance. Automated/component results are recorded in BF-088–090; the existing diagnostics-screen acceptance gates remain unchanged.

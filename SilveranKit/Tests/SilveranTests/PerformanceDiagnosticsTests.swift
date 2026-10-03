@@ -52,6 +52,9 @@ struct PerformanceDiagnosticsTests {
         let cleared = PerformanceStore(directory: directory)
         cleared.ingest(metric)
         #expect(cleared.history.reports.isEmpty)
+        // The discarded pre-clear report is counted, and the count survives restart.
+        #expect(cleared.history.dropped["cleared"] == 1)
+        #expect(PerformanceStore(directory: directory).history.dropped["cleared"] == 1)
         cleared.ingest(report(identity: "fresh", now: now.addingTimeInterval(2)))
         #expect(cleared.history.reports.count == 1)
     }
@@ -244,18 +247,46 @@ struct PerformanceDiagnosticsTests {
         ]
         let body: [String: Any] = ["generation": token.uuidString, "observations": [row]]
         let clock = ContinuousClock.now
-        #expect(ingress.accept(body, now: clock)?.count == 1)
-        #expect(ingress.accept(body, now: clock) == nil)
-        #expect(ingress.accept(body, now: clock.advanced(by: .seconds(2)))?.count == 1)
-        #expect(ingress.accept(["generation": UUID().uuidString, "observations": [row]]) == nil)
+        #expect(ingress.accept(body, now: clock).observations.count == 1)
+        // Too-frequent, wrong-generation, oversized and content-bearing batches are counted.
+        #expect(ingress.accept(body, now: clock).rejected == 1)
+        #expect(ingress.accept(body, now: clock.advanced(by: .seconds(2))).observations.count == 1)
         #expect(
-            ingress.accept([
-                "generation": token.uuidString, "observations": Array(repeating: row, count: 17),
-            ]) == nil
+            ingress.accept(["generation": UUID().uuidString, "observations": [row]]).rejected == 1
         )
+        let oversized = ingress.accept([
+            "generation": token.uuidString, "observations": Array(repeating: row, count: 17),
+        ])
+        #expect(oversized.observations.isEmpty && oversized.rejected == 16)
         var bad = row
         bad["title"] = "private"
-        #expect(ingress.accept(["generation": token.uuidString, "observations": [bad]]) == nil)
+        #expect(
+            ingress.accept(["generation": token.uuidString, "observations": [bad]]).rejected == 1
+        )
+        #expect(ingress.accept("not a batch").rejected == 1)
+        let overflow = ingress.accept(
+            ["generation": token.uuidString, "observations": [row], "dropped": 84],
+            now: clock.advanced(by: .seconds(4))
+        )
+        #expect(overflow.observations.count == 1 && overflow.overflow == 84)
+        #expect(overflow.rejected == 0)
+        #expect(
+            ingress.accept(
+                ["generation": token.uuidString, "observations": [row], "dropped": -1],
+                now: clock.advanced(by: .seconds(6))
+            ).rejected == 1
+        )
+    }
+    @Test func rendererLossIsCountedNotHidden() throws {
+        let recorder = PerformanceRecorder()
+        recorder.noteRendererLoss(overflow: 84, rejected: 2)
+        let environment = PerformanceEnvironment(platform: "test")
+        let report = try #require(recorder.drain(environment: environment))
+        #expect(report.dropped == ["rendererCapacity": 84, "invalidRenderer": 2])
+        try report.validate()
+        let disabled = PerformanceRecorder(enabled: false)
+        disabled.noteRendererLoss(overflow: 3, rejected: 3)
+        #expect(disabled.drain(environment: environment) == nil)
     }
     #if os(iOS)
     @Test @MainActor func appleCollectorExportClearAndOffOn() async throws {

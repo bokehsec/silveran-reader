@@ -89,6 +89,13 @@ public final class PerformanceRecorder: PerformanceMeasuring, @unchecked Sendabl
             record(operation, seconds: seconds, outcome: outcome, work: [:], coverage: "renderer")
         }
     }
+    public func noteRendererLoss(overflow: Int, rejected: Int) {
+        lock.withLock {
+            guard enabled else { return }
+            if overflow > 0 { drop("rendererCapacity", count: overflow) }
+            if rejected > 0 { drop("invalidRenderer", count: rejected) }
+        }
+    }
     public func setActivity(_ activity: PerformanceActivity, active value: Bool) {
         lock.withLock {
             guard enabled else { return }
@@ -126,13 +133,13 @@ public final class PerformanceRecorder: PerformanceMeasuring, @unchecked Sendabl
         for (key, value) in work where value >= 0 && value <= 1_000_000_000 {
             summary.work[key.rawValue] = min(
                 1_000_000_000_000,
-                (summary.work[key.rawValue] ?? 0) + value
+                (summary.work[key.rawValue] ?? 0) + Int64(value)
             )
         }
         summaries[key] = summary
     }
-    private func drop(_ reason: String) {
-        dropped[reason] = min(1_000_000_000, (dropped[reason] ?? 0) + 1)
+    private func drop(_ reason: String, count: Int = 1) {
+        dropped[reason] = min(1_000_000_000, (dropped[reason] ?? 0) + min(max(count, 0), 1_000_000))
     }
     public func setEnabled(_ value: Bool) {
         lock.withLock {

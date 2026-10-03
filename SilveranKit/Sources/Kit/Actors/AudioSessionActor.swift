@@ -854,7 +854,8 @@ public actor AudioSessionActor {
 
     private func syncProgress(reason: SyncReason) async {
         let measurement = PerformanceMeasurement(.audioPositionUpdate)
-        var outcome: PerformanceOutcome = .incomplete
+        // An unchanged position is a successful empty check, not an unfinished operation.
+        var outcome: PerformanceOutcome = .success
         var empty = 1
         defer { measurement.finish(outcome, work: [.emptyChecks: empty]) }
         guard let book, let metadata,
@@ -881,7 +882,6 @@ public actor AudioSessionActor {
         )
         switch result {
             case .success, .queued:
-                outcome = .success
                 lastSyncedLocator = locator
             case .failed:
                 outcome = .failure

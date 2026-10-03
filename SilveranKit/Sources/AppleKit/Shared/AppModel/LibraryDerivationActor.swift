@@ -370,7 +370,7 @@ public enum MediaGridLocationFilterOption: String, CaseIterable, Identifiable, S
     }
 }
 
-public struct LibraryDerivationInput: Sendable {
+public struct LibraryDerivationInput: Sendable, Equatable {
     public var generation: Int
     public var deriveGroups: Bool
     public var metadata: [BookMetadata]
@@ -596,7 +596,18 @@ public struct MediaGridRenderSnapshot: Sendable {
 }
 
 public actor LibraryDerivationActor {
-    public init() {}
+    private let performance: (any PerformanceMeasuring)?
+    private var cachedSnapshot:
+        (
+            input: LibraryDerivationInput,
+            locale: Locale,
+            calendar: Calendar,
+            snapshot: LibraryViewSnapshot
+        )?
+
+    public init(performance: (any PerformanceMeasuring)? = nil) {
+        self.performance = performance
+    }
 
     public func deriveBooksForShelf(_ shelf: SmartShelf, from input: SmartShelfBooksInput)
         -> [BookMetadata]
@@ -665,8 +676,29 @@ public actor LibraryDerivationActor {
     }
 
     public func deriveSnapshot(from input: LibraryDerivationInput) -> LibraryViewSnapshot {
-        let measurement = PerformanceMeasurement(.libraryIndex)
-        defer { measurement.finish() }
+        let performance = performance ?? SilveranPlatform.performance
+        let span = performance.begin(.libraryIndex)
+        var work: [PerformanceWork: Int] = [.cacheMisses: 1]
+        defer { performance.end(span, outcome: .success, work: work) }
+
+        // Generations order publication; they do not change derived library content.
+        // Synthesized equality includes new input fields automatically. Keep just one
+        // snapshot, and invalidate locale-dependent sorting/date predicates as well.
+        var content = input
+        content.generation = 0
+        let locale = Locale.current
+        let calendar = Calendar.current
+        if let cachedSnapshot,
+            cachedSnapshot.input == content,
+            cachedSnapshot.locale == locale,
+            cachedSnapshot.calendar == calendar
+        {
+            work = [.cacheHits: 1]
+            var snapshot = cachedSnapshot.snapshot
+            snapshot.generation = input.generation
+            if input.deriveGroups { snapshot.groups.generation = input.generation }
+            return snapshot
+        }
         let started = CFAbsoluteTimeGetCurrent()
         var badgeCounts: [String: Int] = [:]
         var context = Context(input: input)
@@ -701,12 +733,14 @@ public actor LibraryDerivationActor {
         debugLog(
             "[PerfTrace][LibraryDerivationActor] deriveSnapshot generation=\(input.generation) contents=\(input.sidebarContents.count) badges=\(badgeCounts.count) elapsedMs=\(String(format: "%.1f", elapsed))"
         )
-        return LibraryViewSnapshot(
+        let snapshot = LibraryViewSnapshot(
             generation: input.generation,
             badgeCounts: badgeCounts,
             groups: groups,
             smartShelfBooks: smartShelfBooks,
         )
+        cachedSnapshot = (content, locale, calendar, snapshot)
+        return snapshot
     }
 
     private struct MediaGridLocationInfo: Sendable {

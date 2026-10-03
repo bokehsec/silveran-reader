@@ -20,10 +20,33 @@ public actor BookServiceActor {
     private var networkAvailable: Bool?
     private var periodicLibraryRefreshTask: Task<Void, Never>?
     private var periodicRefreshUsesProgressSyncInterval = true
+    private var periodicLibraryRefreshRequested = false
+    private var periodicLibraryRefreshInFlight = false
+    private var activeSources: Set<ActivitySource> = []
+    private let periodicRefreshSettings: @Sendable () async -> SilveranGlobalConfig.Sync
+    private let periodicRefreshSleep: @Sendable (Double) async throws -> Void
+    private let periodicRefreshAction: (@Sendable () async -> Void)?
 
     public init() {
         self.sourceRecords = []
         self.sourcesByID = [:]
+        periodicRefreshSettings = { await SettingsActor.shared.config.sync }
+        periodicRefreshSleep = { try await Task.sleep(for: .seconds($0)) }
+        periodicRefreshAction = nil
+    }
+
+    /// Isolated scheduler fixtures supply time/settings/work without starting global stores.
+    init(
+        periodicRefreshSettings: @escaping @Sendable () async -> SilveranGlobalConfig.Sync,
+        periodicRefreshSleep: @escaping @Sendable (Double) async throws -> Void,
+        periodicRefreshAction: @escaping @Sendable () async -> Void
+    ) {
+        sourceRecords = []
+        sourcesByID = [:]
+        sourceRegistryLoaded = true
+        self.periodicRefreshSettings = periodicRefreshSettings
+        self.periodicRefreshSleep = periodicRefreshSleep
+        self.periodicRefreshAction = periodicRefreshAction
     }
 
     func start() async {
@@ -186,6 +209,12 @@ public actor BookServiceActor {
     }
 
     public func setActive(_ active: Bool, source: ActivitySource) async {
+        if active {
+            activeSources.insert(source)
+        } else {
+            activeSources.remove(source)
+        }
+        updatePeriodicLibraryRefreshTask()
         await ensureSourceRegistryLoaded()
         for actor in storytellerActors() {
             await actor.setActive(active, source: source)
@@ -505,44 +534,71 @@ public actor BookServiceActor {
     /// refresh on the metadata interval alone (the watch trades sync latency
     /// for battery).
     public func startPeriodicLibraryRefresh(usingProgressSyncInterval: Bool = true) {
-        guard periodicLibraryRefreshTask == nil else { return }
+        guard !periodicLibraryRefreshRequested else { return }
+        periodicLibraryRefreshRequested = true
         periodicRefreshUsesProgressSyncInterval = usingProgressSyncInterval
-        periodicLibraryRefreshTask = Task {
-            while !Task.isCancelled {
-                let config = await SettingsActor.shared.config
-                if config.sync.isMetadataRefreshDisabled {
-                    try? await Task.sleep(for: .seconds(60))
-                    continue
-                }
-                let interval =
-                    usingProgressSyncInterval
-                    ? min(
-                        config.sync.metadataRefreshIntervalSeconds,
-                        config.sync.progressSyncIntervalSeconds,
-                    )
-                    : config.sync.metadataRefreshIntervalSeconds
-                debugLog("[BookServiceActor] Next periodic library refresh in \(Int(interval))s")
-                try? await Task.sleep(for: .seconds(interval))
-                guard !Task.isCancelled else { return }
-                guard await hasConnectedSource() else { continue }
-                _ = await fetchLibraryInformation()
-            }
-        }
+        updatePeriodicLibraryRefreshTask()
     }
 
     public func stopPeriodicLibraryRefresh() {
-        periodicLibraryRefreshTask?.cancel()
-        periodicLibraryRefreshTask = nil
+        periodicLibraryRefreshRequested = false
+        updatePeriodicLibraryRefreshTask()
     }
 
-    /// Applies a changed sync interval without waiting out the sleep already
-    /// in flight.
+    /// Refresh settings on the next opportunity, including while suspended for inactivity.
     public func restartPeriodicLibraryRefresh() {
-        guard periodicLibraryRefreshTask != nil else { return }
-        stopPeriodicLibraryRefresh()
-        startPeriodicLibraryRefresh(
-            usingProgressSyncInterval: periodicRefreshUsesProgressSyncInterval
-        )
+        guard periodicLibraryRefreshRequested else { return }
+        if !periodicLibraryRefreshInFlight { periodicLibraryRefreshTask?.cancel() }
+        updatePeriodicLibraryRefreshTask()
+    }
+
+    private var shouldRunPeriodicLibraryRefresh: Bool {
+        periodicLibraryRefreshRequested && !activeSources.isEmpty
+    }
+
+    private func updatePeriodicLibraryRefreshTask() {
+        guard shouldRunPeriodicLibraryRefresh else {
+            // A listing already being published may finish. Keep its task until it drains,
+            // so a rapid foreground/background transition cannot start an overlapping loop.
+            if !periodicLibraryRefreshInFlight { periodicLibraryRefreshTask?.cancel() }
+            return
+        }
+        guard periodicLibraryRefreshTask == nil else { return }
+        periodicLibraryRefreshTask = Task {
+            await runPeriodicLibraryRefresh()
+            periodicLibraryRefreshTask = nil
+            updatePeriodicLibraryRefreshTask()
+        }
+    }
+
+    private func runPeriodicLibraryRefresh() async {
+        while shouldRunPeriodicLibraryRefresh && !Task.isCancelled {
+            let config = await periodicRefreshSettings()
+            guard shouldRunPeriodicLibraryRefresh, !Task.isCancelled else { return }
+            let interval =
+                config.isMetadataRefreshDisabled
+                ? 60
+                : periodicRefreshUsesProgressSyncInterval
+                    ? min(config.metadataRefreshIntervalSeconds, config.progressSyncIntervalSeconds)
+                    : config.metadataRefreshIntervalSeconds
+            debugLog("[BookServiceActor] Next periodic library refresh in \(Int(interval))s")
+            do {
+                try await periodicRefreshSleep(interval)
+            } catch { return }
+            guard shouldRunPeriodicLibraryRefresh, !Task.isCancelled else { return }
+            guard !config.isMetadataRefreshDisabled else { continue }
+            if periodicRefreshAction == nil {
+                guard await hasConnectedSource() else { continue }
+                guard shouldRunPeriodicLibraryRefresh, !Task.isCancelled else { return }
+            }
+            periodicLibraryRefreshInFlight = true
+            if let periodicRefreshAction {
+                await periodicRefreshAction()
+            } else {
+                _ = await fetchLibraryInformation()
+            }
+            periodicLibraryRefreshInFlight = false
+        }
     }
 
     @discardableResult
@@ -563,8 +619,13 @@ public actor BookServiceActor {
             let sourceStart = CFAbsoluteTimeGetCurrent()
             let measurement = PerformanceMeasurement(.sourceRefresh)
             let sourceMetadataOptional = await source.fetchLibraryInformation()
-            measurement.finish(sourceMetadataOptional == nil ? .failure : .success,
-                work: [.items: sourceMetadataOptional?.count ?? 0, .emptyChecks: sourceMetadataOptional?.isEmpty == true ? 1 : 0])
+            measurement.finish(
+                sourceMetadataOptional == nil ? .failure : .success,
+                work: [
+                    .items: sourceMetadataOptional?.count ?? 0,
+                    .emptyChecks: sourceMetadataOptional?.isEmpty == true ? 1 : 0,
+                ]
+            )
             let sourceElapsed = (CFAbsoluteTimeGetCurrent() - sourceStart) * 1000
             debugLog(
                 "[ConnDiag] fetchLibraryInformation: source='\(record.name)' kind=\(record.kind) elapsed=\(String(format: "%.0f", sourceElapsed))ms books=\(sourceMetadataOptional?.count ?? -1)"
@@ -579,13 +640,6 @@ public actor BookServiceActor {
                 return named
             }
             metadata.append(contentsOf: named)
-            if let storyteller = source as? StorytellerActor {
-                try? await LocalMediaActor.shared.updateSourceCacheMetadata(
-                    named,
-                    replacingSourceID: record.id,
-                    unreadableUUIDs: await storyteller.lastListingUnreadableUUIDs,
-                )
-            }
         }
 
         let loopElapsed = (CFAbsoluteTimeGetCurrent() - loopStart) * 1000
@@ -603,21 +657,16 @@ public actor BookServiceActor {
         guard let source = sourceActor(for: sourceID) else { return nil }
         let measurement = PerformanceMeasurement(.sourceRefresh)
         let fetched = await source.fetchLibraryInformation()
-        measurement.finish(fetched == nil ? .failure : .success,
-            work: [.items: fetched?.count ?? 0, .emptyChecks: fetched?.isEmpty == true ? 1 : 0])
+        measurement.finish(
+            fetched == nil ? .failure : .success,
+            work: [.items: fetched?.count ?? 0, .emptyChecks: fetched?.isEmpty == true ? 1 : 0]
+        )
         guard let metadata = fetched else { return nil }
         let sourceRecord = sourceRecords.first(where: { $0.id == sourceID })
         let named = metadata.map { book in
             var named = book
             named.source = named.source ?? sourceRecord?.name
             return named
-        }
-        if let storyteller = source as? StorytellerActor {
-            try? await LocalMediaActor.shared.updateSourceCacheMetadata(
-                named,
-                replacingSourceID: sourceID,
-                unreadableUUIDs: await storyteller.lastListingUnreadableUUIDs,
-            )
         }
         return named
     }
@@ -1651,6 +1700,8 @@ public actor BookServiceActor {
         await ensureSourceRegistryLoaded()
 
         sourceRecords.replaceOrAppend(record)
+
+        await sourcesByID[record.id]?.updateSourceDisplayName(record.name)
 
         try? await FilesystemActor.shared.saveBookSources(sourceRecords)
         await notifyLibraryObservers()

@@ -48,6 +48,9 @@ A book source is where a library entry comes from. Two kinds exist today, `story
 
 Silveran will add further server backends, such as Audiobookshelf and Grimmory; OPDS is a candidate for catalog browsing and download across many servers (product decision, 2026-09-30, not yet scheduled). Each new backend is another `BookSourceKind` with its own adapter actor, capability set, credential handling, backup policy for its source descriptor, and compatibility matrix like [STORYTELLER_COMPATIBILITY.md](docs/STORYTELLER_COMPATIBILITY.md). Features a backend lacks are hidden or shown as unsupported through capabilities, never faked. Readaloud (synced EPUB media overlays) is Storyteller-specific; other backends supply ordinary ebooks and audiobooks.
 
+Source listings are published once by their adapter through its cache owner; the shared service aggregates without repeating publication. `updateSourceDisplayName` keeps reused adapters' label fallback current without changing identity or credentials. Storyteller publishes normalized labels/unreadable UUID evidence through `LocalMediaActor` and returns failure if publication fails. `BookServiceActor` owns optional full-library polling, combining app/mac/tv/watch/CarPlay activity; requested polling resumes when a surface becomes active, pending sleeps cancel when all are inactive, and an admitted listing drains before replacement. Dedicated position polling, outgoing delivery and backup keep their separate owners. See [ADR 018](docs/decisions/018-library-publication-and-refresh-lifecycle.md) and BF-089/090.
+
+
 The layers above sources are already backend-neutral and must stay that way: annotations and editions ([ADR 004](docs/decisions/004-edition-anchors-and-creative-conflicts.md)), backup ([ADR 009](docs/decisions/009-backup-archive-and-icloud-transport.md)) and iCloud annotation sync ([ADR 010](docs/decisions/010-live-icloud-annotation-sync.md)) key on `BookID` and edition fingerprints, not on a server. The same work held on two servers is two library entries; carrying annotations between them needs the user-confirmed cross-source edition mapping ADR 004 requires, and the product experience for that is undecided.
 
 Known Storyteller coupling to retire before the first new backend, and not to extend:
@@ -81,6 +84,8 @@ There are two injection paths:
 - [`CoreTextFontTraitsProbe`](https://github.com/kyonifer/silveran-reader/blob/main/SilveranKit/Sources/AppleKit/Shared/Platform/CoreTextFontTraitsProbe.swift) implements font trait probing with CoreText.
 
 It also contains shared code that is only common among Apple platforms, plus UI code for the apps:
+
+`MediaViewModel` publishes library projections computed by `LibraryDerivationActor`. The actor retains one input/result and reuses it for identical inputs, excluding only publication generation; locale/calendar changes invalidate reuse. New results retain generation ordering. This is a bounded in-memory projection cache, with no authority over source metadata, progress or annotations (BF-088).
 
 - [`MobileDesktop`](https://github.com/kyonifer/silveran-reader/tree/main/SilveranKit/Sources/AppleKit/MobileDesktop) is the shared macOS and iOS app surface: library, player, settings, readaloud generation UI, and common view model code.
 - [`MobileDesktop/macApp`](https://github.com/kyonifer/silveran-reader/tree/main/SilveranKit/Sources/AppleKit/MobileDesktop/macApp) contains the macOS-specific shell around the shared [`MobileDesktop`](https://github.com/kyonifer/silveran-reader/tree/main/SilveranKit/Sources/AppleKit/MobileDesktop) UI.

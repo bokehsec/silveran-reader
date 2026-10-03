@@ -40,6 +40,11 @@ public protocol PerformanceMeasuring: Sendable {
     func end(_ span: PerformanceSpan?, outcome: PerformanceOutcome, work: [PerformanceWork: Int])
     func observe(_ operation: PerformanceOperation, seconds: Double, outcome: PerformanceOutcome)
     func setActivity(_ activity: PerformanceActivity, active: Bool)
+    /// Renderer observations lost before reaching the recorder, so coverage stays honest.
+    func noteRendererLoss(overflow: Int, rejected: Int)
+}
+public extension PerformanceMeasuring {
+    func noteRendererLoss(overflow: Int, rejected: Int) {}
 }
 public struct NoopPerformanceMeasurement: PerformanceMeasuring {
     public init() {}
@@ -121,7 +126,7 @@ public struct PerformanceOperationSummary: Codable, Equatable, Sendable {
     public var count = 0
     public var outcomes: [String: Int] = [:]
     public var histogram = PerformanceHistogram()
-    public var work: [String: Int] = [:]
+    public var work: [String: Int64] = [:]
     public var durationSamples = 0
     public var resourceSampleEvery = 16
     public var coverage: String = "native"
@@ -231,8 +236,8 @@ public struct PerformanceReport: Codable, Equatable, Sendable {
             contextSeconds.values.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 31 * 86400 }),
             dropped.keys.allSatisfy({
                 [
-                    "capacity", "invalidRenderer", "corruptHistory", "invalidPayload", "storage",
-                    "payloadCapacity", "oversized",
+                    "capacity", "invalidRenderer", "rendererCapacity", "corruptHistory",
+                    "invalidPayload", "storage", "payloadCapacity", "oversized",
                 ].contains($0)
             }),
             dropped.count <= 16, dropped.values.allSatisfy({ $0 >= 0 && $0 <= 1_000_000_000 })

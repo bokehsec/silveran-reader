@@ -457,9 +457,12 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
                 await activity.markChecked()
             case .sentRecordZoneChanges(let sent):
                 lock.withLock {
+                    // A changed server copy is merged and sent again (see recordSent): a retry,
+                    // not a failure. Other rejected saves are failures.
+                    let resent = sent.failedRecordSaves.filter { $0.error.code == .serverRecordChanged }.count
                     sendItems += sent.savedRecords.count
-                    sendRetries += sent.failedRecordSaves.count
-                    sendFailed = sendFailed || !sent.failedRecordSaves.isEmpty
+                    sendRetries += resent
+                    sendFailed = sendFailed || sent.failedRecordSaves.count > resent
                 }
                 await recordSent(sent)
                 var retry: [CKSyncEngine.PendingRecordZoneChange] = []

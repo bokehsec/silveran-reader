@@ -84,6 +84,9 @@ public final class ApplePerformanceDiagnostics: NSObject, MXMetricManagerSubscri
     private let recorder: PerformanceRecorder
     private var store: PerformanceStore?
     private var initializationFailed = false
+    /// The saved on/off choice could not be read. Collection stays off (never re-enable without
+    /// consent) and Settings shows the problem until the person chooses again.
+    private var preferenceUnreadable = false
     private var observers: [NSObjectProtocol] = []
     private let environment: PerformanceEnvironment
     private var directory: URL {
@@ -141,9 +144,15 @@ public final class ApplePerformanceDiagnostics: NSObject, MXMetricManagerSubscri
                 let preference = directory.appendingPathComponent(Self.preferenceFile)
                 let on: Bool
                 if FileManager.default.fileExists(atPath: preference.path) {
-                    on =
-                        (try? PerformanceJSON.decode(Bool.self, data: Data(contentsOf: preference)))
-                        ?? false
+                    if let saved = try? PerformanceJSON.decode(
+                        Bool.self,
+                        data: Data(contentsOf: preference)
+                    ) {
+                        on = saved
+                    } else {
+                        on = false
+                        preferenceUnreadable = true
+                    }
                 } else {
                     on = true
                 }
@@ -216,6 +225,9 @@ public final class ApplePerformanceDiagnostics: NSObject, MXMetricManagerSubscri
     }
     public func setActivity(_ activity: PerformanceActivity, active: Bool) {
         recorder.setActivity(activity, active: active)
+    }
+    public func noteRendererLoss(overflow: Int, rejected: Int) {
+        recorder.noteRendererLoss(overflow: overflow, rejected: rejected)
     }
     private func scheduleBatchIfNeeded() {
         guard recorder.needsFlush else { return }
@@ -326,13 +338,8 @@ public final class ApplePerformanceDiagnostics: NSObject, MXMetricManagerSubscri
             )
         }
         report.intervalResources.sort { $0.operation.rawValue < $1.operation.rawValue }
-        // Source + interval + reviewed normalized data, excluding receipt/UUID. Do not assign the receiving build.
-        report.identity = ""
-        report.id = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
-        report.received = report.end
-        report.identity = PerformanceStore.digest((try? PerformanceJSON.encode(report)) ?? Data())
-        report.id = UUID()
-        report.received = Date()
+        // The caller assigns the delivery identity (digest of the original payload, ADR 017).
+        // Do not assign the receiving build.
         return report
     }
     private func flush(includeContextOnly: Bool = true) {
@@ -364,6 +371,7 @@ public final class ApplePerformanceDiagnostics: NSObject, MXMetricManagerSubscri
                     returning: PerformanceDiagnosticsStatus(
                         enabled: on,
                         state: initializationFailed || store?.storageError == true
+                            || preferenceUnreadable
                             ? "Storage error"
                             : !on
                                 ? "Disabled"
@@ -390,6 +398,7 @@ public final class ApplePerformanceDiagnostics: NSObject, MXMetricManagerSubscri
                         to: directory.appendingPathComponent(Self.preferenceFile),
                         options: .atomic
                     )
+                    preferenceUnreadable = false
                     applyEnabled(on)
                     continuation.resume()
                 } catch { continuation.resume(throwing: error) }

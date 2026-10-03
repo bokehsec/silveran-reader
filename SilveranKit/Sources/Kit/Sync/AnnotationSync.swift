@@ -336,7 +336,11 @@ public actor AnnotationSyncEngine {
         let measurement = PerformanceMeasurement(.reconcile)
         var outcome: PerformanceOutcome = .failure
         defer { measurement.finish(Task.isCancelled ? .cancelled : outcome) }
-        guard await beginCall() else { return false }
+        guard await beginCall() else {
+            // Deferred while a restore owns the files; the work is retained, not failed.
+            outcome = .cancelled
+            return false
+        }
         defer { endCall() }
         do {
             await lock(bookID)

@@ -12,7 +12,7 @@ public actor FolderSourceActor: BookSourceActor {
         BookStatus(uuid: "folder-status-read", name: "Read"),
     ]
 
-    private let sourceRecordValue: BookSourceRecord
+    private var sourceRecordValue: BookSourceRecord
     private let filesystem: FilesystemActor
     private let localLibrary: LocalLibraryManager
 
@@ -52,6 +52,10 @@ public actor FolderSourceActor: BookSourceActor {
 
     public var sourceRecord: BookSourceRecord {
         sourceRecordValue
+    }
+
+    public func updateSourceDisplayName(_ name: String) {
+        sourceRecordValue.name = name
     }
 
     public var accountScopeID: String? { "local-source:" + sourceRecordValue.id }

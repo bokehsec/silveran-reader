@@ -19,10 +19,12 @@ public final class ReaderMessageRouter {
     public func route(name: String, body: Any) -> Bool {
         switch name {
             case "PerformanceDiagnostics":
-                if let observations = performanceIngress.accept(body) {
-                    for observation in observations {
-                        SilveranPlatform.performance.observe(observation.operation, seconds: observation.seconds, outcome: observation.outcome)
-                    }
+                let accepted = performanceIngress.accept(body)
+                for observation in accepted.observations {
+                    SilveranPlatform.performance.observe(observation.operation, seconds: observation.seconds, outcome: observation.outcome)
+                }
+                if accepted.overflow > 0 || accepted.rejected > 0 {
+                    SilveranPlatform.performance.noteRendererLoss(overflow: accepted.overflow, rejected: accepted.rejected)
                 }
                 return true
             case "ConsoleLog":

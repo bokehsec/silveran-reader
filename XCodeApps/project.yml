@@ -79,6 +79,8 @@ targets:
           - HighlightPersistenceSafetyTests.swift
           - HighlightLocalMutationRecoveryTests.swift
           - LibraryIdentitySafetyTests.swift
+          - LibraryDerivationActorTests.swift
+          - LibraryRefreshTests.swift
           - CrossDeviceLibraryTests.swift
           - BackupIntegrityTests.swift
           - BackupParticipantTests.swift

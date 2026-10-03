@@ -42,6 +42,217 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-090 — Full-library polling continued after every app surface backgrounded
+
+- Date: 2026-10-03
+- Status: Fixed; portable and isolated iPad/iPhone component verification passed; hardware/energy acceptance pending
+- Platforms: Shared Kit scheduler; Apple app/mac/tv/watch/CarPlay activity callers
+- Components: `BookServiceActor` periodic refresh task and activity admission; `LibraryRefreshTests`
+- Related links: OD-048; [ADR 018](docs/decisions/018-library-publication-and-refresh-lifecycle.md); [iPad investigation](docs/IPAD_PERFORMANCE_INVESTIGATION_2026-10-03.md)
+
+#### Symptom
+
+The optional full-library poll continued while the process could run in the background, even with every app surface inactive. The owner's development iPad export recorded 248 source calls and 501 index requests in two long background-labelled windows. These measurements do not establish why the process stayed runnable or its battery cost.
+
+#### Root cause
+
+`startPeriodicLibraryRefresh` checked task cancellation and source connection only. The existing `setActive` entry point forwarded activity to backend connection monitoring but did not control this loop. Stopping and immediately recreating a task could also overlap a listing already awaiting cache publication without a drain boundary.
+
+#### Change
+
+Track active surfaces at the existing service owner and distinguish requested periodic refresh from its current task. With no active surface, cancel a pending sleep and allocate no replacement timer. A listing already in flight may finish; retain that task until it drains, so quick activity changes, explicit stop/start and settings changes cannot create another loop beside it. On activation, resume the requested loop with current settings and its previous progress/metadata interval mode. All configured sources still pass through the backend-neutral fetch contract. Explicit/manual/startup refresh, outgoing position delivery, dedicated incoming-position polling and backup owners retain their existing behavior. CarPlay can keep the loop active after the main app backgrounds.
+
+#### Validation
+
+- `scripts/test` passed **653 tests / 84 suites** on macOS 26.0.1, Debug, including existing source retention and progress reconciliation coverage.
+- `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=8AE562C2-1455-413B-9CA4-EE7BB8378D2B' SILVERAN_DISABLE_CODE_SIGNING=1 scripts/iostest -only-testing:'Silveran Component Tests (iOS)/PeriodicLibraryRefreshTests' -only-testing:'Silveran Component Tests (iOS)/SourceListingPublicationTests' -only-testing:'Silveran Component Tests (iOS)/LibrarySnapshotReuseTests' -resultBundlePath /tmp/silveran-library-followup-ipad.xcresult` passed on isolated iPad mini (A17 Pro), iOS 26.2 (23C54).
+- The same command with destination `17021FC5-BB72-483B-97F9-C2EC495C6AC5` and bundle `/tmp/silveran-library-followup-iphone.xcresult` passed on isolated iPhone 17 Pro, iOS 26.2 (23C54). Both Debug component inventories, inspected with `xcrun xcresulttool get test-results summary --path <bundle>` and `... tests --path <bundle>`, contain **14 functions / 23 executions / 0 failures**, including all changed/new tests.
+- Deterministic injected settings/clock/work tests cover inactivity, cancelled wakeups, foreground return, combined app/CarPlay activity, disabled metadata, explicit stop/start, paused settings changes in both interval modes, settings restart while sleeping, and a blocked in-flight listing. Maximum concurrent fixture listings remains one; no global stores, credentials or real positions are used.
+- Full-app iPhone library/background/return smoke check passed with a synthetic local source and existing live logs; iPad interaction remains pending after isolated restart/launch/input failures (OD-051). The validation-project iOS build passed. Exact fixture/actions/results are recorded in the investigation continuation. Real hardware audio/CarPlay, battery and signed-server behavior are unverified; Android/Linux shells were not exercised.
+
+
+#### Compatibility and follow-up
+
+No persisted schema or migration. Platforms requesting the loop must report activity through `setActive`; all existing loop callers are Apple shells with that lifecycle channel. Foreground return waits the selected interval for this optional poll; the existing adapter activation/manual refresh still supplies immediate opportunities. Dedicated incoming-position polling remains separate and has its own outstanding background-efficiency observation. Hardware/audio/CarPlay and energy acceptance remain open.
+
+### BF-089 — Source listings wrote and notified the library cache twice
+
+- Date: 2026-10-03
+- Status: Fixed; portable and isolated iPad/iPhone component verification passed; device/server acceptance pending
+- Platforms: Shared Kit Storyteller adapter/service; source display-name contract also implemented by FolderSourceActor
+- Components: `BookServiceActor.fetchLibraryInformation` (both overloads), `StorytellerActor.publishLibraryListing`, `BookSourceActor.updateSourceDisplayName`, `LibraryRefreshTests`
+- Related links: OD-047; [ADR 018](docs/decisions/018-library-publication-and-refresh-lifecycle.md); [iPad investigation](docs/IPAD_PERFORMANCE_INVESTIGATION_2026-10-03.md)
+
+#### Symptom
+
+Every successful Storyteller library listing rewrote cache files, reconciled positions and notified observers twice. If the server omitted the source label, the first write used nil and the second used the local display-name fallback, creating different intermediate library snapshots. The development iPad report's repeated index requests motivated investigation; it cannot assign every request to this cause.
+
+#### Root cause
+
+The adapter already published listings to `LocalMediaActor`, but both shared-service fetch methods repeated that backend-specific publication after applying display labels. Both used `try?`, allowing a failed cache write to be treated as a successful listing. Reused adapters held their creation-time source name, so merely deleting the second write would lose current name normalization after source configuration changes.
+
+#### Change
+
+Decode, scope identities, normalize missing labels and collect unreadable UUID evidence once at the adapter's listing publication boundary. Publish through the same `LocalMediaActor` owner exactly once, then replace the adapter's last successful listing/evidence. A publication failure returns nil from fetch and logs a decoding/persistence error; it does not advertise a successful empty listing or replace the adapter's successful state. Remove both touched `as? StorytellerActor` cache-writing branches from the shared service. Pass display-name changes to adapters through a backend-neutral contract method; names do not change source/account/book identity. Server-provided source labels, unreadable-entry retention, downloaded removed-book retention/relisting and pending edit/position reconciliation remain at the existing owners.
+
+#### Validation
+
+- `scripts/test` passed **653 tests / 84 suites** on macOS 26.0.1, Debug, including existing source retention and progress reconciliation coverage.
+- `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=8AE562C2-1455-413B-9CA4-EE7BB8378D2B' SILVERAN_DISABLE_CODE_SIGNING=1 scripts/iostest -only-testing:'Silveran Component Tests (iOS)/PeriodicLibraryRefreshTests' -only-testing:'Silveran Component Tests (iOS)/SourceListingPublicationTests' -only-testing:'Silveran Component Tests (iOS)/LibrarySnapshotReuseTests' -resultBundlePath /tmp/silveran-library-followup-ipad.xcresult` passed on isolated iPad mini (A17 Pro), iOS 26.2 (23C54).
+- The same command with destination `17021FC5-BB72-483B-97F9-C2EC495C6AC5` and bundle `/tmp/silveran-library-followup-iphone.xcresult` passed on isolated iPhone 17 Pro, iOS 26.2 (23C54). Both Debug component inventories, inspected with `xcrun xcresulttool get test-results summary --path <bundle>` and `... tests --path <bundle>`, contain **14 functions / 23 executions / 0 failures**, including all changed/new tests.
+- Five isolated publication tests verify one normalized publication per listing, preservation of server labels, source rename with stable identity, unreadable and removed downloaded-book retention/relisting, successful empty-listing retention, and injected write/decode failures retaining the adapter's successful state. Retention fixtures exercise the existing retention algorithm with synthetic downloaded identifiers; they do not exercise real filesystem failure atomicity or a live server. Removal of both shared-service writes was verified by code inspection.
+- `swift format --in-place` applied to changed Swift files; `git diff --check` passed. Full-app iPhone library/background/return smoke check and validation-project iOS build passed; iPad interaction remains pending (OD-051). Exact fixture/actions/results are recorded in the investigation continuation. Physical/signed-server, Android and Linux app acceptance remain unverified.
+
+
+#### Compatibility and follow-up
+
+No store/schema migration. Third-party `BookSourceActor` implementations must implement the new display-name setter and publish through their own cache boundary. This removes duplicate commits, not every unchanged disk write. `LocalMediaActor`'s pre-existing in-memory assignment before disk completion and whole-cache persistence are recorded separately for durability review; this adapter fix does not claim a transaction across those files. Device/signed-server acceptance and battery benefit remain unverified.
+
+### BF-088 — Repeated library notifications rebuilt identical snapshots
+
+- Date: 2026-10-03
+- Status: Fixed; portable and isolated iPad/iPhone component verification passed; interaction/energy acceptance pending
+- Platforms: Apple shared library derivation (iOS/iPadOS and macOS); no Android/Linux code change
+- Components: `LibraryDerivationActor`, `LibraryDerivationInput`, `LibraryDerivationActorTests`, iOS component test inventory
+- Related links: [iPad report investigation](docs/IPAD_PERFORMANCE_INVESTIGATION_2026-10-03.md), OD-045
+
+#### Symptom
+
+An unchanged library refresh still rebuilt sidebar counts, smart shelves and every iOS library group. The owner's development iPad export recorded 644 `library.index` calls in approximately 75 minutes, including 501 in two long background-labelled windows. Those aggregates do not establish how many inputs were identical or measure battery cost.
+
+#### Root cause
+
+`MediaViewModel.refreshMetadata` skips unchanged metadata assignment but unconditionally schedules derivation. Cancelling its previous task only prevents stale publication; `deriveSnapshot` performs synchronous actor work without cancellation checks. The actor had no reuse boundary, so repeated identical requests repeated all filtering/grouping/sorting. Separately, adapter/service duplicate source-cache writes and ungated polling amplify notifications; those are investigated follow-ups, not fixed by this change.
+
+#### Change
+
+Retain one derived snapshot and its complete input in the existing AppleKit derivation actor. Compare synthesized input equality with only the publication generation normalized; locale and calendar changes also invalidate reuse. Reused results carry the current outer and group generation. All metadata, progress, paths, source membership, shelf definitions, sidebar contents, group mode and download counts participate in invalidation. Existing `library.index` timing/counts still cover every request; existing `cacheHits`/`cacheMisses` work fields identify reuse. An optional measurement sink allows isolated regression verification without changing the app's global services.
+
+No persistence, annotation, polling, server request, queue or conflict behavior changes. Memory retention is bounded to the last snapshot/input; a new actor starts empty.
+
+#### Validation
+
+- Before the cache fix, `scripts/test --filter LibrarySnapshotReuseTests` reproduced the defect: 20 misses rather than 1 miss/19 hits. After the fix, `scripts/test` passed **642 tests / 82 suites**, including the new 3-test suite (11 parameterized executions). Host: macOS 26.0.1, Debug. Initial fixture compilation mistakes were corrected before the recorded failing regression.
+- `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=8AE562C2-1455-413B-9CA4-EE7BB8378D2B' SILVERAN_DISABLE_CODE_SIGNING=1 scripts/iostest -only-testing:'Silveran Component Tests (iOS)/LibrarySnapshotReuseTests' -resultBundlePath /tmp/silveran-library-reuse-ipad.xcresult` passed **3 tests / 11 executions / 0 failures** on isolated iPad mini (A17 Pro), iOS 26.2 (23C54), Debug component host.
+- `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=17021FC5-BB72-483B-97F9-C2EC495C6AC5' SILVERAN_DISABLE_CODE_SIGNING=1 scripts/iostest -only-testing:'Silveran Component Tests (iOS)/LibrarySnapshotReuseTests' -resultBundlePath /tmp/silveran-library-reuse-iphone.xcresult` passed **3 tests / 11 executions / 0 failures** on isolated iPhone 17 Pro, iOS 26.2 (23C54), Debug component host.
+- `xcrun xcresulttool get test-results summary --path <bundle>` and `... tests --path <bundle>` verified all three named tests and the nine field-invalidation cases in both device inventories; no stale-test omission. `swift format --in-place` applied to the two changed Swift files; `git diff --check` passed.
+- Synthetic fixtures verify one computation for 20 identical requests, current generations on reused results, fresh changed-book/download/empty results and invalidation for every input. Tests use only an in-memory actor/recorder. No full app UI workflow, physical device, Pencil, signed cloud or battery acceptance was performed; library freshness after metadata/progress/download edits and foreground return remains a manual iPad/iPhone check.
+
+#### Compatibility and follow-up
+
+No migration or stored-data format change. Existing schema-1 performance readers already understand cache-hit/miss scalars; absent scalars in older exports are unknown. Exact-input reuse cannot suppress genuinely different intermediate snapshots or remove duplicate cache writes. Hardware profiling and library freshness interaction checks remain release acceptance work.
+
+### BF-087 — Performance diagnostics lost observations without counting them
+
+- Date: 2026-10-03
+- Status: Fixed; automated verification only
+- Platforms: iOS/iPadOS (renderer, collector, store); the portable store/recorder changes apply everywhere
+- Components: `PerformanceDiagnostics.js`, `RendererPerformanceIngress`, `ReaderMessageRouter`, `PerformanceRecorder`, `PerformanceStore.ingest`, `ApplePerformanceDiagnostics.start/status`
+- Related links: [energy diagnostics plan](docs/ENERGY_DIAGNOSTICS_IMPLEMENTATION_PLAN.md) (report contract: "record an explicit drop reason when a limit is reached"), [ADR 017](docs/decisions/017-local-performance-diagnostics.md)
+
+#### Symptom
+
+Found in a plan-conformance review, not by a user. Exported reports could miss observations without saying so:
+
+1. **Renderer timings.** The renderer silently discarded layout/reflow timings beyond its 16-item queue. It also held the last observations of a burst until another layout finished, so they were often never sent. Native ingress silently rejected too-frequent, wrong-generation or malformed batches.
+2. **After Clear history.** A MetricKit report delivered after **Clear history**, but covering time before it, was discarded with no count. In practice this is usually the next daily report.
+3. **Unreadable on/off setting.** An unreadable `collection.json` silently turned collection off. Settings showed "Disabled", as if the person had chosen it.
+
+#### Root cause
+
+These limit/reject paths returned early and never reached the existing `dropped` counters. The renderer only flushed when an operation ended, and had no trailing flush after its 2-second throttle.
+
+#### Change
+
+- **Renderer queue.** The renderer counts overflow and sends it as an optional `dropped` field with the next batch. It schedules one trailing flush when throttled.
+- **Native ingress.** `RendererPerformanceIngress.accept` now returns the observations plus overflow and rejected counts. Rejected counts are the number of rows in a rejected batch, or 1 for an unreadable message. The `dropped` field must be an integer from 1 to 1,000,000.
+- **Recorder.** A new `PerformanceMeasuring.noteRendererLoss` method (no-op by default) records `rendererCapacity` and `invalidRenderer` drops, which the report validator now accepts.
+- **Store.** Pre-clear reports are still discarded, which honours the clear. They are now counted as `cleared` and persisted. Product default chosen here; the owner can revisit it.
+- **On/off setting.** An unreadable setting keeps collection off, because consent is never assumed. Status shows "Storage error" until the person sets the switch again.
+- **Cleanup.** Removed a dead normalized-identity digest in `normalize` (the caller always assigned the raw-delivery digest documented in ADR 017) and corrected a storage-cap comment.
+
+Unchanged: limits, sampling, export format, retention and the clear watermark itself. Observations still queued in the renderer when the web view is torn down remain lost; reports are already labelled partial.
+
+#### Validation
+
+- `scripts/test`: 639 tests in 81 suites passed, including new `rendererLossIsCountedNotHidden`, an extended `rendererGenerationRateAndFieldBounds`, and the `cleared` count in `restartDuplicatesSourcesAndClearWatermark`.
+- `npm test` in `SilveranKit/Tests/WebHarness`: 230 passed, including the new trailing-flush and overflow-count cases.
+- `python3 -m unittest scripts/tests/test_compare_performance.py`: OK. The tool only checks `dropped` values, so it accepts the new keys.
+- `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=<fresh iPhone 17 Pro iOS 26.2>' SILVERAN_DISABLE_CODE_SIGNING=1 scripts/iostest -only-testing:'Silveran Component Tests (iOS)/PerformanceDiagnosticsTests'`: 14/14 passed. The xcresult inventory lists the new test. The earlier QA simulators no longer existed, so a disposable one was created and deleted afterwards.
+- Not run: iPad components, on-screen Settings check of the "Storage error" state, and Instruments/device checks.
+
+#### Compatibility
+
+The report validator now accepts the `rendererCapacity` drop reason, and the history validator accepts `cleared`. A downgraded build would treat history containing them as corrupt and discard it as `corruptHistory`. That is acceptable for this disposable store. Bridge messages without `dropped` are unchanged.
+
+### BF-086 — Performance diagnostics mislabelled no-work and retried operations
+
+- Date: 2026-10-03
+- Status: Fixed; automated verification only
+- Platforms: all (Kit); iOS/iPadOS for iCloud send
+- Components: `AudioSessionActor.syncProgress`, `AnnotationSync.reconcile`, `AnnotationCloudSync` send measurement
+- Related links: [energy diagnostics plan](docs/ENERGY_DIAGNOSTICS_IMPLEMENTATION_PLAN.md) (outcomes; "a lost end event is incomplete"), [ADR 017](docs/decisions/017-local-performance-diagnostics.md)
+
+#### Symptom
+
+Found in a plan-conformance review. The outcomes reported by three operations were misleading:
+
+1. **Audio position updates.** `audio.positionUpdate` recorded every unchanged-position check as `incomplete`, which is most periodic checks during playback. The plan reserves `incomplete` for spans that never finished.
+2. **Annotation reconcile.** `annotation.reconcile` recorded calls deferred during annotation restore as `failure`.
+3. **iCloud send.** `annotationSync.send` counted every rejected save as both a retry and a failure. That includes the ordinary "server copy changed" case, which is merged and sent again.
+
+#### Root cause
+
+1. The audio measurement started with outcome `.incomplete` and only changed it after a send.
+2. Reconcile started as `.failure`, and the restore guard returned before any outcome was assigned.
+3. The send counter didn't apply the same `serverRecordChanged` distinction that `recordSent` already uses for the sync activity log.
+
+#### Change
+
+1. **Audio:** an unchanged position or missing playback state is now `success` with `emptyChecks: 1`. Send failures remain `failure`.
+2. **Reconcile:** deferral during restore is now `cancelled`, because the work is retained rather than failed.
+3. **iCloud send:** only `serverRecordChanged` rejections count as retries. Other rejected saves mark the send as failed.
+
+No change to sync, reconcile or progress behaviour.
+
+#### Validation
+
+- `scripts/test` 639/81 and the iOS diagnostics component run listed under BF-087. These code paths have no direct unit tests: the audio and CloudKit owners need a player or a `CKSyncEngine`. The changes are local outcome assignments.
+- Not run: device or iCloud verification.
+
+#### Compatibility
+
+None known. Reports from earlier builds over-count `incomplete`, `failure` and `retries` for these operations, so treat build comparisons across this fix accordingly.
+
+### BF-085 — Performance diagnostics work totals overflowed `Int` on 32-bit watchOS
+
+- Date: 2026-10-03
+- Status: Fixed; portable suite verified, watchOS device compile needs validation
+- Platforms: watchOS device (arm64_32) compile; all platforms share the type change
+- Components: `PerformanceOperationSummary.work`, `PerformanceRecorder.record`, `PerformanceReport` validation
+- Related links: [energy diagnostics plan](docs/ENERGY_DIAGNOSTICS_IMPLEMENTATION_PLAN.md), [ADR 017](docs/decisions/017-local-performance-diagnostics.md)
+
+#### Symptom
+
+The Silveran app build failed in Kit with "Integer literal '1000000000000' overflows when stored into 'Int'" at `PerformanceRecorder.swift:128` and `PerformanceReport.swift:257`. The plan requires platforms other than iOS to keep compiling.
+
+#### Root cause
+
+ED work totals were stored as `[String: Int]` and capped at 10¹². On Apple Watch hardware (arm64_32) `Int` is 32 bits (max ≈ 2.1 × 10⁹), so the cap literal cannot be represented. Lowering the cap to `Int.max` would not have been enough: adding a ≤10⁹ sample to a total near `Int32.max` would trap before `min` clamps it.
+
+#### Change
+
+`PerformanceOperationSummary.work` is now `[String: Int64]`, and the recorder widens each sample with `Int64(value)` before adding. The 10¹² cap, the per-sample 10⁹ limit, and the `[PerformanceWork: Int]` input API are unchanged. JSON encoding of the values is identical, so existing reports and fixtures decode unchanged.
+
+#### Validation
+
+- `scripts/test`: 638 tests in 81 suites passed, including `PerformanceDiagnosticsTests`.
+- watchOS device (arm64_32) build not run in this session; `scripts/watchbuild` targets an arm64 simulator, which has a 64-bit `Int` and does not reproduce the failure. Confirm with an Xcode build for a watchOS device or archive.
+
+#### Compatibility
+
+None known. The on-disk/export JSON format is unchanged.
+
 ### BF-084 — Performance report share left its staged ZIP behind and blocked Clear history
 
 - Date: 2026-10-03
