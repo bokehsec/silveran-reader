@@ -3,8 +3,10 @@ import { debugLog } from "./DebugConfig.js";
 
 /**
  * The wide margin's state on the page (P5.2, OD-027/028). Swift says whether the book has margin
- * notes and whether the person opened the margin; the layout says whether a column is too narrow
- * to write beside, or the book scrolls. From those this decides the paginator gap and whether the
+ * notes or handwritten notes in the text, and whether the person opened the margin; the layout
+ * says whether a column is too narrow to write beside, whether it is too narrow to show
+ * handwriting in the text (BF-074: those notes then show as icons in the gutter), or the book
+ * scrolls. From those this decides the paginator gap and whether the
  * engine shows margin notes as handwriting (with room made beside the text) or as icons, applies
  * that, and reports what the page then shows.
  *
@@ -13,8 +15,8 @@ import { debugLog } from "./DebugConfig.js";
  * command or layout change applies it again.
  */
 export class InkMarginControl {
-  #state = { hasNotes: false, open: false };
-  /** `{ expanded, gap, available }` as last fully applied; null before that or after a failure. */
+  #state = { hasNotes: false, hasFlowNotes: false, open: false };
+  /** `{ expanded, flowIcons, gap, available }` as last fully applied; null before that or after a failure. */
   #applied = null;
   #renderer;
   #engine;
@@ -23,7 +25,7 @@ export class InkMarginControl {
 
   /**
    * `renderer()` is the paginator (or null before a book opens); `engine` the InkEngine;
-   * `layout()` is `{ narrow, scrolling }`; `post(report)` sends `{ expanded, available }` to Swift.
+   * `layout()` is `{ narrow, scrolling, flowIcons }`; `post(report)` sends `{ expanded, available }` to Swift.
    */
   constructor({ renderer, engine, layout, post }) {
     this.#renderer = renderer;
@@ -47,10 +49,16 @@ export class InkMarginControl {
     return this.#state.open && this.available;
   }
 
-  /** The paginator gap: none, a thin gutter for margin icons, or a wide margin to write in. */
+  /** Whether handwritten notes in the text show as icons: the column has no room for them. */
+  get flowIcons() {
+    return !!this.#layout().flowIcons;
+  }
+
+  /** The paginator gap: none, a thin gutter for icons, or a wide margin to write in. */
   get gap() {
     const { narrow, scrolling } = this.#layout();
-    return marginGap({ hasNotes: this.#state.hasNotes, expanded: this.expanded, narrow, scrolling });
+    const hasNotes = this.#state.hasNotes || (this.#state.hasFlowNotes && this.flowIcons);
+    return marginGap({ hasNotes, expanded: this.expanded, narrow, scrolling });
   }
 
   /** What the page shows now: `{ expanded, available }`. */
@@ -62,11 +70,12 @@ export class InkMarginControl {
   get upToDate() {
     const applied = this.#applied;
     return !!applied && applied.expanded === this.expanded && applied.gap === this.gap &&
-      applied.available === this.available && this.#engine.marginExpanded === applied.expanded;
+      applied.available === this.available && applied.flowIcons === this.flowIcons &&
+      this.#engine.marginExpanded === applied.expanded && this.#engine.flowNotesAsIcons === applied.flowIcons;
   }
 
   /**
-   * Swift's `{ hasNotes?, open? }`. A repeated command still repairs a page that does not match,
+   * Swift's `{ hasNotes?, hasFlowNotes?, open? }`. A repeated command still repairs a page that does not match,
    * and reports again in case an earlier report was lost. Returns the report.
    */
   set(change) {
@@ -84,16 +93,18 @@ export class InkMarginControl {
   /** Makes the page show what the state asks for, renders, and reports. */
   apply() {
     const expanded = this.expanded;
+    const flowIcons = this.flowIcons;
     const gap = this.gap;
-    debugLog("InkEngine", "margin", JSON.stringify({ ...this.#state, expanded, gap }));
+    debugLog("InkEngine", "margin", JSON.stringify({ ...this.#state, expanded, flowIcons, gap }));
     this.#applied = null;
     try {
       const renderer = this.#renderer();
       renderer?.setAttribute("gap", gap);
-      this.#engine.setMarginExpanded(expanded);
+      // A collapsed gutter (any gap while closed) holds icons the text must keep clear of (OD-044).
+      this.#engine.setMarginExpanded(expanded, { flowIcons, iconGutter: !expanded && gap !== "0%" });
       renderer?.render?.();
       this.#engine.redrawMarks();
-      this.#applied = { expanded, gap, available: this.available };
+      this.#applied = { expanded, flowIcons, gap, available: this.available };
     } finally {
       this.#publish();
     }

@@ -42,7 +42,7 @@ struct InkBridgeTests {
         let bridge = ReaderCommsBridge(js: js)
         js.result = #"{"expanded":false,"available":false}"#
 
-        let state = try await bridge.inkSetMargin(hasNotes: true, open: true)
+        let state = try await bridge.inkSetMargin(hasNotes: true, hasFlowNotes: false, open: true)
 
         let args = try js.arguments(of: "inkSetMargin")
         let text = try #require(args[0] as? String)
@@ -51,6 +51,7 @@ struct InkBridgeTests {
         )
         #expect(sent["open"] as? Bool == true)
         #expect(sent["hasNotes"] as? Bool == true)
+        #expect(sent["hasFlowNotes"] as? Bool == false)
         #expect(state == InkSession.MarginState(expanded: false, available: false))
     }
 

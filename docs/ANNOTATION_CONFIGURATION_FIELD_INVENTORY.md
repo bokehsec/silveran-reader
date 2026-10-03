@@ -7,7 +7,7 @@ Date: 2026-09-30. This is a source-derived policy inventory for P0.2, not an imp
 | Field | Swift type | Backup | Current live sync | Restore/apply scope | Sensitivity/assets |
 | --- | --- | --- | --- | --- | --- |
 | `reading.fontSize` | `Double` | Include | device | Same origin device class | Private configuration |
-| `reading.fontFamily` | `String` | Include | device | Same origin device class | Font reference; include permitted custom font asset |
+| `reading.fontFamily` | `String` | Include | shared (since 2026-10-03) | Any device; missing font renders as System Default | Font reference; include permitted custom font asset |
 | `reading.lineSpacing` | `Double` | Include | device | Same origin device class | Private configuration |
 | `reading.marginLeftRight` | `Double` | Include | device | Same origin device class | Private configuration |
 | `reading.marginTopBottom` | `Double` | Include | device | Same origin device class | Private configuration |
@@ -139,6 +139,7 @@ The owner/key inventory extends beyond these global settings. `ConfigurationDefa
 | `bookDetails.section.<section>.expanded` for six declared sections, `EbookPlayerShowChapterSidebar`, `EbookPlayerShowAudioSidebar`, `EbookPlayerShowAudioSidebarIOS` | Detail/reader views | Include | Local only | Apply only matching device class; avoid overriding active reader session |
 | `lastUsedHighlightColorId`, `SilveranInkTools.v1`, `WatchPlayerVolume` | Reader, Pencil tools, watch playback | Include | Local only | Color/tool schema and supported device class must validate; these are user tool choices. `SilveranInkTools.v1` now has a protected Kit owner and recovery export, but no full-archive participant |
 | `SilveranInkToolStrip.v1` | iPad Pencil tool strip (`InkToolStripPreferenceStore`) | Include (`inkToolStrip.json`) | Local only | Same device class; strict codec (three `#rrggbb` colours per writing tool, edge, rolled-up flag); a local value needing recovery or a damaged backup is preserved, never overwritten. Kept apart from `SilveranInkTools.v1` so older app versions still read their tool choice |
+| `SilveranInkMarginOpenBooks` | `InkSession` via `MarginOpenMemory.userDefaults` (owner decision 2026-10-03) | Exclude: reader view state, like whether a sidebar is open; losing it only means a book opens with its margin closed, the earlier behaviour | Local only (each device remembers its own; following the person between devices is a later decision) | Values are `<sourceID>/<bookUUID>` strings for books whose margin was left open; unreadable values read as closed |
 | `iOSLastOpenBookRoute`, `doubleCoverAudioFront.v2` | iOS last-open route, macOS cover-face preference | Include reference only | Local only | Resolve source-scoped BookID after restore; never grant access or require media to exist |
 | `metadataEditor.hideWarning`, `contentServer.port`, `contentServer.sourceID`, `contentServer.hostOverride` | Editor and local content server UI | Include private configuration | Local only | Revalidate source reference and permitted endpoint on target; leave server stopped after restore |
 | `contentServer.username` | Local content server UI | Include only as a separately reviewed private account hint | Local only | Never use this to authenticate automatically; review disclosure before archive export |

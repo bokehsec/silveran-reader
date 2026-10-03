@@ -154,6 +154,8 @@ public final class ReaderCommsBridge {
         debugLog(
             "[ReaderCommsBridge]   fraction: \(message.fraction?.description ?? "nil"), chapterFraction: \(message.chapterFraction?.description ?? "nil")"
         )
+        // A new page shows other notes: their boxes are measured again for a long-press (ADR 015).
+        Task { await inkSession.refreshAreaFrames() }
         onRelocated?(message)
     }
 
@@ -427,6 +429,7 @@ public final class ReaderCommsBridge {
         readaloudHighlightMode: String,
         pageTurnStyle requestedPageTurnStyle: String = "none",
         animateReadaloudPageTurns: Bool = false,
+        reservedPageEdge: Double = 0,
     ) async throws {
         guard let js else {
             throw ReaderCommsBridgeError.jsNotAvailable
@@ -461,6 +464,7 @@ public final class ReaderCommsBridge {
             "userHighlightMode": userHighlightMode,
             "readaloudHighlightMode": readaloudHighlightMode,
             "pageTurnStyle": effectivePageTurnStyle,
+            "reservedPageEdge": reservedPageEdge,
         ]
 
         styles["backgroundColor"] = backgroundColor ?? NSNull()

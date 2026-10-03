@@ -117,6 +117,78 @@ public struct TextAnchor: Codable, Sendable, Hashable {
     }
 }
 
+/// The writing area a person gave a note in the text (ADR 015): its size and the column edge it
+/// sits against, in the note's own coordinates (the same space as its stroke points, which an area
+/// never changes). The area is a floor, never a clip: the box drawn always holds all the ink too.
+/// A note with an area may have no strokes yet (space opened before writing).
+public struct InkNoteArea: Codable, Sendable, Hashable {
+    /// The column edge a narrower area sits against; the text flows beside it.
+    public enum Side: String, Codable, Sendable, Hashable {
+        case left, right
+
+        public init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            guard let side = Side(rawValue: raw) else {
+                throw DecodingError.dataCorrupted(
+                    .init(codingPath: decoder.codingPath, debugDescription: "Unknown area side")
+                )
+            }
+            self = side
+        }
+    }
+
+    public static let minimumWidth = 48.0
+    public static let minimumHeight = 16.0
+    /// Far larger than any page: the renderer fits an area to the page it is on.
+    public static let maximumSize = 4000.0
+
+    /// Where the area's left edge is in note coordinates: 0 for a full-width or left area.
+    public var left: Double
+    /// Nil: the full width of the column.
+    public var width: Double?
+    public var height: Double
+    /// Set exactly when `width` is.
+    public var side: Side?
+
+    public init(left: Double = 0, width: Double? = nil, height: Double, side: Side? = nil) {
+        self.left = left
+        self.width = width
+        self.height = height
+        self.side = side
+    }
+
+    /// Finite sizes within bounds, and a side exactly when the area is narrower than the column.
+    public var isValid: Bool {
+        guard left.isFinite, left >= 0, left <= Self.maximumSize,
+            height.isFinite, (Self.minimumHeight...Self.maximumSize).contains(height)
+        else { return false }
+        switch (width, side) {
+            case (nil, nil): return left == 0
+            case (let width?, _?):
+                return width.isFinite && (Self.minimumWidth...Self.maximumSize).contains(width)
+            default: return false
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case left, width, height, side
+    }
+
+    public init(from decoder: Decoder) throws {
+        try checkInkKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.stringValue)))
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        left = try container.decodeIfPresent(Double.self, forKey: .left) ?? 0
+        width = try container.decodeIfPresent(Double.self, forKey: .width)
+        height = try container.decode(Double.self, forKey: .height)
+        side = try container.decodeIfPresent(Side.self, forKey: .side)
+        guard isValid else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath, debugDescription: "Invalid note area")
+            )
+        }
+    }
+}
+
 /// Where a note is drawn. Absent (nil) means in the text flow.
 public enum InkNotePlacement: String, Codable, Sendable, Hashable {
     /// Beside the line that starts at `anchor`, in the margin (P5.2).
@@ -140,8 +212,15 @@ public struct InkNote: Codable, Sendable, Hashable, Identifiable {
     /// For a margin note: the drawing width when it was written. A narrower margin scales the
     /// note down to fit.
     public var refWidth: Double?
+    /// For a note in the text: the writing area the person sized (ADR 015). Nil: the box is
+    /// derived from the ink, as before areas existed.
+    public var area: InkNoteArea?
 
     public var isMarginNote: Bool { placement == .margin }
+
+    /// The sync feature level this note needs (ADR 015): 2 once it has a writing area, which
+    /// builds before areas cannot read. A device below the level keeps the record for later.
+    public var requiredFeatureLevel: Int { area == nil ? 1 : 2 }
 
     public init(
         id: String,
@@ -152,6 +231,7 @@ public struct InkNote: Codable, Sendable, Hashable, Identifiable {
         legacyCFI: String? = nil,
         placement: InkNotePlacement? = nil,
         refWidth: Double? = nil,
+        area: InkNoteArea? = nil,
     ) {
         self.id = id
         self.anchor = anchor
@@ -161,12 +241,13 @@ public struct InkNote: Codable, Sendable, Hashable, Identifiable {
         self.legacyCFI = legacyCFI
         self.placement = placement
         self.refWidth = refWidth
+        self.area = area
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case id, anchor, strokes, createdAt, updatedAt
         case legacyCFI, cfi, quote  // `cfi` and `quote` are the version 1 fields
-        case placement, refWidth
+        case placement, refWidth, area
     }
 
     public init(from decoder: Decoder) throws {
@@ -183,6 +264,14 @@ public struct InkNote: Codable, Sendable, Hashable, Identifiable {
         strokes = try container.decode([InkStroke].self, forKey: .strokes)
         placement = try container.decodeIfPresent(InkNotePlacement.self, forKey: .placement)
         refWidth = try container.decodeIfPresent(Double.self, forKey: .refWidth)
+        area = try container.decodeIfPresent(InkNoteArea.self, forKey: .area)
+        if area != nil, placement == .margin {
+            throw DecodingError.dataCorruptedError(
+                forKey: .area,
+                in: container,
+                debugDescription: "Margin notes have no writing area"
+            )
+        }
         let created = (try container.decodeIfPresent(Double.self, forKey: .createdAt)).map(
             Date.init(timeIntervalSince1970:)
         )
@@ -231,6 +320,7 @@ public struct InkNote: Codable, Sendable, Hashable, Identifiable {
         try container.encodeIfPresent(legacyCFI, forKey: .legacyCFI)
         try container.encodeIfPresent(placement, forKey: .placement)
         try container.encodeIfPresent(refWidth, forKey: .refWidth)
+        try container.encodeIfPresent(area, forKey: .area)
     }
 }
 

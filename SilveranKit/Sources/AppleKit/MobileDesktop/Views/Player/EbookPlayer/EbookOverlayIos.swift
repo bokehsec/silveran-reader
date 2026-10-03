@@ -24,6 +24,8 @@ struct EbookOverlayIos: View {
     let onSkipBackward: () -> Void
     let onTogglePlaying: () -> Void
     let onSkipForward: () -> Void
+    /// The opaque band's height, so the page keeps its text and ink out from under it (OD-043).
+    var onBandHeight: ((CGFloat) -> Void)? = nil
 
     private var hasTimeStatsToDisplay: Bool {
         hasAudioNarration && (showTimeRemainingInBook || showTimeRemainingInChapter)
@@ -73,6 +75,11 @@ struct EbookOverlayIos: View {
                 if hasStatsToDisplay {
                     backgroundColor.ignoresSafeArea(edges: .top)
                 }
+            }
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { height in
+                if hasStatsToDisplay { onBandHeight?(height) }
             }
 
             Spacer()
@@ -154,6 +161,11 @@ struct EbookOverlayIos: View {
                 if hasOverlayContent {
                     backgroundColor.ignoresSafeArea(edges: .bottom)
                 }
+            }
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { height in
+                if hasOverlayContent { onBandHeight?(height) }
             }
         }
         .ignoresSafeArea(.all)

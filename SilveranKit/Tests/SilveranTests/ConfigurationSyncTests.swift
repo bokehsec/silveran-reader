@@ -58,6 +58,10 @@ struct ConfigurationPatchTests {
             units.first { $0.id == "playback.defaultPlaybackSpeed" }?.key(deviceClass: "phone")
                 == "settings.v1.shared.playback.defaultPlaybackSpeed"
         )
+        #expect(
+            units.first { $0.id == "reading.fontFamily" }?.key(deviceClass: "phone")
+                == "settings.v1.shared.reading.fontFamily"
+        )
         #expect(Set(units.flatMap(\.paths)).count == units.flatMap(\.paths).count)
     }
 
@@ -392,6 +396,30 @@ struct ConfigurationCoordinatorTests {
         #expect(await e.settings.config.reading.fontSize != 40)
         #expect(await e.settings.config.playback.defaultPlaybackSpeed == kDefaultPlaybackSpeed)
         #expect(e.cloud.writes.isEmpty)
+    }
+
+    /// Owner decision, 2026-10-03: the typeface follows the person across device classes;
+    /// text size stays per device class.
+    @Test func typefaceIsSharedAcrossDeviceClassesButSizeIsNot() async throws {
+        let e = try ConfigurationTestEnvironment()
+        defer { e.cleanup() }
+        var remote = SilveranGlobalConfig()
+        remote.reading.fontFamily = "Charter"
+        remote.reading.fontSize = 40
+        try e.setRemote(remote, id: "reading.fontFamily", deviceClass: "phone")
+        try e.setRemote(remote, id: "reading.fontSize", deviceClass: "phone")
+        let sync = e.coordinator(deviceClass: "tablet")
+        await sync.setEnabled(true)
+        #expect(await e.settings.config.reading.fontFamily == "Charter")
+        #expect(await e.settings.config.reading.fontSize != 40)
+
+        let old = await e.settings.config
+        var local = old
+        local.reading.fontFamily = "Georgia"
+        try await e.settings.applyUserChanges(from: old, to: local)
+        await sync.recordLocalChange(from: old, to: local)
+        await sync.flush()
+        #expect(e.cloud.writes == ["settings.v1.shared.reading.fontFamily"])
     }
 
     @Test func quotaFailureKeepsSettingsLocalAndPreflightsAllWrites() async throws {

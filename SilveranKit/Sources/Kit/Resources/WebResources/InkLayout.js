@@ -12,16 +12,23 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const STYLE_ID = "silveran-ink-style";
 
 // The open wide margin keeps text off the right of each column (InkMargin.MARGIN_ROOM). Padding,
-// because the paginator pins the body's margin; this replaces the reader's right text margin.
+// because the paginator pins the body's margin; this replaces the reader's right text margin. The
+// open margin has no paginator gap (OD-042), so the text's left edge gets the gap's outer half
+// (4%) on top of the reader's own side margin (`--silveran-side-margin`, FoliateManager). A gutter
+// of note icons keeps at least 12 pt between the text and the icons (OD-044).
 const INK_CSS = `
 ${INK_TAG} { display:block !important; position:relative !important; margin:0 !important;
   padding:0 !important; border:0 !important; text-indent:0 !important; float:none !important;
   clear:both !important;
   break-inside:avoid !important; -webkit-column-break-inside:avoid !important;
   background:var(--silveran-ink-note-tint, rgba(255, 196, 0, 0.08)) !important;
-  border-radius:6px; pointer-events:none !important; }
-html[data-silveran-margin="open"] body { padding-right:28% !important; }
+  border-radius:6px; pointer-events:none !important; overflow-x:clip !important; }
+html[data-silveran-margin="open"] body { padding-right:28% !important;
+  padding-left:calc(var(--silveran-side-margin, 0%) + 4%) !important; }
+html[data-silveran-margin="icons"] body { padding-right:max(var(--silveran-side-margin, 0%), 12px) !important; }
 ${INK_TAG} > svg { position:absolute; left:0; top:0; overflow:visible; pointer-events:none; }
+${INK_TAG}[data-empty] { outline:1px dashed var(--silveran-ink-area-outline, rgba(31, 79, 209, 0.45)) !important;
+  outline-offset:-1px; }
 ${INK_TAG} .silveran-ink-highlighter { mix-blend-mode:var(--silveran-ink-highlighter-blend, multiply); }
 `;
 
@@ -107,15 +114,93 @@ export const wrapSide = (box, scale, full) => {
   return null;
 };
 
-/** Where a drawn note's coordinates start on the page, and its scale (a right-side box starts later). */
+/** Room kept between the handwriting and the column's edges when a note is fitted. */
+export const FIT_PAD = 4;
+
+/**
+ * Fits handwriting written in a wider column into this one (BF-074): stored points start at the
+ * writer's column edge, so ink written far to the right on an iPad lies past a narrower column,
+ * and a multi-column page draws it on the next page. The ink slides toward the left edge first,
+ * keeping its size; only ink wider than the column is scaled down. `box` is the ink's bounds in
+ * note coordinates, `scale` the height fit already chosen, `full` the column's width. Returns
+ * `{ scale, shiftX }`: the drawing shows note point x at `(x - shiftX) * scale`.
+ */
+export const fitWidth = (box, scale, full) => {
+  if (!Number.isFinite(box.left) || !(full > 2 * FIT_PAD)) return { scale, shiftX: 0 };
+  const room = full - 2 * FIT_PAD;
+  const fitted = Math.min(scale, room / Math.max(1, box.right - box.left));
+  const right = (box.right - full / fitted + FIT_PAD / fitted);
+  const left = box.left - FIT_PAD / fitted;
+  // Slide left just enough for the right edge to fit, never past the ink's left edge; ink that
+  // starts left of the column slides right instead.
+  const shiftX = left < 0 ? left : Math.max(0, Math.min(right, left));
+  return { scale: fitted, shiftX: Math.abs(shiftX) < 0.05 ? 0 : round1(shiftX) };
+};
+
+/**
+ * Where a drawn note's coordinates start on the page, and its scale (a right-side box starts
+ * later; a fitted note's points are shifted by `shiftX` before scaling).
+ */
 export const noteOrigin = el => {
   const r = el.getBoundingClientRect();
-  return { left: r.left - (parseFloat(el.dataset.originX) || 0), top: r.top, scale: parseFloat(el.dataset.scale) || 1 };
+  const scale = parseFloat(el.dataset.scale) || 1;
+  const shiftX = parseFloat(el.dataset.shiftX) || 0;
+  return { left: r.left - (parseFloat(el.dataset.originX) || 0) - shiftX * scale, top: r.top, scale };
+};
+
+/**
+ * How a note with a writing area is laid out (ADR 015), in a column `full` points wide where at
+ * most `limit` points of height fit. The box is the union of the area and the ink: the area is a
+ * floor, never a clip. Returns `{ scale, shiftX, height, originX, width, side, beside }`: `width`
+ * null spans the column; `beside` is whether the text can flow beside the box (else it stands on
+ * its own line at its width); `originX` is where note x = (box left) lies, in page points.
+ */
+export const areaLayout = (area, box, full, limit) => {
+  const hasInk = Number.isFinite(box.left);
+  const bottom = Math.max(area.height, hasInk ? box.bottom + 8 : 0);
+  const heightScale = bottom > limit ? limit / bottom : 1;
+  if (area.width == null) {
+    const fit = hasInk ? fitWidth(box, heightScale, full) : { scale: heightScale, shiftX: 0 };
+    return { scale: fit.scale, shiftX: fit.shiftX, height: Math.ceil(bottom * fit.scale), originX: 0, width: null, side: null, beside: false };
+  }
+  const left = Math.min(area.left, hasInk ? box.left : area.left);
+  const right = Math.max(area.left + area.width, hasInk ? box.right : -Infinity);
+  const scale = Math.min(heightScale, full / Math.max(1, right - left));
+  const width = Math.min(full, Math.ceil((right - left) * scale));
+  const minText = Math.max(WRAP_MIN_TEXT, WRAP_MIN_TEXT_SHARE * full);
+  const beside = full >= WRAP_MIN_COLUMN && full - width - WRAP_PAD >= minText;
+  return { scale, shiftX: 0, height: Math.ceil(bottom * scale), originX: left * scale, width, side: area.side ?? "left", beside };
+};
+
+/** Lays out a note that has a writing area (ADR 015); see `areaLayout`. */
+const sizeAreaNote = (el, note, all, box, full, limit) => {
+  const layout = areaLayout(note.area, box, full, limit);
+  el.style.setProperty("height", `${layout.height}px`, "important");
+  el.dataset.scale = String(layout.scale);
+  el.dataset.shiftX = String(layout.shiftX);
+  el.dataset.originX = String(layout.originX);
+  el.dataset.area = "";
+  if (layout.width != null) {
+    el.style.setProperty("width", `${layout.width}px`, "important");
+    if (layout.beside) {
+      el.dataset.wrap = layout.side;
+      el.style.setProperty("float", layout.side, "important");
+      el.style.setProperty(layout.side === "left" ? "margin-right" : "margin-left", `${WRAP_PAD}px`, "important");
+    } else {
+      delete el.dataset.wrap;
+      // Too little room for text beside it: on its own line, against its edge.
+      if (layout.side === "right") el.style.setProperty("margin-left", "auto", "important");
+    }
+  } else {
+    delete el.dataset.wrap;
+  }
+  return layout;
 };
 
 /**
  * Sizes a note, and lets the text flow beside it when its handwriting is short (`wrapSide`).
- * Scales a note down only when it would not fit a page; handwriting keeps its size otherwise.
+ * Fits handwriting from a wider column into this one (`fitWidth`), and scales a note down when it
+ * would not fit a page; handwriting keeps its size otherwise.
  * `maxHeight` is measured against the reader window, not the section frame: foliate lays
  * sections out while their frame is hidden, when the frame's own height reads as 0.
  */
@@ -123,12 +208,35 @@ export const sizeNote = (el, note, maxHeight) => {
   const all = note.strokes.flatMap(s => s.points);
   const box = bbox(all.length ? all : [[0, 0]]);
   const limit = maxHeight * 0.85;
-  const scale = box.bottom > limit ? limit / box.bottom : 1;
-  const height = Math.ceil(box.bottom * scale + 8);
   for (const name of ["float", "width", "margin-left", "margin-right"]) el.style.removeProperty(name);
+  const full = el.getBoundingClientRect().width;
+  // The column's width, for the writing-area handles (ADR 015).
+  el.dataset.full = String(full);
+  if (all.length) delete el.dataset.empty; else el.dataset.empty = "";
+  if (note.area) {
+    const layout = sizeAreaNote(el, note, all, all.length ? box : bbox([]), full, limit);
+    const svg = el.firstChild;
+    svg.setAttribute("width", String(Math.max(1, Math.round(el.getBoundingClientRect().width))));
+    svg.setAttribute("height", String(layout.height));
+    const transform = [
+      layout.originX ? `translate(${-layout.originX} 0)` : "",
+      layout.scale !== 1 ? `scale(${layout.scale})` : "",
+      layout.shiftX ? `translate(${-layout.shiftX} 0)` : "",
+    ].filter(Boolean).join(" ");
+    if (transform) svg.firstChild.setAttribute("transform", transform);
+    else svg.firstChild.removeAttribute("transform");
+    return;
+  }
+  delete el.dataset.area;
+  const { scale, shiftX } = all.length
+    ? fitWidth(box, box.bottom > limit ? limit / box.bottom : 1, full)
+    : { scale: 1, shiftX: 0 };
+  const height = Math.ceil(box.bottom * scale + 8);
   el.style.setProperty("height", `${height}px`, "important");
   el.dataset.scale = String(scale);
-  const wrap = all.length ? wrapSide(box, scale, el.getBoundingClientRect().width) : null;
+  el.dataset.shiftX = String(shiftX);
+  const shifted = { ...box, left: box.left - shiftX, right: box.right - shiftX };
+  const wrap = all.length ? wrapSide(shifted, scale, full) : null;
   el.dataset.originX = String(wrap?.originX ?? 0);
   if (wrap) {
     el.dataset.wrap = wrap.side;
@@ -141,8 +249,11 @@ export const sizeNote = (el, note, maxHeight) => {
   const svg = el.firstChild;
   svg.setAttribute("width", String(Math.max(1, Math.round(el.getBoundingClientRect().width))));
   svg.setAttribute("height", String(height));
-  const transform = [wrap?.originX ? `translate(${-wrap.originX} 0)` : "", scale !== 1 ? `scale(${scale})` : ""]
-    .filter(Boolean).join(" ");
+  const transform = [
+    wrap?.originX ? `translate(${-wrap.originX} 0)` : "",
+    scale !== 1 ? `scale(${scale})` : "",
+    shiftX ? `translate(${-shiftX} 0)` : "",
+  ].filter(Boolean).join(" ");
   if (transform) svg.firstChild.setAttribute("transform", transform);
   else svg.firstChild.removeAttribute("transform");
 };

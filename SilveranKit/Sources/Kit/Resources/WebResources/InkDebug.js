@@ -9,7 +9,7 @@
  *    (or YES), underline, strike, circle, bracket, highlight, erase, erase-highlight, and word
  *    (the word "testing" as ten strokes, one finishing every 350 ms, as a person writes;
  *    `word@0.8` writes it 80% of the way down the page; `word@0.8@200@0.7` every 200 ms,
- *    starting 70% across), and open-margin / close-margin.
+ *    starting 70% across), open-margin / close-margin, and space-tool (the Space tool, ADR 015).
  */
 
 /** The word "testing" as ten pen strokes over the middle of the page, in web view coordinates. */
@@ -97,6 +97,10 @@ export function maybeRunInkDebug(foliateManager, detail, view) {
     window.__silveranInkDemoStroke = false;
     const kinds = String(requested).split(",").map(k => (k === "true" || k === "YES" ? "note" : k));
     kinds.forEach((kind, i) => setTimeout(() => {
+      if (kind === "space-tool") {
+        window.webkit?.messageHandlers?.InkDebugMargin?.postMessage({ space: true });
+        return;
+      }
       if (kind === "open-margin" || kind === "close-margin") {
         window.webkit?.messageHandlers?.InkDebugMargin?.postMessage({ open: kind === "open-margin" });
         return;

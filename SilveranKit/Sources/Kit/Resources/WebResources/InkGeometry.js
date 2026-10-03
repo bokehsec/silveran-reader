@@ -295,6 +295,34 @@ const writingProposal = ({ doc, href, strokes, allLines, index }) => {
 };
 
 /**
+ * Where empty space opens for a press at a viewport point with the Space tool (ADR 015): before
+ * the line at or below the press, exactly where a note written there would start. Null when the
+ * press is on a note (resize that instead) or there is no text to anchor to. Returns
+ * `{ href, anchor, top }` with `top` the space's top in section-document coordinates.
+ */
+export const proposeSpace = ({ doc, href, point, viewportWidth }) => {
+  const [x, y] = toDoc(doc, point);
+  const onNote = [...doc.querySelectorAll(INK_TAG)].some(el => {
+    const r = el.getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  });
+  if (onNote) return null;
+  const lines = columnLines(visibleLines(doc, viewportWidth), { left: x, right: x, top: y, bottom: y });
+  const next = lines.find(L => L.bottom > y + 2);
+  const anchorRange = next ? caret(doc, next.left + 1, (next.top + next.bottom) / 2) : null;
+  if (!anchorRange) return null;
+  anchorRange.collapse(true);
+  const anchor = anchorForBoundary(buildTextIndex(doc.body), anchorRange.startContainer, anchorRange.startOffset);
+  if (!anchor) return null;
+  const probe = noteElement(doc, { id: "probe", strokes: [] });
+  probe.style.height = "0px";
+  insertAt(anchorRange.startContainer, anchorRange.startOffset, probe);
+  const top = probe.getBoundingClientRect().top;
+  removeElement(probe);
+  return { href, anchor, top };
+};
+
+/**
  * The strokes of notes on this page that the eraser path touches. `points` are [x, y] in the web
  * view's viewport; `radius` is the eraser's reach in points. `notes` are the stored notes of the
  * section (their strokes give each stroke's index and width).

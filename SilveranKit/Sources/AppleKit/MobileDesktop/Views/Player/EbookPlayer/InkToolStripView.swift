@@ -109,6 +109,12 @@ struct InkToolStripView: View {
                 label: "Select",
                 hint: "Draw around strokes to move, resize, duplicate or delete them"
             )
+            toolButton(
+                .space,
+                symbol: "rectangle.expand.vertical",
+                label: "Space",
+                hint: "Drag a handwritten note's handles to resize it, or press between lines and pull down to make room to write"
+            )
             if strip.writingTool != nil {
                 divider
                 ForEach(strip.colors.indices, id: \.self) { colorButton($0) }
@@ -337,6 +343,7 @@ struct InkToolStripView: View {
             case .highlighter: "highlighter"
             case .eraser: "eraser.line.dashed"
             case .select: "lasso"
+            case .space: "rectangle.expand.vertical"
         }
     }
 
@@ -346,6 +353,7 @@ struct InkToolStripView: View {
             case .highlighter: "Highlighter"
             case .eraser: "Eraser"
             case .select: "Select"
+            case .space: "Space"
         }
     }
 

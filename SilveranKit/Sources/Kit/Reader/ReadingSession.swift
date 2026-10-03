@@ -59,7 +59,7 @@ public final class ReadingSessionStore {
         if releasedInkSessions.count > 128 {
             releasedInkSessions = releasedInkSessions.filter { $0.value.value != nil }
         }
-        let created = InkSession()
+        let created = InkSession(marginMemory: .userDefaults)
         if restoreSuspended { created.setRestoreSuspended(true) }
         inkSessions[bookID] = created
         inkInventoryGeneration += 1

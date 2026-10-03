@@ -298,6 +298,18 @@ class EbookPlayerViewModel {
         #endif
         self._sidebarInitialized = true
         inkPersistenceState = inkSession.persistenceState
+        inkMarginState = inkSession.marginState
+        inkOrphanCount = inkSession.orphans.values.reduce(0) { $0 + $1.count }
+    }
+
+    /// Routes the book's shared `InkSession` callbacks to this model. Called when the reader
+    /// appears, never from `init`: SwiftUI runs `EbookPlayerView.init` again whenever the
+    /// library behind the reader re-renders (a page turn updates reading progress), and each
+    /// run builds a model SwiftUI then discards. Wiring them in `init` let those discarded
+    /// models take the callbacks, so note icon taps, save status, margin state and repair
+    /// counts stopped reaching the reader on screen (BF-075).
+    func attachInkSession() {
+        inkPersistenceState = inkSession.persistenceState
         inkSession.onPersistenceStateChanged = { [weak self] in
             guard let self else { return }
             self.inkPersistenceState = self.inkSession.persistenceState
@@ -664,6 +676,7 @@ class EbookPlayerViewModel {
     }
 
     func handleOnAppear() {
+        attachInkSession()
         #if os(iOS)
         recoveryManager = WebViewRecoveryManager(viewModel: self)
         #endif

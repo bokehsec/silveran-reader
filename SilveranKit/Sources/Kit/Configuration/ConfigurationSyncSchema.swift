@@ -90,7 +90,10 @@ public enum ConfigurationSyncSchema {
             paths: ["reading.readerAppearance"]
         ),
         Unit(id: "reading.fontSize", scope: .device, paths: ["reading.fontSize"]),
-        Unit(id: "reading.fontFamily", scope: .device, paths: ["reading.fontFamily"]),
+        // The typeface is taste, not screen size, so it follows the person to every device
+        // (owner decision, 2026-10-03). A device without that font shows System Default and
+        // keeps the stored choice. Size, spacing and margins stay per device class.
+        Unit(id: "reading.fontFamily", scope: .shared, paths: ["reading.fontFamily"]),
         Unit(id: "reading.lineSpacing", scope: .device, paths: ["reading.lineSpacing"]),
         Unit(id: "reading.marginLeftRight", scope: .device, paths: ["reading.marginLeftRight"]),
         Unit(id: "reading.marginTopBottom", scope: .device, paths: ["reading.marginTopBottom"]),

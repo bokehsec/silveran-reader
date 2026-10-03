@@ -251,6 +251,7 @@ enum AppAnnotationSync {
             engine: engine,
             stateURL: SilveranPlatform.applicationSupportDirectory()
                 .appendingPathComponent("Sync/cloudkit-state.json"),
+            database: "\(container) \(cloudEnvironment.hasPrefix("Development") ? "development" : "production")",
             appVersion: AppBackup.appVersion,
             activity: activity,
             library: library,
@@ -381,7 +382,11 @@ struct AnnotationSyncDiagnostics: Sendable {
             )
         }
         let unmatched = stranded.filter { $0.link == nil }
-        if !unmatched.isEmpty {
+        if !unmatched.isEmpty, cards.isEmpty {
+            result.append(
+                "\(annotations(unmatched)) from other devices aren't matched to a book here yet, and no book list has arrived from your other devices. They're kept safely. Update Silveran on your other devices and open it there; each device then sends the list of books it has annotations in."
+            )
+        } else if !unmatched.isEmpty {
             result.append(
                 "\(annotations(unmatched)) from other devices aren't matched to a book here yet, so they don't appear in any book. They're kept safely. A match needs the same book file (download or open the book here) or the same server address and user name."
             )

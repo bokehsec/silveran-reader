@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  buildTextIndex, makeAnchor, resolveAnchor, resolveAnchorOutcome, anchorForBoundary, INK_TAG, EXACT_LENGTH, CONTEXT_LENGTH,
+  buildTextIndex, makeAnchor, makeUniqueAnchor, resolveAnchor, resolveAnchorOutcome, anchorForBoundary, INK_TAG, EXACT_LENGTH, CONTEXT_LENGTH,
+  MAX_CONTEXT_LENGTH,
 } from "../../Sources/Kit/Resources/WebResources/InkAnchoring.js";
 import { ebookChapter, readAlongChapter, PARAGRAPHS } from "./fixtures/chapters.mjs";
 import { loadSection, findText } from "./domSupport.mjs";
@@ -291,4 +292,51 @@ test("selector lengths and boundaries preserve complete emoji scalars for Swift 
       assert.equal(JSON.parse(JSON.stringify(anchor))[field], anchor[field]);
     }
   }
+});
+
+// OD-041: the QA fixture repeats one paragraph with only its number changing, so the 32 characters
+// each side of a paragraph's last line occur at every paragraph boundary.
+const repeatedParagraphs = n => Array.from({ length: n }, (_, i) =>
+  `Élodie keeps the ledger beside the window. Passage ${i + 1}. The quiet room has space to read, ` +
+  "sketch and remember. These words are a synthetic usability fixture, preserved independently of any personal book.").join(" ");
+
+test("a 32-character anchor in repeated text is ambiguous (the OD-041 failure)", () => {
+  const text = repeatedParagraphs(12);
+  const at = text.indexOf("of any personal book.", text.indexOf("Passage 10."));
+  assert.equal(resolveAnchorOutcome(text, makeAnchor(text, at)).status, "ambiguous");
+});
+
+test("a new note's anchor widens its context until it finds only its own place", () => {
+  const text = repeatedParagraphs(12);
+  const at = text.indexOf("of any personal book.", text.indexOf("Passage 10."));
+  const anchor = makeUniqueAnchor(text, at);
+  const outcome = resolveAnchorOutcome(text, anchor);
+  assert.equal(outcome.status, "exact");
+  assert.equal(outcome.offset, at);
+  assert.ok(anchor.prefix.length > CONTEXT_LENGTH && anchor.prefix.length <= MAX_CONTEXT_LENGTH);
+  assert.equal(anchor.exact, makeAnchor(text, at).exact, "the quotation itself is unchanged");
+});
+
+test("unique text keeps the usual 32-character context", () => {
+  const text = repeatedParagraphs(12);
+  const at = text.indexOf("Passage 7.");
+  assert.deepEqual(makeUniqueAnchor(text, at), makeAnchor(text, at));
+});
+
+test("text repeated beyond the widest context stays ambiguous instead of guessing", () => {
+  const block = "The same long refrain repeats here, word for word, again and again. ".repeat(40);
+  const text = `${block}${block}`;
+  const anchor = makeUniqueAnchor(text, block.length);
+  assert.equal(anchor.prefix.length, MAX_CONTEXT_LENGTH);
+  assert.notEqual(resolveAnchorOutcome(text, anchor).status, "exact");
+});
+
+test("anchorForBoundary makes unique anchors for notes placed in repeated text", () => {
+  const { body } = loadSection(html(Array.from({ length: 8 }, (_, i) =>
+    `<p>Élodie keeps the ledger beside the window. Passage ${i + 1}. These words repeat in every paragraph of this fixture.</p>`).join("")));
+  const index = buildTextIndex(body);
+  const at = index.text.indexOf("These words", index.text.indexOf("Passage 5."));
+  const position = index.positionAt(at);
+  const anchor = anchorForBoundary(index, position.node, position.offset);
+  assert.equal(resolveAnchorOutcome(index.text, anchor).offset, at);
 });

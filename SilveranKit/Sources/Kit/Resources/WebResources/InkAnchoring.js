@@ -21,6 +21,12 @@ export const isInkElement = node => node?.nodeType === 1 && (node.localName === 
 
 /** Characters of context kept on each side of an anchor. */
 export const CONTEXT_LENGTH = 32;
+/**
+ * The most context a new note's anchor keeps on each side to tell repeated text apart (OD-041):
+ * `makeUniqueAnchor` doubles the context from `CONTEXT_LENGTH` up to this until the anchor
+ * finds only its own place.
+ */
+export const MAX_CONTEXT_LENGTH = 1024;
 /** Bound recovery candidates without choosing an arbitrary match or allocating a chapter-sized list. */
 export const ANCHOR_CANDIDATE_LIMIT = 256;
 /** Characters of text an anchor keeps (`exact`); a mark keeps the words it covers instead. */
@@ -215,8 +221,8 @@ export function buildTextIndex(root) {
   return new TextIndex(text, segments);
 }
 
-/** An anchor for the `length` characters of `text` at `offset`. */
-export function makeAnchor(text, offset, length = EXACT_LENGTH) {
+/** An anchor for the `length` characters of `text` at `offset`, with `context` characters each side. */
+export function makeAnchor(text, offset, length = EXACT_LENGTH, context = CONTEXT_LENGTH) {
   // JSON selectors must contain complete Unicode scalars, even at a 32-code-unit boundary.
   const boundary = value => {
     const at = Math.max(0, Math.min(value, text.length));
@@ -227,16 +233,31 @@ export function makeAnchor(text, offset, length = EXACT_LENGTH) {
   const end = boundary(at + length);
   return {
     offset: at,
-    prefix: text.slice(boundary(at - CONTEXT_LENGTH), at),
+    prefix: text.slice(boundary(at - context), at),
     exact: text.slice(at, end),
-    suffix: text.slice(end, boundary(end + CONTEXT_LENGTH)),
+    suffix: text.slice(end, boundary(end + context)),
   };
+}
+
+/**
+ * An anchor at `offset` that resolves back to it alone (OD-041). Where the 32 characters each side
+ * repeat elsewhere in the chapter (refrains, repeated sentences), the context doubles until the
+ * anchor is unique, up to `MAX_CONTEXT_LENGTH`; text repeated even more widely keeps the widest
+ * anchor, which stays ambiguous and goes to repair rather than to a guessed place. The format is
+ * unchanged: older readers resolve longer context the same way.
+ */
+export function makeUniqueAnchor(text, offset, length = EXACT_LENGTH) {
+  for (let context = CONTEXT_LENGTH; ; context *= 2) {
+    const anchor = makeAnchor(text, offset, length, context);
+    const whole = anchor.prefix.length + anchor.exact.length + anchor.suffix.length >= text.length;
+    if (whole || context >= MAX_CONTEXT_LENGTH || resolveAnchorOutcome(text, anchor).status === "exact") return anchor;
+  }
 }
 
 /** The anchor of a DOM range's start, for a note that goes there. */
 export function anchorForBoundary(index, container, offset) {
   const at = index.offsetOf(container, offset);
-  return at == null ? null : makeAnchor(index.text, at);
+  return at == null ? null : makeUniqueAnchor(index.text, at);
 }
 
 const occurrences = (text, needle) => {

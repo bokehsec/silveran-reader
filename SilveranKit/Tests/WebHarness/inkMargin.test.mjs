@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildTextIndex, makeAnchor, INK_TAG } from "../../Sources/Kit/Resources/WebResources/InkAnchoring.js";
-import { gutterAt, drawingWidth, isMarginNote, MARGIN_INSET, MarginLayer, layoutMarginColumn, marginGap, columnFrame, proposeMarginStroke } from "../../Sources/Kit/Resources/WebResources/InkMargin.js";
+import { gutterAt, drawingWidth, isMarginNote, MARGIN_INSET, MarginLayer, layoutMarginColumn, marginGap, columnFrame, proposeMarginStroke, marginCanvas, MARGIN_FOCUS_MIN_SCALE } from "../../Sources/Kit/Resources/WebResources/InkMargin.js";
 import InkEngine from "../../Sources/Kit/Resources/WebResources/InkEngine.js";
 import { ebookChapter } from "./fixtures/chapters.mjs";
 import { loadSection } from "./domSupport.mjs";
@@ -160,7 +160,8 @@ test("phone and scrolling gutters leave room for readable margin icons", () => {
     assert.ok(gap / 2 >= 16, `icon fits the ${width}-point phone gutter`);
   }
   assert.equal(marginGap({ hasNotes: false }), "0%");
-  assert.equal(marginGap({ hasNotes: true, expanded: true }), "8%");
+  // OD-042: the open margin has no gap, so the page (and the ink) reaches the screen's edge.
+  assert.equal(marginGap({ hasNotes: true, expanded: true }), "0%");
   assert.equal(marginGap({ hasNotes: true, scrolling: true }), "6%");
 
 });
@@ -296,4 +297,25 @@ test("when drawings collide the older note keeps its place", () => {
   const { drawn, tiles } = layoutMarginColumn([entry("a-newer", 20), entry("z-older", 10)], { expanded: true });
   assert.deepEqual(drawn.map(d => d.entry.note.id), ["z-older"]);
   assert.deepEqual(tiles.map(t => t.entries.map(e => e.note.id)), [["a-newer"]]);
+});
+
+// OD-043: a tapped note is fitted to the page, but never below 70% of its written size.
+const tallEntry = room => ({
+  note: { id: "tall", placement: "margin", refWidth: 200, strokes: [{ tool: "pen", width: 2, points: [[0, 0], [190, 400]] }] },
+  line: { top: 100, bottom: 120 }, gutter: { left: 500, width: 212 }, room,
+});
+
+test("a focused note fits the page down to the minimum share of its written size", () => {
+  const fits = marginCanvas(tallEntry(330), { focused: true, minScale: MARGIN_FOCUS_MIN_SCALE });
+  assert.ok(fits && fits.scale >= MARGIN_FOCUS_MIN_SCALE && fits.height <= 330);
+  assert.equal(marginCanvas(tallEntry(200), { focused: true, minScale: MARGIN_FOCUS_MIN_SCALE }), null,
+    "half size would be hard to read: not drawn, so the tap opens the note sheet");
+  assert.ok(marginCanvas(tallEntry(200), { focused: true }), "editing in the margin still fits it at any size");
+  assert.equal(marginCanvas(tallEntry(200)), null, "unfocused, a note too tall for the page stays an icon");
+});
+
+test("an unreadably small focused note is counted in a tile, not drawn", () => {
+  const { drawn, tiles } = layoutMarginColumn([tallEntry(200)], { expanded: true, focusedId: "tall", focusMinScale: MARGIN_FOCUS_MIN_SCALE });
+  assert.equal(drawn.length, 0);
+  assert.deepEqual(tiles.map(t => t.entries.map(e => e.note.id)), [["tall"]]);
 });

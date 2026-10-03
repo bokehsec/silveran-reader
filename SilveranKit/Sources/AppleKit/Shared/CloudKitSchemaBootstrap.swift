@@ -43,6 +43,7 @@ enum CloudKitSchemaBootstrap {
                 )
             )
             annotation["payloadAsset"] = CKAsset(fileURL: file)  // normally only for large notes
+            annotation["featureLevel"] = 2 as NSNumber  // normally only on notes with a writing area
 
             let book = CKRecord(
                 recordType: AnnotationCloudSync.cardRecordType,

@@ -30,7 +30,7 @@ test("opening and closing the margin changes the page and reports each state", (
   const { margin, reports, attributes, open } = setup();
   assert.deepEqual(margin.set({ open: true }), { expanded: true, available: true });
   assert.ok(open());
-  assert.equal(attributes.gap, "8%");
+  assert.equal(attributes.gap, "0%", "the open margin reaches the screen's edge (OD-042)");
   assert.deepEqual(reports.at(-1), { expanded: true, available: true });
   assert.deepEqual(margin.set({ open: false }), { expanded: false, available: true });
   assert.ok(!open());
@@ -38,11 +38,12 @@ test("opening and closing the margin changes the page and reports each state", (
 });
 
 test("closing with margin notes leaves only the thin icon gutter", () => {
-  const { margin, attributes, open } = setup();
+  const { margin, attributes, open, doc } = setup();
   margin.set({ open: true, hasNotes: true });
   margin.set({ open: false });
   assert.ok(!open());
   assert.equal(attributes.gap, "6%");
+  assert.equal(doc.documentElement.getAttribute(MARGIN_OPEN_ATTRIBUTE), "icons", "the text keeps clear of the icons (OD-044)");
 });
 
 test("switching to scrolling closes the wide margin; switching back reopens it", () => {

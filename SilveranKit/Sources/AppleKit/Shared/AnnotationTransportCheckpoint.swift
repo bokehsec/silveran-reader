@@ -58,6 +58,22 @@ final class AnnotationTransportCheckpoint: @unchecked Sendable {
         }
     }
 
+    /// Forgets the saved cursor so the next start reads the whole zone again. Only for a sync
+    /// state that describes another iCloud database (`AnnotationCloudDatabaseBinding`).
+    func discard() throws {
+        try lock.withLock {
+            guard !halted else {
+                throw NSError(domain: "AnnotationTransportCheckpoint", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: failure ?? "Sync is stopped."])
+            }
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch let error as CocoaError where error.code == .fileNoSuchFile {
+                return
+            }
+        }
+    }
+
     /// Stops sending and receiving until restart, keeping the last persisted cursor.
     func halt(_ reason: String) {
         lock.withLock {

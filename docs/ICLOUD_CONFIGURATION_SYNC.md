@@ -13,9 +13,9 @@ Disabling sync retains local settings and does not delete the shared cloud store
 
 ## What follows the person
 
-- Shared: themes and their selected IDs/appearance values, the reader's System/Light/Dark choice (`reading.readerAppearance`, its own unit), highlight palettes and labels, accent color, playback speed, lock-to-audio, preferred media type, library audio-indicator preference, Storyteller sync interval/preferences, sidebar/home customization, and reviewed import preferences.
-- Shared within Mac/phone/tablet classes: reader typography and layout, reading-bar presentation, library layouts/sorting/covers/badges, and reviewed table preferences. A Mac layout does not override a phone layout.
-- Local: volume, window sizes, current book and panel state, download state, diagnostics, migrations, content-server settings, folder paths/bookmarks, and credentials. Missing fonts use the reader's existing CSS fallback without changing the stored preference.
+- Shared: themes and their selected IDs/appearance values, the reader's System/Light/Dark choice (`reading.readerAppearance`, its own unit), the reader font (`reading.fontFamily`, its own unit, shared since 2026-10-03), highlight palettes and labels, accent color, playback speed, lock-to-audio, preferred media type, library audio-indicator preference, Storyteller sync interval/preferences, sidebar/home customization, and reviewed import preferences.
+- Shared within Mac/phone/tablet classes: reader text size, spacing and layout, reading-bar presentation, library layouts/sorting/covers/badges, and reviewed table preferences. A Mac layout does not override a phone layout.
+- Local: volume, window sizes, current book and panel state, download state, diagnostics, migrations, content-server settings, folder paths/bookmarks, and credentials. A synced font that isn't on this device (usually an imported font) renders as System Default without changing the stored preference; the font picker keeps it selected and says "Not on this device. Showing System Default." Imported font files themselves do not sync; they travel only in backups.
 
 The finite library-view registry excludes source-specific, book-specific and smart-shelf-specific view keys. Sidebar/home references to objects not present on another device are retained as references; this feature does not create the missing sources or shelf definitions. Direct import-selection readers load preferences when their editor is opened; active library table customization also refreshes on a remote preference application.
 

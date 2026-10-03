@@ -57,6 +57,9 @@ final class InkToolController: NSObject, UIPencilInteractionDelegate {
 
     func selectionEnded() { strip.selectionEnded() }
 
+    /// The session left the Space tool: the strip follows (ADR 015).
+    func arrangingEnded() { strip.arrangingEnded() }
+
     /// Text was selected or deselected on the page: the strip makes room for the selection bar.
     func textSelectionChanged(active: Bool) { strip.textSelectionChanged(active: active) }
 

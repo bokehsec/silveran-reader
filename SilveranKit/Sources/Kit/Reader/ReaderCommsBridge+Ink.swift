@@ -90,15 +90,48 @@ extension ReaderCommsBridge: InkEngineCalling {
         return try decodeInkResult(Shown.self, from: result).shown
     }
 
-    public func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws -> InkSession.MarginState {
+    public func inkSetMargin(hasNotes: Bool?, hasFlowNotes: Bool?, open: Bool?) async throws
+        -> InkSession.MarginState
+    {
         struct Margin: Encodable {
             let hasNotes: Bool?
+            let hasFlowNotes: Bool?
             let open: Bool?
         }
+        let margin = Margin(hasNotes: hasNotes, hasFlowNotes: hasFlowNotes, open: open)
         let result = try await callInk(
-            "return await window.foliateManager.inkSetMargin(\(try jsLiteral(Margin(hasNotes: hasNotes, open: open))));"
+            "return await window.foliateManager.inkSetMargin(\(try jsLiteral(margin)));"
         )
         return try decodeInkResult(InkSession.MarginState.self, from: result)
+    }
+
+    // MARK: Writing areas (ADR 015)
+
+    public func inkMeasureNoteAreas() async throws -> [InkNoteAreaFrame] {
+        let result = try await callInk("return await window.foliateManager.inkMeasureNoteAreas();")
+        return try decodeInkResult([InkNoteAreaFrame].self, from: result)
+    }
+
+    public func inkPreviewNoteArea(href: String, noteID: String, area: InkNoteArea?) async throws
+        -> InkNoteAreaFrame?
+    {
+        let result = try await callInk(
+            "return await window.foliateManager.inkPreviewNoteArea(\(try jsString(href)), \(try jsString(noteID)), \(try jsLiteral(area)));"
+        )
+        return try decodeInkResult(InkNoteAreaFrame?.self, from: result)
+    }
+
+    public func inkSpaceTarget(x: Double, y: Double) async throws -> InkSpaceTarget? {
+        let result = try await callInk(
+            "return await window.foliateManager.inkSpaceTarget(\(try jsLiteral(x)), \(try jsLiteral(y)));"
+        )
+        return try decodeInkResult(InkSpaceTarget?.self, from: result)
+    }
+
+    public func inkPreviewSpace(target: InkSpaceTarget?, area: InkNoteArea?) async throws {
+        _ = try await callInk(
+            "return await window.foliateManager.inkPreviewSpace(\(try jsLiteral(target)), \(try jsLiteral(area)));"
+        )
     }
 
     private func callInk(_ body: String) async throws -> String? {

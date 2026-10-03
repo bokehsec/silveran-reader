@@ -66,6 +66,20 @@ public struct AnnotationSyncRecord: Codable, Hashable, Sendable {
         Self.recordName(bookID: bookID, kind: kind, annotationID: annotationID)
     }
 
+    /// The highest feature level this version reads (ADR 015). Level 2 adds writing areas on
+    /// notes in the text. A transport files a record above it as written by a newer version: kept
+    /// for after an update, never decoded and reduced, and never stalling the rest of sync.
+    public static let supportedFeatureLevel = 2
+
+    /// The feature level a device needs to read this record: 1 unless its payload uses a later
+    /// feature. Written alongside the record so older readers can tell "newer" from "damaged".
+    public var featureLevel: Int {
+        guard kind == .inkNote, !deleted, let payload,
+            let note = try? JSONDecoder().decode(InkNote.self, from: payload)
+        else { return 1 }
+        return note.requiredFeatureLevel
+    }
+
     /// The same record filed under another (linked) book.
     func moved(to bookID: BookID, payload: Data?) -> AnnotationSyncRecord {
         AnnotationSyncRecord(
@@ -231,7 +245,9 @@ public actor AnnotationSyncEngine {
     private var restoreSuspended = false
     private var activeCalls = 0
     private var accountTransition = false
+    private var transitionDraining = false
     private var drainWaiters: [CheckedContinuation<Void, Never>] = []
+    private var transitionWaiters: [CheckedContinuation<Void, Never>] = []
     private let directory: URL
     private let deviceID: String
     private let now: @Sendable () -> Date
@@ -283,7 +299,7 @@ public actor AnnotationSyncEngine {
     @discardableResult
     public func reconcileAll() async -> Bool {
         guard await replayPendingOperations() else { return false }
-        guard beginCall() else { return false }
+        guard await beginCall() else { return false }
         defer { endCall() }
         do {
             var books = Set(await ink.storedBookIDs())
@@ -308,7 +324,7 @@ public actor AnnotationSyncEngine {
     /// How far sync has taken each book's local ink and highlight history, for retention.
     /// Nil when the book's sync history cannot be read; retention then keeps everything.
     public func consumedLocalSequences(bookID: BookID) async -> (ink: UInt64, highlight: UInt64)? {
-        guard beginCall() else { return nil }
+        guard await beginCall() else { return nil }
         defer { endCall() }
         await lock(bookID)
         defer { unlock(bookID) }
@@ -317,7 +333,7 @@ public actor AnnotationSyncEngine {
     }
 
     public func reconcile(bookID: BookID) async -> Bool {
-        guard beginCall() else { return false }
+        guard await beginCall() else { return false }
         defer { endCall() }
         do {
             await lock(bookID)
@@ -353,7 +369,7 @@ public actor AnnotationSyncEngine {
     /// The current version of a queued annotation, built from the owners' files.
     @discardableResult
     public func outgoingRecord(named name: String) async -> AnnotationSyncRecord? {
-        guard beginCall() else { return nil }
+        guard await beginCall() else { return nil }
         defer { endCall() }
         do {
             guard let bookID = try loadIndex()[name] else { return nil }
@@ -408,7 +424,7 @@ public actor AnnotationSyncEngine {
     /// The cloud accepted `clock` for this record. Newer local changes stay queued.
     @discardableResult
     public func didSend(named name: String, clock: SyncClock, systemFields: Data?) async -> Bool {
-        guard beginCall() else { return false }
+        guard await beginCall() else { return false }
         defer { endCall() }
         do {
             guard let bookID = try loadIndex()[name] else { return false }
@@ -461,7 +477,7 @@ public actor AnnotationSyncEngine {
             } else {
                 try write(inbox, to: url)
             }
-            guard beginCall() else { return false }
+            guard await beginCall() else { return false }
             defer { endCall() }
             try await processInbox(inbox, identity: identity)
             lastFailure = nil
@@ -500,11 +516,11 @@ public actor AnnotationSyncEngine {
 
     @discardableResult
     public func setAccountContext(_ opaqueAccountID: String) async -> Bool {
-        guard !opaqueAccountID.isEmpty, !restoreSuspended, !accountTransition, activeCalls == 0
-        else {
+        guard !opaqueAccountID.isEmpty, await beginTransition() else {
             lastFailure = "The iCloud account cannot be changed while annotation work is active."
             return false
         }
+        defer { endTransition() }
         do {
             let url = directory.appendingPathComponent("account-context.json")
             if let bytes = try read(url) {
@@ -1039,7 +1055,7 @@ public actor AnnotationSyncEngine {
     /// Complete retained receives before reconciliation or advancing a transport checkpoint.
     @discardableResult
     public func replayPendingOperations() async -> Bool {
-        guard beginCall() else { return false }
+        guard await beginCall() else { return false }
         defer { endCall() }
         do {
             for plan in try pendingMoves() {
@@ -1107,13 +1123,41 @@ public actor AnnotationSyncEngine {
 
     public func persistenceStatus() -> String? { lastFailure }
 
-    private func beginCall() -> Bool {
-        guard !restoreSuspended, !accountTransition else {
+    /// Sync work waits while an account transition rewrites sync state; it isn't refused,
+    /// because that is short and refusing would surface as a persistence failure.
+    private func beginCall() async -> Bool {
+        while accountTransition, !restoreSuspended {
+            await withCheckedContinuation { transitionWaiters.append($0) }
+        }
+        guard !restoreSuspended else {
             lastFailure = "Annotation restore is in progress; sync work is retained."
             return false
         }
         activeCalls += 1
         return true
+    }
+
+    /// Waits for running sync work to finish, then holds new work until `endTransition`.
+    /// Work that starts while draining is allowed to run (it may be nested inside work already
+    /// running), so the hold begins only once nothing is active. Returns false during a restore
+    /// or another transition; nothing has been changed then.
+    private func beginTransition() async -> Bool {
+        guard !restoreSuspended, !accountTransition, !transitionDraining else { return false }
+        transitionDraining = true
+        defer { transitionDraining = false }
+        while activeCalls > 0, !restoreSuspended {
+            await withCheckedContinuation { drainWaiters.append($0) }
+        }
+        guard !restoreSuspended else { return false }
+        accountTransition = true
+        return true
+    }
+
+    private func endTransition() {
+        accountTransition = false
+        let waiters = transitionWaiters
+        transitionWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 
     private func endCall() {
@@ -1127,6 +1171,10 @@ public actor AnnotationSyncEngine {
 
     public func suspendForRestore() async {
         restoreSuspended = true
+        // Work held by an account transition gives up rather than starting during restore.
+        let held = transitionWaiters
+        transitionWaiters.removeAll()
+        for waiter in held { waiter.resume() }
         if activeCalls > 0 { await withCheckedContinuation { drainWaiters.append($0) } }
     }
 
@@ -1135,7 +1183,7 @@ public actor AnnotationSyncEngine {
     /// The cloud no longer has this record (for example its zone was reset): send it fresh.
     @discardableResult
     public func clearSystemFields(named name: String) async -> Bool {
-        guard beginCall() else { return false }
+        guard await beginCall() else { return false }
         defer { endCall() }
         do {
             guard let bookID = try loadIndex()[name] else { return false }
@@ -1162,7 +1210,7 @@ public actor AnnotationSyncEngine {
     /// client may still expire tombstones; retain and republish ours under ADR 013.
     @discardableResult
     public func forgetRecord(named name: String) async -> Bool {
-        guard beginCall() else { return false }
+        guard await beginCall() else { return false }
         defer { endCall() }
         do {
             guard let bookID = try loadIndex()[name] else { return true }
@@ -1196,10 +1244,11 @@ public actor AnnotationSyncEngine {
     /// Signed in to a different iCloud account: everything current is uploaded again there.
     @discardableResult
     public func resetForNewAccount(accountContext newContext: String? = nil) async -> Bool {
-        guard !restoreSuspended, !accountTransition, activeCalls == 0 else {
+        guard await beginTransition() else {
             lastFailure = "Another annotation operation must settle before account transition."
             return false
         }
+        defer { endTransition() }
         do {
             guard !hasPendingInbox(), try pendingMoves().isEmpty, try pendingReceivePlans().isEmpty
             else {
@@ -1211,8 +1260,6 @@ public actor AnnotationSyncEngine {
             lastFailure = error.localizedDescription
             return false
         }
-        accountTransition = true
-        defer { accountTransition = false }
         activeCalls += 1
         defer { endCall() }
         do {
@@ -1247,7 +1294,7 @@ public actor AnnotationSyncEngine {
     /// the latest version. Returns whether it was applied.
     @discardableResult
     public func restore(_ version: AnnotationRecoveredVersion) async -> Bool {
-        guard beginCall() else { return false }
+        guard await beginCall() else { return false }
         defer { endCall() }
         do {
             let original = version.record
@@ -1376,7 +1423,7 @@ public actor AnnotationSyncEngine {
     /// A failure leaves the annotation where it was.
     @discardableResult
     public func rehome(from cloud: BookID, to local: BookID) async -> RehomeResult {
-        guard beginCall() else { return RehomeResult(moved: 0, failed: 1) }
+        guard await beginCall() else { return RehomeResult(moved: 0, failed: 1) }
         defer { endCall() }
         var result = RehomeResult()
         guard cloud != local else { return result }
@@ -1748,7 +1795,7 @@ public actor AnnotationSyncEngine {
     /// Moves everything filed under books this device has since linked to its own.
     @discardableResult
     public func rehomeLinked() async -> RehomeResult {
-        guard beginCall() else { return RehomeResult(moved: 0, failed: 1) }
+        guard await beginCall() else { return RehomeResult(moved: 0, failed: 1) }
         defer { endCall() }
         do {
             guard let library else { return RehomeResult() }

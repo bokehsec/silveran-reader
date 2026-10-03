@@ -297,7 +297,8 @@ public struct EbookPlayerView: View {
                     (shown.noteIDs.isEmpty ? [shown.noteID] : shown.noteIDs).contains($0.id)
                 },
                 chapter: viewModel.chapterLabel(forHref: shown.href),
-                edit: marginEditingAction(href: shown.href)
+                edit: marginEditingAction(href: shown.href),
+                delete: { note in viewModel.inkSession.deleteInk(href: shown.href, id: note.id) }
             ) { viewModel.presentedMarginNote = nil }
         }
 
@@ -708,6 +709,7 @@ public struct EbookPlayerView: View {
                     onSkipForward: {
                         viewModel.handleNextSentence()
                     },
+                    onBandHeight: { viewModel.styleManager?.setReservedPageEdge(Double($0)) },
                 )
                 .transition(.opacity)
             }

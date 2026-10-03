@@ -14,6 +14,8 @@ import SilveranKit
 final class InkToolStrip {
     enum Tool: Hashable {
         case pen, highlighter, eraser, select
+        /// Writing areas (ADR 015): resize notes in the text, or pull open space between lines.
+        case space
     }
 
     @ObservationIgnored private let session: InkSession
@@ -24,6 +26,8 @@ final class InkToolStrip {
     private(set) var strip: InkToolStripSettings
     /// The select (lasso) tool is in hand: the next Pencil stroke selects ink.
     private(set) var isSelecting = false
+    /// The Space tool is in hand: notes show their writing areas with handles (ADR 015).
+    private(set) var isArranging = false
     /// The strip is on screen (rolled up or not), unless it is stepping aside for a text selection.
     private(set) var isShowing = false
     /// Text is selected on the page, so the strip steps aside for the selection bar and comes back
@@ -55,6 +59,7 @@ final class InkToolStrip {
     }
 
     var tool: Tool {
+        if isArranging { return .space }
         if isSelecting { return .select }
         switch settings.selected {
             case .pen: return .pen
@@ -65,7 +70,7 @@ final class InkToolStrip {
 
     /// The pen or highlighter in hand, or nil for the eraser and the select tool.
     var writingTool: InkTool? {
-        guard !isSelecting, settings.selected != .eraser else { return nil }
+        guard !isSelecting, !isArranging, settings.selected != .eraser else { return nil }
         return settings.current
     }
 
@@ -105,15 +110,38 @@ final class InkToolStrip {
     // MARK: Tools
 
     func select(_ tool: Tool) {
-        if tool != self.tool, self.tool != .eraser, self.tool != .select { previous = self.tool }
+        if tool != self.tool, self.tool != .eraser, self.tool != .select, self.tool != .space {
+            previous = self.tool
+        }
         switch tool {
             case .pen: choose(settings.pen)
             case .highlighter: choose(settings.highlighter)
             case .eraser: choose(.eraser)
             case .select:
+                endArranging()
                 isSelecting = true
                 session.isSelectingInk = true
+            case .space:
+                if isSelecting {
+                    isSelecting = false
+                    session.isSelectingInk = false
+                }
+                isArranging = true
+                session.isArrangingSpace = true
         }
+    }
+
+    /// The session left the Space tool (another mode took over, the book closed): follow it.
+    func arrangingEnded() {
+        guard isArranging, !session.isArrangingSpace else { return }
+        isArranging = false
+        session.tool = settings.current
+    }
+
+    private func endArranging() {
+        guard isArranging else { return }
+        isArranging = false
+        session.isArrangingSpace = false
     }
 
     /// The eraser, and back to what was in hand before it.
@@ -211,6 +239,7 @@ final class InkToolStrip {
             isSelecting = false
             session.isSelectingInk = false
         }
+        endArranging()
         settings.select(picked)
         session.tool = settings.current
         saveTools()

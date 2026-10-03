@@ -66,9 +66,11 @@ targets:
           - AnnotationRepairCommandsTests.swift
           - AnnotationSyncTests.swift
           - AnnotationSyncDurabilityTests.swift
+          - AnnotationSyncTransitionTests.swift
           - AnnotationTransportCheckpointTests.swift
           - AnnotationCloudSyncTests.swift
           - AnnotationRecordReceiverTests.swift
+          - AnnotationCloudDatabaseBindingTests.swift
           - SyncDeferredRecordStoreTests.swift
           - InkMutationCoordinationTests.swift
           - InkLocalMutationJournalTests.swift

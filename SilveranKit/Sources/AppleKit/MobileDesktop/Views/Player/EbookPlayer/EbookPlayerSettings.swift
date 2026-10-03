@@ -209,7 +209,11 @@ private struct ReaderFontPickerView: View {
                         fontRow(label: family.name, value: family.name)
                     }
                     if isUnlistedCustomFont {
-                        fontRow(label: settingsVM.fontFamily, value: settingsVM.fontFamily)
+                        fontRow(
+                            label: settingsVM.fontFamily,
+                            value: settingsVM.fontFamily,
+                            note: "Not on this device. Showing System Default."
+                        )
                     }
                 }
             }
@@ -234,20 +238,28 @@ private struct ReaderFontPickerView: View {
     }
 
     /// A custom font chosen on another device or since removed; keep it visible and selected.
+    /// The reader shows System Default until the font is added here (owner decision, 2026-10-03).
     private var isUnlistedCustomFont: Bool {
         !ReaderFontOptions.isBuiltIn(settingsVM.fontFamily)
             && !customFamilies.contains { $0.name == settingsVM.fontFamily }
     }
 
-    private func fontRow(label: String, value: String) -> some View {
+    private func fontRow(label: String, value: String, note: String? = nil) -> some View {
         Button {
             settingsVM.fontFamily = value
             settingsVM.save()
         } label: {
             HStack {
-                Text(label)
-                    .font(ReaderFontOptions.previewFont(for: value))
-                    .foregroundStyle(.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(ReaderFontOptions.previewFont(for: note == nil ? value : kDefaultFontFamily))
+                        .foregroundStyle(.primary)
+                    if let note {
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Spacer()
                 if settingsVM.fontFamily == value {
                     Image(systemName: "checkmark")

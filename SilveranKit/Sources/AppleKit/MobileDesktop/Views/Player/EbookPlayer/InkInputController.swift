@@ -17,7 +17,16 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
     private weak var webView: WKWebView?
     private let liveView = InkLiveView()
     private let selectionOverlay: InkSelectionOverlay
+    /// The Space tool's handles (ADR 015).
+    private let areaOverlay: InkAreaOverlay
     private let recognizer = InkStrokeGestureRecognizer()
+    /// Touch and hold, then pull down: opens space with a finger while the Space tool is on.
+    private let spacePress = UILongPressGestureRecognizer()
+    /// A finger held on a note picks it and shows its handles, with no tool (owner, 2026-10-03).
+    private let noteHold = UILongPressGestureRecognizer()
+    /// The Pencil (or a held finger) is pulling open space rather than writing.
+    private var strokeIsSpace = false
+    private let spacePreviews = LatestOnly()
     /// True while something else owns the page (a curl in progress, Scrolling Mode); the
     /// Pencil then does not write.
     var isBlocked: () -> Bool = { false }
@@ -31,6 +40,7 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
         self.webView = webView
         self.session = session
         selectionOverlay = InkSelectionOverlay(session: session)
+        areaOverlay = InkAreaOverlay(session: session)
         super.init()
 
         liveView.frame = webView.frame
@@ -42,6 +52,18 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
         selectionOverlay.frame = webView.frame
         selectionOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         overlayParent.addSubview(selectionOverlay)
+        areaOverlay.frame = webView.frame
+        areaOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        overlayParent.addSubview(areaOverlay)
+        let oldAreasChanged = session.onAreasChanged
+        session.onAreasChanged = { [weak self] in
+            oldAreasChanged?()
+            guard let self else { return }
+            if !self.session.isArrangingSpace { self.tools?.arrangingEnded() }
+            self.spacePress.isEnabled = self.session.isArrangingSpace
+            self.noteHold.isEnabled = !self.session.isArrangingSpace
+            self.areaOverlay.refresh()
+        }
         let oldModeChanged = session.onSelectionModeChanged
         session.onSelectionModeChanged = { [weak self] in
             oldModeChanged?()
@@ -61,19 +83,120 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
         recognizer.delegate = self
         recognizer.onStroke = { [weak self] event in self?.handle(event) }
         overlayParent.addGestureRecognizer(recognizer)
+
+        spacePress.minimumPressDuration = 0.35
+        spacePress.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+        spacePress.isEnabled = false
+        spacePress.delegate = self
+        spacePress.addTarget(self, action: #selector(holdToOpenSpace(_:)))
+        overlayParent.addGestureRecognizer(spacePress)
+
+        noteHold.minimumPressDuration = 0.45
+        noteHold.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
+        noteHold.delegate = self
+        noteHold.addTarget(self, action: #selector(holdNote(_:)))
+        overlayParent.addGestureRecognizer(noteHold)
+    }
+
+    @objc private func holdNote(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began,
+            let point = pagePoint(gesture.location(in: gesture.view), from: gesture.view),
+            let frame = session.areaFrame(at: point)
+        else { return }
+        if session.selectArea(frame) {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            UIAccessibility.post(
+                notification: .announcement,
+                argument: "Note selected. Drag its handles to resize it."
+            )
+        }
+    }
+
+    /// Whether a touch at this point lands on a note in the text, for the long-press.
+    private func isOnNote(_ touch: UITouch) -> Bool {
+        guard let view = noteHold.view,
+            let point = pagePoint(touch.location(in: view), from: view)
+        else { return false }
+        return session.areaFrame(at: point) != nil
+    }
+
+    /// The point in the web view's coordinates, which the page measures in.
+    private func pagePoint(_ point: CGPoint, from view: UIView?) -> (x: Double, y: Double)? {
+        guard let webView else { return nil }
+        let p = webView.convert(point, from: view)
+        return (Double(p.x), Double(p.y))
+    }
+
+    @objc private func holdToOpenSpace(_ gesture: UILongPressGestureRecognizer) {
+        guard let point = pagePoint(gesture.location(in: gesture.view), from: gesture.view) else {
+            return
+        }
+        switch gesture.state {
+            case .began: openSpace(.began(point))
+            case .changed: openSpace(.moved(point))
+            case .ended: openSpace(.ended)
+            default: openSpace(.cancelled)
+        }
+    }
+
+    private enum SpacePull {
+        case began((x: Double, y: Double))
+        case moved((x: Double, y: Double))
+        case ended
+        case cancelled
+    }
+
+    /// Pulling open space between lines (ADR 015): the page shows it opening; release saves it.
+    private func openSpace(_ step: SpacePull) {
+        let session = session
+        switch step {
+            case .began(let point):
+                spacePreviews.run {
+                    if await session.beginInsert(at: point) {
+                        UISelectionFeedbackGenerator().selectionChanged()
+                    }
+                }
+            case .moved(let point):
+                spacePreviews.run { await session.previewInsert(to: point.y) }
+            case .ended:
+                spacePreviews.run {
+                    if case .insert = session.areaDraft { await session.commitAreaDraft() }
+                }
+            case .cancelled:
+                spacePreviews.run { await session.cancelAreaDraft() }
+        }
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        !isBlocked()
+        if gestureRecognizer === spacePress { return session.isArrangingSpace && !isBlocked() }
+        if gestureRecognizer === noteHold {
+            return !session.isArrangingSpace && !session.isSelectingInk && !isBlocked()
+        }
+        return !isBlocked()
     }
 
     func cancelSelectionForLayoutChange() { session.cancelSelection() }
 
+    /// The page's own long-press (text selection) waits for a long-press on a note to fail, which
+    /// it does at once off a note.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        guard gestureRecognizer === noteHold, let webView,
+            let view = otherGestureRecognizer.view
+        else { return false }
+        return view.isDescendant(of: webView)
+    }
+
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch)
         -> Bool
     {
+        // Only a touch on a note can start the long-press, so holding on text still selects it.
+        if gestureRecognizer === noteHold, !isOnNote(touch) { return false }
         guard let touched = touch.view else { return true }
         return !touched.isDescendant(of: selectionOverlay)
+            && !(touched.isDescendant(of: areaOverlay) && touched !== areaOverlay)
     }
 
     private func handle(_ event: InkStrokeGestureRecognizer.Event) {
@@ -83,6 +206,25 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
                 point: webView.convert(sample.point, from: recognizer.view),
                 pressure: sample.pressure
             )
+        }
+        if case .began = event { strokeIsSpace = session.isArrangingSpace }
+        if strokeIsSpace {
+            // The Space tool: the Pencil pulls open space instead of writing.
+            switch event {
+                case .began(let sample):
+                    if let p = pagePoint(sample.point, from: recognizer.view) {
+                        openSpace(.began(p))
+                    }
+                case .moved(let samples, _):
+                    if let last = samples.last,
+                        let p = pagePoint(last.point, from: recognizer.view)
+                    {
+                        openSpace(.moved(p))
+                    }
+                case .ended: openSpace(.ended)
+                case .cancelled: openSpace(.cancelled)
+            }
+            return
         }
         switch event {
             case .began(let sample):

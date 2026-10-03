@@ -42,6 +42,375 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-081 — Writing more under a note after a pause sometimes started a second note, splitting the writing around a line of the book
+
+- Date: 2026-10-03
+- Status: Fixed by a new capability (writing areas, ADR 015); simulator-verified on iPad, real Pencil and signed two-device iCloud pending
+- Platforms: Shared model, sync and renderer; iPad interaction (AppleKit)
+- Components: `InkNoteArea`, `InkNote.area`, `InkOperation.setNoteArea`, `erase` (empty areas kept), `addNote` (empty space), `InkNoteAreaFrame`/`InkSpaceTarget`/`InkAreaDraft`, `InkSession` (Space mode), `InkEngineCalling` + `ReaderCommsBridge+Ink` (four calls), `AnnotationSyncRecord.featureLevel`, `AnnotationCloudSync` (`featureLevel` field), CloudKit `schema.ckdb`, `InkLayout.areaLayout`/`sizeNote`, `InkGeometry.proposeSpace`, `InkEngine` (measure/preview), `InkToolStrip` (Space tool), `InkAreaOverlay`, `InkInputController`, `ReaderCommsBridge` (re-measure on page turn), `InkDebug.js` (`space-tool`)
+- Related links: [ADR 015](docs/decisions/015-resizable-writing-areas.md); owner decisions 2026-10-03 (Pencil plan)
+
+#### Symptom
+
+The owner paused to think while writing a note in the text, then continued under it because the note's box wasn't big enough. Sometimes the new writing joined the note; sometimes it started a new note, placed before the next line of the book, which split the writing around that line.
+
+#### Root cause
+
+A note's box was derived only from its ink, so there was never room to keep writing. Writing that started below a note joined it only if its top was within 1.2 lines of the book's text below the note. Handwriting runs larger than book text, and a new line's top is set by its tallest letter, so ordinary handwritten line spacing landed on either side of that limit.
+
+#### Change
+
+Instead of tuning the guess, a note in the text can now have a writing area the person sizes (owner decision). It is stored with the note in the ink's own coordinates, as a floor that never clips ink, so stroke identities and sync merging are unchanged. With the Space tool in the Pencil strip:
+- dragging handles on a note's free edges resizes it in height and width, and text flows beside a narrower area when there is room;
+- pressing between lines and pulling down (Pencil, or touch and hold) opens empty space before writing.
+
+Writing anywhere inside an area joins its note. Each change is one undo step, and nothing is saved during a drag (the page previews it). Fit to Writing returns to the derived box. Erasing all ink keeps a sized area as empty space, shown with a faint dashed outline. Margin notes are excluded (owner decision). Notes without an area lay out exactly as before. Synced notes with an area carry feature level 2, so a newer-feature record is kept for after an update instead of stalling sync on a device that can't read it.
+
+#### Validation
+
+- New `InkNoteAreaTests` (14): model round trip and strict decoding, validation, set/fit/refuse operations, empty space, erase keeps an area, feature level, merge, handle maths (edges, floors, page bottom, accessible resize, space target).
+- New `inkArea.test.mjs` (8): `areaLayout` (floor, beside/alone, scaling on narrower columns, page cap) and `sizeNote` (right-side origin round trip, empty outline, unchanged layout without an area).
+- `scripts/test`: **617 tests in 79 suites passed**. `npm test` (WebHarness): **224/224 passed**.
+- `SILVERAN_XCODE_PROJECT=SilveranValidation.xcodeproj SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=334AF5FC-B277-4C81-A711-2F83DCF36103' scripts/iosbuild`: Build Succeeded.
+- Simulator, "Silveran XDevice 12.9 iPad" (iOS 26.2, synthetic Phase 5 Field Notes, Space tool turned on with `-SilveranInkDemoStroke space-tool`):
+  - Dragging a note's corner handle grew it to 398 × 306 with text flowing beside it.
+  - Two lines then written inside it (`-SilveranInkDemoStroke word@…`) joined the same note: 30 strokes, no split.
+  - Touch-and-hold-then-pull between Passages 16 and 17 opened a 162-point empty space with handles; writing in it joined it and the outline cleared.
+- "Silveran XDevice mini iPad" (data copied across in place of iCloud): both areas showed with their ink. The 398-point area stood on its own line because the narrower column leaves too little room for text beside it.
+- Found and fixed during the simulator pass: the overlay rebuilt handle views on every refresh, which cancelled the drag that triggered it. A debug log that printed anchored book text was reduced to kind and size.
+- Follow-up (owner, 2026-10-03): a finger long-press on a note now selects it and shows its handles without the Space tool. New `InkSessionModelTests` "A long-pressed note shows its handles alone…" and "Turning the page puts down a picked note…". On the 12.9-inch simulator, a long-press on the enlarged note showed only its handles; dragging the bottom handle saved height 386; Done cleared them; a long-press on ordinary text still selected the word with the selection bar.
+- Not run: a real Pencil (Space-tool pull and handles), VoiceOver actions, undo/redo by hand, landscape spreads, Mac and iPhone rendering, signed iCloud between two iPads, the `featureLevel` deferral against a CloudKit record.
+
+#### Compatibility and follow-up
+
+- Every device must be updated before areas are used: earlier builds refuse an area note (held for recovery, not lost).
+- The `featureLevel` field must be deployed to the Production CloudKit schema before TestFlight or App Store builds write areas.
+- PDF and SVG export draw ink only.
+
+### BF-080 — The note sheet opened half-height on iPad, hiding the passage and its buttons
+
+- Date: 2026-10-03
+- Status: Fixed (iPad simulator verified; real device pending)
+- Platforms: Apple (iPadOS)
+- Components: `MarginNoteSheet` (`presentationDetents`)
+- Related links: BF-078 (iPad taps now open this sheet), BF-074
+
+#### Symptom
+
+On iPad the margin-note sheet opened as a short half-height card. The drawing filled it; the passage line was cut off at its edge, and View Full Drawing, Edit This Note in Margin and Delete Note were below the fold. Trying to scroll the sheet dismissed it.
+
+#### Root cause
+
+The sheet offered `[.medium, .large]` detents everywhere. That suits iPhone, where it was designed (BF-074); on iPad the medium detent is too short for one note's content. Until BF-078 iPad rarely showed this sheet.
+
+#### Change
+
+iPad (`UIDevice.current.userInterfaceIdiom == .pad`) offers only `.large`, a full card with everything visible. The device is asked rather than the size class because a sheet's own size class is compact even on iPad (first attempt, observed on the simulator). iPhone keeps `[.medium, .large]`.
+
+#### Validation
+
+- Mini simulator ("Silveran XDevice 12.9 iPad" (iPad Pro 12.9-inch 6th generation, iOS 26.2, `334AF5FC-B277-4C81-A711-2F83DCF36103`) and "Silveran XDevice mini iPad" (iPad mini A17 Pro, iOS 26.2, `9ECCD23E-7579-453A-BD87-AB56604AE0E4`)): tapping a tall note's icon opened the full card with drawing, "Near …" passage, View Full Drawing, Edit This Note in Margin and Delete Note all visible; Edit This Note in Margin opened the lasso editor.
+- `SILVERAN_XCODE_PROJECT=SilveranValidation.xcodeproj SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=334AF5FC-B277-4C81-A711-2F83DCF36103' scripts/iosbuild`: Build Succeeded.
+- Not run: iPhone re-check (unchanged path), VoiceOver, real devices.
+
+#### Compatibility and follow-up
+
+None known.
+
+### BF-079 — Margin-note icons sat flush against the text with the Narrow margin
+
+- Date: 2026-10-03
+- Status: Fixed (iPad simulator verified)
+- Platforms: Shared reader (WebKit); seen on iPadOS
+- Components: `InkMargin.setMarginRoom`, `InkLayout` style, `InkEngine.setMarginExpanded`, `InkMarginControl.apply`, `FoliateManager` (`--silveran-side-margin`)
+- Related links: OD-044 (resolved)
+
+#### Symptom
+
+With Margins set to Narrow and the margin closed, a margin note's pencil icon touched the last letter of its line ("quiet✎"). With Normal it had a clear gap.
+
+#### Root cause
+
+The closed gutter is the inner half of a 6% page gap. The icon is centred in it, about 4 pt from the column edge. Normal's 2% side padding kept text away from that edge; Narrow's 0% let justified lines run to it.
+
+#### Change
+
+When the closed margin shows a gutter of icons, the section's `<html>` is marked `data-silveran-margin="icons"` and the body keeps `max(side margin, 12px)` on its right. The reader's side margin is exposed to the stylesheet as `--silveran-side-margin`. Pages without margin notes and the Normal/Wide margins are unchanged.
+
+#### Validation
+
+- New assertion in `inkMarginControl.test.mjs` ("closing with margin notes leaves only the thin icon gutter"): the page is marked `icons`.
+- Mini simulator, Narrow: the icon beside "Passage 11. The quiet" now has a clear gap.
+- `scripts/test`: **603 tests in 78 suites passed**. `npm test` (WebHarness): **216/216 passed**.
+
+#### Compatibility and follow-up
+
+Text on pages with margin notes is 12 pt narrower on the right with Narrow, so lines can reflow slightly. Stored data is unchanged.
+
+### BF-078 — With the Narrow margin, the bottom of the page was drawn under the reader's status band, and tall notes shrank to unreadable size
+
+- Date: 2026-10-03
+- Status: Fixed (iPad simulator verified; real device pending)
+- Platforms: Apple (iPadOS reader; the margin floor is shared)
+- Components: `EbookOverlayIos` (`onBandHeight`), `EbookPlayerView`, `ReaderStyleManager.setReservedPageEdge`, `ReaderCommsBridge.sendJsUpdateStyles` (`reservedPageEdge`), `FoliateManager` (page margin), `InkMargin` (`MARGIN_FOCUS_MIN_SCALE`, `marginCanvas`, `MarginLayer.focusNote`), `InkEngine.revealMarginNote`, `FoliateManager.#handleMarginIconTap`
+- Related links: OD-043 (resolved), BF-080, owner decision 2026-10-03 (Pencil plan)
+
+#### Symptom
+
+On an iPad mini with Margins set to Narrow, tapping the icon of a tall margin note written on a 12.9-inch iPad opened the margin and drew the note shrunk to about 40% to fit below its line. Its last line was still cut off at the bottom of the page.
+
+#### Root cause
+
+Two causes. (1) The reader's status band ("17% · Page 2 of 6") is an opaque SwiftUI overlay about 58 pt tall over the bottom of the web view. The page's top/bottom margin is `marginTopBottom`% of 800 px, which with Narrow (4%) is 32 px, so the band covered the bottom ~26 pt of the page. A measurement on the simulator showed the note's ink inside the 1069 pt page (bottom 1063) but under the band, which began at screen y 1075. Text can be hidden there the same way. (2) A tapped note was fitted to the space left on the page at any scale, however small.
+
+#### Change
+
+- The band reports its height (`onGeometryChange`), and `ReaderStyleManager` sends it as `reservedPageEdge`. The page's top/bottom margin is now never smaller than the band. The value only grows within a reading session, so the page does not reflow each time the bars show and the band hides.
+- Owner decision 2026-10-03: a tapped margin note is fitted down to 70% of its written size (`MARGIN_FOCUS_MIN_SCALE`). Smaller than that, it stays an icon and the tap opens the note sheet (BF-080) with the whole drawing. "Edit This Note in Margin" still fits the note at any size, as before, so it can be edited.
+
+#### Validation
+
+- New WebHarness tests: "a focused note fits the page down to the minimum share of its written size" and "an unreadably small focused note is counted in a tile, not drawn".
+- Mini simulator, Narrow: the page's frame now ends at the band's top (y 1075). Tapping the 5-line note's icon opened the sheet with the full drawing. Edit This Note in Margin drew it inside the page (ink bottom 1012 of 1017). Measured with a temporary renderer log, since removed.
+- `scripts/test`: **603 tests in 78 suites passed**. `npm test` (WebHarness): **216/216 passed**.
+- `SILVERAN_XCODE_PROJECT=SilveranValidation.xcodeproj SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=334AF5FC-B277-4C81-A711-2F83DCF36103' scripts/iosbuild`: Build Succeeded.
+- Not run: the top-positioned band (mini player pinned), real devices, Mac.
+
+#### Compatibility and follow-up
+
+With Narrow and the status band shown, pages gain about 26 pt of top/bottom margin, so pagination changes slightly. Normal (64 px) and Wide are already larger than the band. Stored data is unchanged. A tall note near the bottom of a page still opens in the sheet rather than the margin; moving it to the next page was not attempted.
+
+### BF-077 — Margin handwriting written out to the screen's edge was saved but its end was not drawn
+
+- Date: 2026-10-03
+- Status: Fixed (iPad simulator verified; real Pencil pending)
+- Platforms: Shared reader (WebKit); seen on iPadOS
+- Components: `InkMargin.marginGap`, `InkLayout` style (open margin), `FoliateManager` (`--silveran-side-margin`)
+- Related links: OD-042 (resolved), OD-022 (narrowed this strip earlier)
+
+#### Symptom
+
+On a 12.9-inch iPad with the margin open, a multi-line margin note written up to the right edge of the screen showed each line cut off about 40 pt from the edge ("testing" showed as "testinc"), even on the iPad it was written on. The strokes were saved in full (stored x up to 286.5 in a note whose `refWidth` was 269.8).
+
+#### Root cause
+
+The open margin used an 8% paginator gap. foliate's paginator puts half of any gap outside the section frame, in the outer grid columns. Ink there is outside the document and cannot be drawn. OD-022 had moved most of the margin into the page, but that outer strip remained.
+
+#### Change
+
+The open margin has no paginator gap (`marginGap` returns `0%`), so the page reaches the screen's edges. The text keeps its distance from the left edge with padding: the gap's former outer half (4%) plus the reader's side margin. The writable margin now runs to the screen edge (about 275 pt on a 12.9-inch iPad in portrait instead of 270, with no hidden strip). The closed and scrolling gaps are unchanged.
+
+#### Validation
+
+- Updated tests: `marginGap({ expanded: true })` is `0%` (`inkMargin.test.mjs`); opening the margin sets the paginator gap to `0%` (`inkMarginControl.test.mjs`).
+- 12.9-inch simulator ("Silveran XDevice 12.9 iPad" (iPad Pro 12.9-inch 6th generation, iOS 26.2, `334AF5FC-B277-4C81-A711-2F83DCF36103`) and "Silveran XDevice mini iPad" (iPad mini A17 Pro, iOS 26.2, `9ECCD23E-7579-453A-BD87-AB56604AE0E4`)), Narrow, five lines of synthetic handwriting written to the edge with `-SilveranInkDemoStroke`: every line shows a complete "testing". On the mini the same note shows whole at about 70% scale with the margin open.
+- `scripts/test`: **603 tests in 78 suites passed**. `npm test` (WebHarness): **216/216 passed**.
+- Not run: real Pencil, landscape two-page spreads, Mac.
+
+#### Compatibility and follow-up
+
+Notes written before this keep their stored coordinates. On the larger margin they draw unscaled, and ink that was previously hidden now shows. In landscape spreads the left page's margin now meets the right page's text padding with no gap between pages; check on device.
+
+### BF-076 — A note written beside repeated text vanished at once with "couldn't find its place"
+
+- Date: 2026-10-03
+- Status: Fixed (portable tests and iPad simulator pass)
+- Platforms: Shared reader (WebKit)
+- Components: `InkAnchoring` (`makeUniqueAnchor`, `MAX_CONTEXT_LENGTH`, `makeAnchor` context parameter, `anchorForBoundary`), `InkEngine.pageStartAnchor`
+- Related links: OD-041 (resolved), ADR 004 (anchor contract; addendum 2026-10-03)
+
+#### Symptom
+
+On the synthetic "Phase 5 Field Notes" book, a margin note written beside the last line of a paragraph disappeared as soon as it was saved, and the reader showed "1 annotation couldn't find its place in this edition".
+
+#### Root cause
+
+A note's anchor keeps 32 characters of quotation and 32 of context on each side. In text that repeats (here every paragraph repeats one passage apart from its number), those 96 characters occurred at every paragraph boundary. The resolver correctly refuses an ambiguous anchor rather than guess, so the note became a repair item on the device that wrote it.
+
+#### Change
+
+New notes and attachments to the current page use `makeUniqueAnchor`. It doubles the context on each side (32, 64, … up to 1024 characters) until the anchor resolves only to its own place, then stops. The quotation (`exact`) and the format are unchanged. Text repeated even more widely keeps the widest anchor and stays a repair item rather than a guess. Marks and typed highlights are unchanged.
+
+#### Validation
+
+- New `inkAnchoring.test.mjs` tests: the 32-character anchor in the fixture text is ambiguous; the widened anchor resolves exactly to its own offset with the same quotation; unique text keeps 32 characters; text repeated beyond 1024 characters stays ambiguous; `anchorForBoundary` produces unique anchors in a repeated-paragraph section.
+- 12.9-inch simulator: a note written beside "usability fixture, preserved independently of any personal book." in Passage 18 was saved with 128 characters of context (including "Passage 18"), stayed beside its line, and no repair banner appeared.
+- `scripts/test`: **603 tests in 78 suites passed**. `npm test` (WebHarness): **216/216 passed**.
+
+#### Compatibility and follow-up
+
+Older builds read longer `prefix`/`suffix` strings with the same resolver, so they place these notes too. Anchors grow only where the text repeats (at most about 2 KB). Existing ambiguous notes are not rewritten; they stay in repair.
+
+### BF-075 — After a page turn, tapping a note icon in the reader did nothing
+
+- Date: 2026-10-02
+- Status: Fixed (portable tests and iPhone simulator pass; real-device check pending)
+- Platforms: Apple (iOS reader; macOS shares the view model)
+- Components: `EbookPlayerViewModel` (`init`, new `attachInkSession`, `handleOnAppear`)
+- Related links: OD-039 (resolved), BF-074 (made in-text notes open through the same path)
+
+#### Symptom
+
+On iPhone, tapping a note icon in the gutter opened the note sheet only until the first page turn after opening the book. After any page turn, tapping an icon (a margin note, or since BF-074 a handwritten note from the text) did nothing until the reader was closed and reopened. The same silent loss would hit the reader's ink save-status banner, margin state and repair count.
+
+#### Root cause
+
+`EbookPlayerViewModel.init` set the book's shared `InkSession` callbacks (`onMarginNotesTapped`, `onPersistenceStateChanged`, `onMarginStateChanged`, `onOrphansChanged`). `InkSession` is shared per book through `ReadingSessionStore`. The reader is shown in the library's `fullScreenCover`, and SwiftUI runs `EbookPlayerView.init` again whenever the library re-renders. A page turn updates reading progress, which re-renders the library. Each re-run built a new `EbookPlayerViewModel` (the `@State` keeps the original), and its `init` re-pointed the shared callbacks at that discarded model. Taps then set `presentedMarginNote` on a model no view showed.
+
+Diagnostics confirmed it: the page found the right note, `InkSession.marginNoteTapped` ran and the callback set `presentedMarginNote`, yet no sheet appeared. UIKit showed nothing presented and no transition. Turning pages with the curl animation disabled reproduced it, so the page curl is not involved. Moving the wiring to appearance fixed it.
+
+#### Change
+
+The callbacks are now set in `attachInkSession()`, called from `handleOnAppear()`. That is the method where the model already attaches its reading-session hooks, and only the model SwiftUI shows runs it. `init` still copies the session's current save status, margin state and orphan count so the first render is correct. No callback behaviour changed.
+
+#### Validation
+
+- New `EbookPlayerInkWiringTests` "A note icon tap reaches the reader on screen after the view is rebuilt": creates a shown model, attaches it, builds a second model for the same book (as SwiftUI does), and fires a note tap. It **failed** with the wiring restored to `init` (the tap went to the discarded model) and passes with the fix.
+- `scripts/test`: **599 tests in 78 suites passed**. `npm test` (WebHarness): **209/209 passed**.
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=8D572C5E-77E1-40B1-9DFD-FB6BF647EA7B' scripts/iosbuild`: Build Succeeded.
+- Simulator, "Silveran BF-054 Margin iPhone" (iOS 18.6), synthetic long-chapter book, curl page turns: after two swipe turns the in-text note's icon opened "Handwritten notes" with the drawing, passage, View Full Drawing and Delete Note. Delete Note → Cancel, then Done, closed the sheet. After a further turn a margin note's icon opened "Margin notes". Before the fix, the same sequence opened nothing.
+- Not run: real iPhone, Mac reader, VoiceOver.
+
+#### Compatibility and follow-up
+
+None known. Other reader state set from the session in `init` was checked: these four callbacks were the only ones. `EbookPlayerView.init` still builds a throwaway model on each library re-render. That costs work but is now harmless; making the reader's model owned outside the view would avoid it.
+
+### BF-074 — Handwriting written on an iPad spilled onto the next page on iPhone
+
+- Date: 2026-10-02
+- Status: Needs validation (portable Swift and web tests pass; simulator pass recorded below; real-device check pending)
+- Platforms: Shared web renderer (Apple reader surfaces); seen on iPhone with notes written on a 13-inch iPad
+- Components: `InkLayout.js` (`fitWidth`, `sizeNote`, `noteOrigin`, ink CSS), `InkEngine.js`, `InkMarginControl.js`, `InkMargin.js`, `FoliateManager.js` (`#flowNotesAsIcons`, icon taps), `InkSession` (`hasFlowNotes`, `marginNoteTapped`), `ReaderCommsBridge+Ink.inkSetMargin`, `MarginNoteSheet`, `EbookPlayerView`
+- Related links: Owner decision row "Handwriting on narrow screens" in `docs/PENCIL_INK_IMPLEMENTATION_PLAN.md`; OD-037, OD-038
+
+#### Symptom
+
+A handwritten note ("testing") written toward the right of the text on an iPad showed on iPhone as an empty tinted box on its page, with only the start of the first letter at the box's right edge. The rest of the word appeared on the next page, at the same height, over unrelated text, with its first letters cut off in the gap between pages. A circle mark on nearby words was redrawn correctly.
+
+Reproduce: write a short note near the right side of a wide iPad column (more than about 410 pt from the column's left edge), let it sync, and open the same page on iPhone.
+
+#### Root cause
+
+A note's stroke points are stored relative to the left edge of the column it was written in. `sizeNote` sized a note in the text only to fit the page's height; nothing adapted its width. On a 410 pt phone column, ink stored 500-740 pt from the edge lay beyond the note's box, and the note's SVG was `overflow: visible`. The paginator lays chapters out as CSS columns, so anything painted past a column's right edge lands in the next column, which is the next page. The wrapping rule from 2026-10-01 correctly kept a full-width box on the narrow column, but the ink inside it was never moved.
+
+The original Pencil plan scoped out iPhone and syncing ink between devices, so a note was never shown in a column narrower than the one it was written in. Live iCloud annotation sync (ADR 010) made that routine.
+
+#### Change
+
+Per the owner's decision (2026-10-02):
+
+- **Narrow columns show handwriting as icons.** When a text column is under 480 pt (iPhone, iPad Slide Over or a narrow Split View), `InkEngine` puts handwritten notes from the text in the existing margin icon layer instead of the text: one icon beside each note's line, the same tiles collapsed margin notes use. Highlights, underlines and other marks are drawn as before. The rule (`FoliateManager.#flowNotesAsIcons`) counts columns as the paginator does (one column in portrait), so every iPad in a full-width window keeps handwriting in the text. It is never true where the wide margin is available, so the two cannot show together.
+- **A gutter for the icons.** Swift now tells the page whether the book has handwriting in the text (`inkSetMargin(hasNotes:hasFlowNotes:open:)`, `InkSession.hasFlowNotes`). `InkMarginControl` asks for the thin icon gutter only when such notes exist and the column is narrow, so iPad and Mac layouts are unchanged.
+- **Tapping an icon opens the note sheet.** `InkSession.marginNoteTapped` no longer drops notes in the text. `MarginNoteSheet` shows them with neutral titles and labels, View Full Drawing, and a new Delete Note action behind a confirmation. It deletes through `InkSession.deleteInk` as one undo step. "Edit This Note in Margin" stays limited to margin notes.
+- **Safeguard on every screen.** `fitWidth` slides a note's ink left until it fits the column and scales it down only when the ink is wider than the column. The note box is clipped sideways (`overflow-x: clip`), so ink can no longer paint onto another page. `noteOrigin` includes the slide, so writing added to a fitted note, the eraser and the lasso still map into the note's stored coordinates. Ink that already fits is not moved.
+
+Unchanged: stored strokes and anchors (all decisions are made at layout time), margin-note behaviour, wrapping beside short notes, and marks.
+
+#### Validation
+
+- New `SilveranKit/Tests/WebHarness/inkNarrowColumn.test.mjs` (8 tests): slide-to-fit keeps size; over-wide ink scales down; ink that fits is untouched; a fitted note maps page points back to stored coordinates; a narrow column moves the note from the text to an icon beside its line and back; phone vs iPad gutter; rotation switches icons and gutter. `npm test` in `SilveranKit/Tests/WebHarness`: **209/209 passed**.
+- `InkSessionModelTests`: new "The page is told when the book has handwriting in the text, for narrow-column icons"; the margin-tap test now expects in-text notes in the sheet. `InkBridgeTests.setMargin` checks `hasFlowNotes` is sent. `scripts/test`: **598 tests in 77 suites passed**.
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=8D572C5E-77E1-40B1-9DFD-FB6BF647EA7B' scripts/iosbuild`: Build Succeeded.
+- Simulator, "Silveran BF-054 Margin iPhone" (iOS 18.6), isolated clone with synthetic fixtures, long-chapter book that has an in-text note at "family gravity light iron dense" and several margin notes:
+  - The in-text note shows as a pencil icon beside its line on page 2. The text has no tinted box and nothing from it appears on the next page.
+  - Tapping a margin icon on the first page shown opens the sheet: drawing, passage, View Full Drawing and Delete Note. Delete Note asks "Delete this handwritten note?" with Delete Note and Cancel; Cancel was chosen and the fixture was not changed. Done closes the sheet.
+  - Opening the in-text note's sheet by tapping its icon, after page turns, was confirmed once BF-075 fixed icon taps after a page turn (OD-039).
+- Simulator, "Silveran BF-054 Margin iPad" (iPad, 820 x 1180 pt portrait, iOS 18.6), same build and fixture book: the in-text note ("testing") still shows in the text with the text flowing beside it, and margin icons are where they were. No gutter or layout change.
+- Not run: iPad Slide Over or narrow Split View, real iPhone/iPad with the owner's synced note, Mac, VoiceOver.
+
+#### Compatibility and follow-up
+
+No data change. A note whose ink extended past its column on an iPad (for example writing that drifted into the gap) is now fitted inside its box rather than drawn into the gap or the next page. OD-037 (wide-margin "narrow" test on an 11-inch iPad in portrait) and OD-038 (lasso `noteWidth`) were found during this work and are not changed.
+
+### BF-073 — "Another annotation operation must settle before account transition" blocked sync after start
+
+- Date: 2026-10-02
+- Status: Needs validation (portable and iPhone simulator component tests pass; signed-device check pending)
+- Platforms: Shared Kit sync core (all platforms using `AnnotationSyncEngine`); seen on the owner's iPhone and iPad
+- Components: `AnnotationSyncEngine` (`beginCall`, new `beginTransition`/`endTransition`, `setAccountContext`, `resetForNewAccount`, `suspendForRestore`)
+- Related links: BF-072 (made this frequent), BF-060
+
+#### Symptom
+
+The owner's iPhone and iPad showed "Another annotation operation must settle before account transition" on a build with the BF-072 database reset. An earlier iPad log showed the related "The iCloud account cannot be changed while annotation work is active."
+
+#### Root cause
+
+`resetForNewAccount` and `setAccountContext` refused to run if any other sync call was active (`activeCalls > 0`). At start-up, other work is routinely running: an open book's change notification triggers `reconcile`, library matching calls `rehome`, and so on. The refusal was stored in `lastFailure`, which is the engine's persistence status. That status stops `queuePending` sending and makes `AppAnnotationSync` restart the transport on foreground, so a momentary busy condition became a lasting sync failure. Each restart could hit the same race. BF-072 made this frequent, because it runs `resetForNewAccount` on every first start of the new build.
+
+#### Change
+
+Account transitions now wait instead of refusing.
+
+- `beginTransition()` waits until no sync call is active, then sets `accountTransition`. Calls started while it waits still run, because they can be nested inside a running call (`reconcileAll` calls `replayPendingOperations` and `reconcile`), so blocking them could deadlock. The hold begins only once nothing is active, with no suspension between the check and setting the flag.
+- `beginCall()` (now `async`) waits while a transition runs, rather than failing. Transitions are short local rewrites.
+- Book locks are always taken after `beginCall`, so nothing waits on a transition while holding a lock.
+- `suspendForRestore` releases held callers, which then give up as before.
+- A second transition requested while one is in progress, or a transition during restore, still returns false. That is now the only refusal.
+
+Unchanged: the account-mismatch refusal, the restore suspension semantics, and every persistence failure path.
+
+#### Validation
+
+- New `AnnotationSyncTransitionTests.resetWaitsForWork`: 25 rounds of a reset racing eight concurrent `reconcileAll`/`reconcile` calls. On the previous engine (HEAD file swapped in temporarily) it **failed**: the reset returned false and `persistenceStatus()` was set. With the fix it passes, all work completes and nothing is left failed.
+- `scripts/test`: **597 tests in 77 suites passed, three consecutive runs**.
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=2C20FA6A-BC39-4E15-9C5E-65C8A543AFF6' scripts/iosbuild`: Build Succeeded.
+- `scripts/iostest` (same destination, iOS 18.6): the first incremental run reported 264 tests and lacked the new suites (OD-019 stale inventory). After removing `.buildIosTestProject` and the component products, the clean regeneration needed the app project's `Package.resolved` (unpinned resolution chose an incompatible `hummingbird`; OD-017 procedure). The rerun, result bundle `Test-Silveran Components (iOS)-2026.10.02_18-44-55--0400.xcresult`, shows **269/269 passed**, including this test and BF-072's four (verified in the result tree).
+- Not run: signed devices.
+
+#### Compatibility and follow-up
+
+None known. Callers already treated `beginCall` as able to fail. Waiting adds at most the duration of in-flight sync work to an account transition.
+
+### BF-072 — A device that once synced with the Development iCloud database never uploaded its annotations to Production
+
+- Date: 2026-10-02
+- Status: Needs validation (portable and iPhone simulator component tests pass; signed TestFlight acceptance pending)
+- Platforms: Apple (iOS, macOS) CloudKit adapter
+- Components: new `AnnotationCloudDatabaseBinding`, `AnnotationCloudSync.start`, `AnnotationTransportCheckpoint.discard`, `AppAnnotationSync` (database identity, diagnostics finding)
+- Related links: BF-071, [ADR 010 amendment](docs/decisions/010-live-icloud-annotation-sync.md#amendment-2026-10-02-receipt-scope-and-unreadable-records), [ADR 012](docs/decisions/012-cross-device-library-identity.md)
+
+#### Symptom
+
+The owner's iPad held 191 current annotations in five books, and its Sync Diagnostics said 211 records were "in iCloud". The iPhone (build 813, healthy, no problems) had only 52 of them and "Cards from other devices: 0", so *Thinking, Fast and Slow* and the other books didn't match and nothing from the iPad appeared there. The iPad had nothing waiting to send.
+
+#### Root cause
+
+Earlier the same day, a device that started syncing from nothing on Production (the iPad mini, "Sync started for the first time") received exactly 61 annotation records. That was the whole Production zone, and it is the same set the iPhone holds. So about 150 of the iPad's annotations, and its book cards, were never in the Production database. The iPad nevertheless held CloudKit system fields for them (its "in iCloud" bookkeeping), so it never marked them to send again.
+
+Development builds (run from Xcode) and TestFlight/App Store builds use separate CloudKit databases under the same iCloud account and container. The sync state recorded only the account (`account-context.json`, the CloudKit user record name, which is the same in both environments). Sent-state, change tags, the fetch cursor and book-card bookkeeping were therefore trusted across a switch of database. The owner's iPad had run Xcode builds before TestFlight. Inferred from the evidence above; no Development database inspection was done.
+
+#### Change
+
+- `AnnotationCloudDatabaseBinding` stores which database the sync state describes (`Sync/cloudkit-database.json`: container plus `development`/`production`, derived from the existing `cloudEnvironment` detection).
+- When the stored database differs, or nothing is stored (every install from before this fix), start-up resets the state once:
+  - the existing account-change primitives (`AnnotationSyncEngine.resetForNewAccount()` with the account unchanged, and `LibraryIdentityStore.resetForNewAccount()`) clear the system fields and mark every annotation and own card/source to send;
+  - the deferred list is cleared;
+  - the saved cursor is discarded, so the whole zone is read again.
+- The marker is written last, so an interrupted reset runs again at the next start. If the marker can't be read, its file is kept, nothing is reset and sync continues as before. A failed reset also leaves sync running as before, and is retried at the next start.
+- Re-sending is safe. A record already in iCloud returns `serverRecordChanged` and is merged by the ADR 010 rules before retrying with the server's tag. Re-received records that are already applied are recognised.
+- The diagnostics finding now says plainly when no book list has arrived from other devices, instead of pointing at the file and server-address rules.
+
+Unchanged: the account guard (a different account is still refused), conflict rules, record formats, BF-071's receipt rules.
+
+#### Validation
+
+- `scripts/test`: **596 tests in 76 suites passed**.
+- `SILVERAN_DISABLE_CODE_SIGNING=1 SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=2C20FA6A-BC39-4E15-9C5E-65C8A543AFF6' scripts/iosbuild`: Build Succeeded.
+- `scripts/iostest` (same settings and destination, iOS 18.6): result bundle `Test-Silveran Components (iOS)-2026.10.02_17-45-59--0400.xcresult` shows **268/268 passed**, including the four new tests (verified in the result tree).
+- New `AnnotationCloudDatabaseBindingTests`:
+  - another database's bookkeeping is reset (pending again, cursor gone, deferred list cleared) and, after re-sending, stays unchanged;
+  - an install with no marker is reset once;
+  - an unreadable or future-format marker is kept and nothing is reset;
+  - a failed marker write reports failure and the reset runs again.
+- Not run: signed TestFlight acceptance across the owner's iPad, iPhone and iPad mini (device checklist item 64), and an iPad component run.
+
+#### Compatibility and follow-up
+
+- Every existing install performs the reset once on its first start of this build: it re-sends all its annotations and cards and re-reads the zone. Expect one larger sync per device. It's merge-safe and nothing local is deleted.
+- Running an Xcode build and a TestFlight build on the same device alternately triggers the reset at each switch. That's correct but costs a full resend each time.
+- The Development database may still hold the iPad's older copies; nothing reads them.
+
 ### BF-071 — Sync stalled on two devices: backup records counted as unreadable, sending stopped, and source cards were rejected
 
 - Date: 2026-10-02

@@ -27,18 +27,29 @@ export const ICON_SIZE = 16;
  * of any gap outside the section frame, where ink cannot be drawn (OD-022).
  */
 export const MARGIN_ROOM = 0.28;
-/** The `<html>` attribute marking an open margin; InkLayout's style narrows the text by `MARGIN_ROOM`. */
+/**
+ * The `<html>` attribute saying what the section's right margin holds: "open" (the wide margin;
+ * InkLayout's style narrows the text by `MARGIN_ROOM`) or "icons" (a gutter of note icons, which
+ * keeps the text clear of them even with the Narrow margin; OD-044). Absent otherwise.
+ */
 export const MARGIN_OPEN_ATTRIBUTE = "data-silveran-margin";
 
-/** Marks (or unmarks) a section document as showing the open wide margin. */
-export const setMarginRoom = (doc, open) => {
-  if (open) doc.documentElement.setAttribute(MARGIN_OPEN_ATTRIBUTE, "open");
+/** Marks a section document as showing the open wide margin, a gutter of icons, or neither. */
+export const setMarginRoom = (doc, open, { icons = false } = {}) => {
+  const mode = open ? "open" : icons ? "icons" : null;
+  if (mode) doc.documentElement.setAttribute(MARGIN_OPEN_ATTRIBUTE, mode);
   else doc.documentElement.removeAttribute(MARGIN_OPEN_ATTRIBUTE);
 };
 
-/** Collapsed phone gutters must fit a legible tile; scrolling needs a gutter too. */
+/**
+ * The paginator gap. The open margin has none: the paginator keeps half of any gap outside the
+ * section frame, where ink cannot be drawn, so with a gap the outermost strip of the margin cut off
+ * what people wrote up to the screen's edge (OD-042). The page instead reaches the screen's edges
+ * and the text keeps its distance from them by padding (InkLayout's style). Collapsed phone gutters
+ * must fit a legible tile; scrolling needs a gutter too.
+ */
 export const marginGap = ({ hasNotes = false, expanded = false, narrow = false, scrolling = false }) => {
-  if (expanded && !scrolling) return "8%";
+  if (expanded && !scrolling) return "0%";
   if (!hasNotes) return "0%";
   return narrow && !scrolling ? "12%" : "6%";
 };
@@ -141,11 +152,19 @@ export const tileRect = (gutter, line) => {
 };
 
 /**
+ * The smallest share of its written size a tapped margin note is shrunk to so it fits on the page
+ * (owner decision, 2026-10-03). Smaller is hard to read: the note opens in the note sheet instead.
+ */
+export const MARGIN_FOCUS_MIN_SCALE = 0.7;
+
+/**
  * Where a margin note's drawing goes: its canvas origin (stored coordinates start there), the
  * scale, and the painted ink on the page. Null when it is not drawn as handwriting: no ink, or
- * too tall for the rest of the page unless it is the focused note, which is fitted instead.
+ * too tall for the rest of the page unless it is the focused note, which is fitted instead. A
+ * focused note is not fitted below `minScale` of its written size (or below its width's scale,
+ * when the margin is narrower still): it is then not drawn either.
  */
-export const marginCanvas = (entry, { focused = false } = {}) => {
+export const marginCanvas = (entry, { focused = false, minScale = 0 } = {}) => {
   const { note, line, gutter, room } = entry;
   const width = drawingWidth(gutter.width);
   const ink = inkBounds(note.strokes);
@@ -155,6 +174,7 @@ export const marginCanvas = (entry, { focused = false } = {}) => {
   const widthScale = Math.min(1, width / (note.refWidth || width || 1));
   if (!focused && naturalHeight * widthScale > room) return null;
   const scale = focused ? Math.min(widthScale, room / naturalHeight) : widthScale;
+  if (focused && scale < Math.min(widthScale, minScale)) return null;
   const left = gutter.left + MARGIN_INSET;
   const top = line.top;
   return {
@@ -196,7 +216,7 @@ const tileCandidates = (rect, gutter) => {
 const byPassage = (a, b) => a.line.top - b.line.top ||
   (a.note.createdAt ?? 0) - (b.note.createdAt ?? 0) || a.note.id.localeCompare(b.note.id);
 
-export const layoutMarginColumn = (entries, { expanded = false, focusedId = null } = {}) => {
+export const layoutMarginColumn = (entries, { expanded = false, focusedId = null, focusMinScale = 0 } = {}) => {
   const ordered = [...entries].sort(byPassage);
   const canDraw = expanded && ordered.length > 0 && drawingWidth(ordered[0].gutter.width) >= ICON_SIZE * 2;
   const focused = canDraw ? ordered.find(e => e.note.id === focusedId) ?? null : null;
@@ -204,7 +224,7 @@ export const layoutMarginColumn = (entries, { expanded = false, focusedId = null
   let hidden = [];
   if (canDraw) {
     for (const entry of focused ? [focused, ...ordered.filter(e => e !== focused)] : ordered) {
-      const canvas = marginCanvas(entry, { focused: entry === focused });
+      const canvas = marginCanvas(entry, { focused: entry === focused, minScale: focusMinScale });
       if (canvas && !drawn.some(d => overlaps(d.canvas.ink, canvas.ink, MARGIN_CLEARANCE))) drawn.push({ entry, canvas });
       else hidden.push(entry);
     }
@@ -261,6 +281,8 @@ export class MarginLayer {
   /** [{ ids, rect }] for each tile, in section-document coordinates. */
   #tiles = [];
   #focused = null;
+  /** The smallest scale the focused note may be fitted to (`MARGIN_FOCUS_MIN_SCALE` for a tap). */
+  #focusMinScale = 0;
   #notes = [];
   #index = null;
   #options = {};
@@ -286,7 +308,8 @@ export class MarginLayer {
   }
 
   /**
-   * Draws `notes` (margin notes only) beside their lines. `expanded` draws the handwriting;
+   * Draws `notes` beside their lines: margin notes, and on a narrow column handwritten notes from
+   * the text, which always show as icons there (BF-074). `expanded` draws the handwriting;
    * otherwise an icon. Returns the ids whose words are not in this edition.
    */
   setNotes(notes, index, { expanded = false, paint = c => c } = {}) {
@@ -318,7 +341,9 @@ export class MarginLayer {
     }
     if (![...columns.values()].some(c => c.some(e => e.note.id === this.#focused))) this.#focused = null;
     for (const entries of columns.values()) {
-      const { drawn, tiles } = layoutMarginColumn(entries, { expanded: this.#options.expanded, focusedId: this.#focused });
+      const { drawn, tiles } = layoutMarginColumn(entries, {
+        expanded: this.#options.expanded, focusedId: this.#focused, focusMinScale: this.#focusMinScale,
+      });
       for (const { entry, canvas } of drawn) this.#drawNote(entry.note, canvas);
       for (const { entries: members, rect } of tiles) this.#drawIcon(members.map(e => e.note.id), rect);
     }
@@ -368,9 +393,14 @@ export class MarginLayer {
     this.#tiles.push({ ids, rect });
   }
 
-  focusNote(id) {
+  /**
+   * Shows the note `id` before the notes it would cross, fitted to the page but not below
+   * `minScale` of its written size. True if the note is here; `placement(id)` says whether it is drawn.
+   */
+  focusNote(id, { minScale = 0 } = {}) {
     if (!this.#notes.some(n => n.id === id)) return false;
     this.#focused = id;
+    this.#focusMinScale = minScale;
     this.redraw();
     return true;
   }

@@ -1,16 +1,16 @@
 import { measureTypedSection } from "./TypedHighlightPlacement.js";
 import { debugLog } from "./DebugConfig.js";
 import {
-  INK_TAG, buildTextIndex, resolveAnchor, resolveMarkOffsets, anchorForBoundary, makeAnchor, makeMarkAnchors,
+  INK_TAG, buildTextIndex, resolveAnchor, resolveMarkOffsets, anchorForBoundary, makeAnchor, makeUniqueAnchor, makeMarkAnchors,
   suggestAnchorOffset, suggestMarkOffsets, excerptAround,
 } from "./InkAnchoring.js";
 import { MarkLayer } from "./InkMarks.js";
 import { installInkAwareCFI, rangeFromCFI } from "./InkFilters.js";
-import { ensureInkStyle, placeNotes, clearNotes } from "./InkLayout.js";
-import { proposeStroke, proposeGroup, hitTestNotes, visibleWidth, pageStartOffset, toDoc } from "./InkGeometry.js";
+import { ensureInkStyle, placeNotes, clearNotes, sizeNote, noteOrigin, noteElement, insertAt, removeElement } from "./InkLayout.js";
+import { proposeStroke, proposeGroup, proposeSpace, hitTestNotes, visibleWidth, pageStartOffset, toDoc } from "./InkGeometry.js";
 import { selectInLasso, transformPoints } from "./InkSelection.js";
 import { strokeAttributes } from "./InkStrokeShape.js";
-import { MarginLayer, proposeMarginStroke, proposeMarginGroup, isMarginNote, setMarginRoom } from "./InkMargin.js";
+import { MarginLayer, proposeMarginStroke, proposeMarginGroup, isMarginNote, setMarginRoom, inkBounds } from "./InkMargin.js";
 
 /**
  * InkEngine - the page's half of Apple Pencil ink (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.1).
@@ -21,6 +21,9 @@ import { MarginLayer, proposeMarginStroke, proposeMarginGroup, isMarginNote, set
  * Swift when a section has loaded (`InkSectionReady`) and when ink could not be placed
  * (`InkOrphaned`).
  */
+/** The id of the empty space shown while it is pulled open; never saved. */
+const SPACE_PREVIEW_ID = "silveran-space-preview";
+
 export default class InkEngine {
   #view = null;
   #context = { enabled: false, background: null };
@@ -34,6 +37,13 @@ export default class InkEngine {
   #marginLayers = new WeakMap();
   /** Whether the margin is wide enough to show and write margin notes (else icons). */
   #marginExpanded = false;
+  /**
+   * Whether the column is too narrow to show handwriting in the text (iPhone, Slide Over): those
+   * notes then show as icons beside their lines, like collapsed margin notes (BF-074).
+   */
+  #flowIcons = false;
+  /** Whether the closed margin shows a gutter of note icons, which the text keeps clear of (OD-044). */
+  #iconGutter = false;
   /**
    * href -> { index, ref } for sections whose document has loaded. foliate reports a section
    * with its `load` event before it lists it in `renderer.getContents()`, and Swift answers
@@ -84,7 +94,7 @@ export default class InkEngine {
   /** A section document finished loading: draw what was last drawn, and ask Swift for its ink. */
   setupSection(index, doc) {
     ensureInkStyle(doc);
-    setMarginRoom(doc, this.#marginExpanded);
+    setMarginRoom(doc, this.#marginExpanded, { icons: this.#iconGutter });
     const href = this.#href(index);
     this.#loaded.set(href, { index, ref: new WeakRef(doc) });
     const cached = this.#sections.get(href);
@@ -105,10 +115,13 @@ export default class InkEngine {
   #draw(index, doc, section, focusId, { relayout = true } = {}) {
     const href = this.#href(index);
     const allNotes = section?.notes ?? [];
-    const notes = allNotes.filter(n => !isMarginNote(n));
-    const margins = allNotes.filter(isMarginNote);
+    const iconic = n => isMarginNote(n) || this.#flowIcons;
+    const notes = allNotes.filter(n => !iconic(n));
+    const margins = allNotes.filter(iconic);
     const marks = section?.marks ?? [];
-    const signature = JSON.stringify({ allNotes, marks, background: this.#context.background, expanded: this.#marginExpanded });
+    const signature = JSON.stringify({
+      allNotes, marks, background: this.#context.background, expanded: this.#marginExpanded, flowIcons: this.#flowIcons,
+    });
     const hasInk = doc.querySelector(INK_TAG) !== null;
     const layer = this.#markLayers.get(doc);
     if (this.#drawn.get(doc) === signature && (hasInk || !notes.length) && (layer || !marks.length)) {
@@ -165,11 +178,16 @@ export default class InkEngine {
     }
   }
 
-  /** Shows margin notes as handwriting (`expanded`) or as icons; redraws the loaded sections. */
-  setMarginExpanded(expanded) {
-    if (this.#marginExpanded === !!expanded) return;
+  /**
+   * Shows margin notes as handwriting (`expanded`) or as icons, and handwritten notes in the text
+   * as handwriting or (`flowIcons`, a narrow column) as icons; redraws the loaded sections.
+   */
+  setMarginExpanded(expanded, { flowIcons = this.#flowIcons, iconGutter = this.#iconGutter } = {}) {
+    if (this.#marginExpanded === !!expanded && this.#flowIcons === !!flowIcons && this.#iconGutter === !!iconGutter) return;
     this.#marginExpanded = !!expanded;
-    for (const { doc } of this.#contents()) setMarginRoom(doc, this.#marginExpanded);
+    this.#flowIcons = !!flowIcons;
+    this.#iconGutter = !!iconGutter;
+    for (const { doc } of this.#contents()) setMarginRoom(doc, this.#marginExpanded, { icons: this.#iconGutter });
     for (const [href, section] of this.#sections) this.render(href, section);
   }
 
@@ -177,20 +195,120 @@ export default class InkEngine {
     return this.#marginExpanded;
   }
 
-  /** Brings a margin note's line into view (after the margin opened and the text reflowed). */
-  revealMarginNote(id, href = null) {
+  get flowNotesAsIcons() {
+    return this.#flowIcons;
+  }
+
+  /**
+   * Brings a margin note's line into view (after the margin opened and the text reflowed) and shows
+   * the note, fitted to the page down to `minScale` of its written size. True when the note is
+   * drawn; false when it is not here or would be smaller than that (the caller shows the sheet).
+   */
+  revealMarginNote(id, href = null, { minScale = 0 } = {}) {
     for (const { doc, index } of this.#contents()) {
       if (href && this.#href(index) !== href) continue;
       const layer = this.#marginLayers.get(doc);
       if (!layer) continue;
-      if (!layer.focusNote(id)) continue;
+      if (!layer.focusNote(id, { minScale })) continue;
       const range = layer.rangeOf(id);
       if (range) {
         this.#view?.renderer?.scrollToAnchor?.(range);
-        return true;
+        return !!layer.placement(id);
       }
     }
     return false;
+  }
+
+  // MARK: Writing areas (ADR 015). Measured and previewed here; Swift decides and saves.
+
+  /** The boxes of the notes in the text on the page now showing, for the native handles. */
+  measureNoteAreas() {
+    const frames = [];
+    for (const { doc, index } of this.#contents()) {
+      const href = this.#href(index);
+      const notes = new Map((this.#sections.get(href)?.notes ?? []).filter(n => !isMarginNote(n)).map(n => [n.id, n]));
+      for (const el of doc.querySelectorAll(INK_TAG)) {
+        const note = notes.get(el.dataset.id);
+        const frame = note ? this.#areaFrame(doc, href, el, note) : null;
+        if (frame) frames.push(frame);
+      }
+    }
+    return frames;
+  }
+
+  /** A note's box in the web view's viewport, with what the handles need; null when off this page. */
+  #areaFrame(doc, href, el, note) {
+    const r = el.getBoundingClientRect();
+    const frame = doc.defaultView?.frameElement?.getBoundingClientRect() ?? { left: 0, top: 0 };
+    if (!(r.width > 0) || frame.left + r.right <= 0 || frame.left + r.left >= window.innerWidth) return null;
+    const origin = noteOrigin(el);
+    const full = parseFloat(el.dataset.full) || r.width;
+    const side = note.area ? (note.area.side ?? null) : (el.dataset.wrap ?? null);
+    const columnLeft = side === "right" ? r.right - full : r.left;
+    // Never taller than fits a page: a note can't break across pages (and is shrunk past 85%).
+    const pageBottom = Math.min((doc.defaultView?.innerHeight ?? window.innerHeight) - 4, r.top + window.innerHeight * 0.85);
+    const ink = inkBounds(note.strokes);
+    return {
+      href, noteID: note.id,
+      box: { left: frame.left + r.left, top: frame.top + r.top, right: frame.left + r.right, bottom: frame.top + r.bottom },
+      originX: frame.left + origin.left, scale: origin.scale,
+      columnLeft: frame.left + columnLeft, columnRight: frame.left + columnLeft + full,
+      pageBottom: frame.top + pageBottom,
+      ink: ink ?? null, side, hasArea: !!note.area,
+    };
+  }
+
+  /**
+   * Shows a note at a draft area without saving anything (null: as saved), so the text moves under
+   * the person's finger. The cached section is not changed. Returns the note's box then, or null.
+   */
+  previewNoteArea(href, id, area) {
+    const contents = this.#contentsFor(href);
+    const note = this.#sections.get(href)?.notes.find(n => n.id === id);
+    const el = contents ? [...contents.doc.querySelectorAll(INK_TAG)].find(e => e.dataset.id === id) : null;
+    if (!note || !el || isMarginNote(note)) return null;
+    sizeNote(el, area ? { ...note, area } : note, window.innerHeight);
+    this.#markLayers.get(contents.doc)?.redraw();
+    return this.#areaFrame(contents.doc, href, el, note);
+  }
+
+  /** Where empty space would open for a press at a web view point, or null. */
+  spaceTarget(x, y) {
+    const contents = this.#currentContents();
+    if (!contents) return null;
+    const { doc, index } = contents;
+    const target = proposeSpace({ doc, href: this.#href(index), point: [x, y], viewportWidth: window.innerWidth });
+    if (!target) return null;
+    const frame = doc.defaultView?.frameElement?.getBoundingClientRect() ?? { left: 0, top: 0 };
+    const pageBottom = Math.min((doc.defaultView?.innerHeight ?? window.innerHeight) - 4, target.top + window.innerHeight * 0.85);
+    return { href: target.href, anchor: target.anchor, top: frame.top + target.top, pageBottom: frame.top + pageBottom };
+  }
+
+  /** Shows empty space opening at `target` without saving it; a null target removes the preview. */
+  previewSpace(target, area) {
+    const preview = el => el.dataset.id === SPACE_PREVIEW_ID;
+    if (!target || !area) {
+      for (const { doc } of this.#contents()) {
+        const el = [...doc.querySelectorAll(INK_TAG)].find(preview);
+        if (el) { removeElement(el); this.#markLayers.get(doc)?.redraw(); }
+      }
+      return true;
+    }
+    const contents = this.#contentsFor(target.href);
+    if (!contents) return false;
+    const { doc } = contents;
+    let el = [...doc.querySelectorAll(INK_TAG)].find(preview);
+    if (!el) {
+      const index = buildTextIndex(doc.body);
+      const at = resolveAnchor(index.text, target.anchor);
+      const position = at == null ? null : index.positionAt(at);
+      if (!position) return false;
+      el = noteElement(doc, { id: SPACE_PREVIEW_ID, strokes: [] });
+      insertAt(position.node, position.offset, el);
+    }
+    sizeNote(el, { id: SPACE_PREVIEW_ID, strokes: [], area }, window.innerHeight);
+    this.#markLayers.get(doc)?.redraw();
+    return true;
   }
 
   marginIconIDsAt(doc, x, y) {
@@ -431,7 +549,7 @@ export default class InkEngine {
     if (!contents) return { section: null, anchor: null };
     const index = buildTextIndex(contents.doc.body);
     const at = pageStartOffset(contents.doc, index, window.innerWidth);
-    return { section: this.#href(contents.index), anchor: at == null ? null : makeAnchor(index.text, at) };
+    return { section: this.#href(contents.index), anchor: at == null ? null : makeUniqueAnchor(index.text, at) };
   }
 
   /**

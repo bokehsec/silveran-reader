@@ -5,6 +5,7 @@ import { debugLog } from "./DebugConfig.js";
 import BookmarkManager from "./BookmarkManager.js";
 import InkEngine from "./InkEngine.js";
 import { InkMarginControl } from "./InkMarginControl.js";
+import { MARGIN_FOCUS_MIN_SCALE } from "./InkMargin.js";
 import { runInkSelfTest } from "./InkSelfTest.js";
 import { InkTouchGuard } from "./InkTouchGuard.js";
 import { maybeRunInkDebug } from "./InkDebug.js";
@@ -27,13 +28,16 @@ const GENERIC_FONT_FAMILIES = new Set([
   "ui-rounded",
 ]);
 
-// Named families (Apple system fonts, imported fonts) are quoted and given a serif
-// fallback so a setting synced from another device still renders where the font is missing.
+const SYSTEM_DEFAULT_FONT_CSS = "serif";
+
+// Named families (Apple system fonts, imported fonts) are quoted and fall back to what
+// System Default shows, so a font synced from another device that isn't installed here
+// renders as System Default (owner decision, 2026-10-03).
 const resolveFontFamilyCSS = fontFamily => {
-  if (!fontFamily || fontFamily === "System Default") return "serif";
+  if (!fontFamily || fontFamily === "System Default") return SYSTEM_DEFAULT_FONT_CSS;
   if (GENERIC_FONT_FAMILIES.has(fontFamily)) return fontFamily;
   const escaped = fontFamily.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return `"${escaped}", serif`;
+  return `"${escaped}", ${SYSTEM_DEFAULT_FONT_CSS}`;
 };
 
 const getCSS = ({
@@ -80,6 +84,7 @@ const getCSS = ({
         }
     }
     body {
+        --silveran-side-margin: ${marginLR};
         padding-left: ${marginLR} !important;
         padding-right: ${marginLR} !important;
         ${backgroundColorCSS}
@@ -173,6 +178,8 @@ class FoliateManager {
   #isDarkMode = false;
   #marginLeftRight = 0;
   #marginTopBottom = 8;
+  /** Points at the screen's top and bottom covered by the reader's status band (from Swift). */
+  #reservedPageEdge = 0;
   #wordSpacing = 0;
   #letterSpacing = 0;
   #textAlign = "justify";
@@ -953,6 +960,9 @@ class FoliateManager {
     if (styles.marginLeftRight !== undefined && styles.marginLeftRight !== null) {
       this.#marginLeftRight = styles.marginLeftRight;
     }
+    if (Number.isFinite(styles.reservedPageEdge)) {
+      this.#reservedPageEdge = styles.reservedPageEdge;
+    }
     if (styles.marginTopBottom !== undefined && styles.marginTopBottom !== null) {
       this.#marginTopBottom = styles.marginTopBottom;
     }
@@ -1056,7 +1066,8 @@ class FoliateManager {
     this.#view.renderer.setAttribute("max-column-count", columnCount);
     debugLog("FoliateManager", `Set max-column-count to ${columnCount}`);
 
-    const marginPx = Math.round((this.#marginTopBottom / 100) * 800);
+    // Never under the reader's status band (OD-043): Narrow's 4% is less than the band's height.
+    const marginPx = Math.max(Math.round((this.#marginTopBottom / 100) * 800), this.#reservedPageEdge);
     this.#view.renderer.setAttribute("margin", `${marginPx}px`);
     debugLog("FoliateManager", `Set margin to ${marginPx}px`);
 
@@ -1083,7 +1094,7 @@ class FoliateManager {
   #inkMargin = new InkMarginControl({
     renderer: () => this.#view?.renderer ?? null,
     engine: this.#inkEngine,
-    layout: () => ({ narrow: this.#isNarrowColumn(), scrolling: this.#scrollingMode }),
+    layout: () => ({ narrow: this.#isNarrowColumn(), scrolling: this.#scrollingMode, flowIcons: this.#flowNotesAsIcons() }),
     post: report => window.webkit?.messageHandlers?.InkMarginState?.postMessage(report),
   });
 
@@ -1097,8 +1108,21 @@ class FoliateManager {
   }
 
   /**
-   * Swift: `{ hasNotes?, open? }`. Opening the margin widens the gutter so notes can be written
-   * there. Returns what the page shows, `{ expanded, available }`.
+   * A column too narrow to show handwritten notes in the text (owner decision 2026-10-02,
+   * BF-074): on iPhone and in Slide Over they show as icons beside their lines and open in a
+   * sheet. Measured like the paginator, which shows one column in portrait, so an iPad always
+   * shows handwriting. Never true where `#isNarrowColumn()` is false: the wide margin and these
+   * icons are never shown together.
+   */
+  #flowNotesAsIcons() {
+    const portrait = window.innerHeight >= window.innerWidth;
+    const columns = (this.#singleColumnMode || this.#scrollingMode || portrait) ? 1 : 2;
+    return window.innerWidth / columns < 480;
+  }
+
+  /**
+   * Swift: `{ hasNotes?, hasFlowNotes?, open? }`. Opening the margin widens the gutter so notes
+   * can be written there; a narrow column shows handwriting from the text as icons in the gutter. Returns what the page shows, `{ expanded, available }`.
    */
   inkSetMargin(jsonString) {
     return JSON.stringify(this.#inkMargin.set(JSON.parse(jsonString)));
@@ -1111,17 +1135,25 @@ class FoliateManager {
     return JSON.stringify({ shown: this.#inkEngine.revealMarginNote(id, href) });
   }
 
-  /** A tap on a margin note's icon: open the margin, or on a narrow screen show that note. */
+  /**
+   * A tap on a note's icon: open the margin, or on a narrow screen (and for handwriting from the
+   * text, which shows as an icon only there) show the note.
+   */
   #handleMarginIconTap(doc, ids) {
     const id = ids[0];
-    if (ids.length > 1 || this.#isNarrowColumn() || this.#scrollingMode) {
+    if (ids.length > 1 || this.#isNarrowColumn() || this.#scrollingMode || this.#inkEngine.flowNotesAsIcons) {
       const href = this.#inkEngine.hrefOf(doc);
       window.webkit?.messageHandlers?.InkMarginNoteTapped?.postMessage({ href, id, ids });
       return;
     }
     this.#inkMargin.set({ open: true });
-    // The text reflowed: keep the note that was tapped in view.
-    requestAnimationFrame(() => this.#inkEngine.revealMarginNote(id));
+    // The text reflowed: keep the note that was tapped in view. A note that would have to shrink
+    // below 70% of its written size to fit opens in the note sheet instead (owner decision 2026-10-03).
+    requestAnimationFrame(() => {
+      if (this.#inkEngine.revealMarginNote(id, null, { minScale: MARGIN_FOCUS_MIN_SCALE })) return;
+      const href = this.#inkEngine.hrefOf(doc);
+      window.webkit?.messageHandlers?.InkMarginNoteTapped?.postMessage({ href, id, ids });
+    });
   }
 
   #updateMaxInlineSize() {
@@ -1756,6 +1788,23 @@ class FoliateManager {
   /** The strokes a lasso path (viewport points) encloses on the current page, or null. */
   inkSelect(lassoJSON) {
     return JSON.stringify(this.#inkEngine.select(JSON.parse(lassoJSON)));
+  }
+
+  // Writing areas (ADR 015)
+  inkMeasureNoteAreas() {
+    return JSON.stringify(this.#inkEngine.measureNoteAreas());
+  }
+
+  inkPreviewNoteArea(href, noteId, areaJSON) {
+    return JSON.stringify(this.#inkEngine.previewNoteArea(href, noteId, JSON.parse(areaJSON)));
+  }
+
+  inkSpaceTarget(xJSON, yJSON) {
+    return JSON.stringify(this.#inkEngine.spaceTarget(JSON.parse(xJSON), JSON.parse(yJSON)));
+  }
+
+  inkPreviewSpace(targetJSON, areaJSON) {
+    return JSON.stringify({ shown: this.#inkEngine.previewSpace(JSON.parse(targetJSON), JSON.parse(areaJSON)) });
   }
 
   inkPreviewSelection(href, noteId, indexesJSON, transformJSON) {

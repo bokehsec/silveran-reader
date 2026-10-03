@@ -342,6 +342,9 @@ public enum InkOperation: Sendable, Equatable {
     case reanchorNote(href: String, noteID: String, anchor: TextAnchor, at: Date)
     /// Moves a mark onto new words in its section (P5.1 repair, confirmed by the person).
     case reanchorMark(href: String, markID: String, start: TextAnchor, end: TextAnchor)
+    /// Sets the writing area of a note in the text (ADR 015); nil is "Fit to Writing", back to
+    /// the box derived from its ink. A note with no strokes keeps an area: it can't fit to nothing.
+    case setNoteArea(href: String, noteID: String, area: InkNoteArea?, at: Date)
 
     public var href: String {
         switch self {
@@ -350,7 +353,7 @@ public enum InkOperation: Sendable, Equatable {
                 .transformStrokes(let href, _, _, _, _),
                 .replaceSection(let href, _), .reanchorNote(let href, _, _, _),
                 .reanchorMark(let href, _, _, _), .reclassifyMark(let href, _, _),
-                .convertMarkToNote(let href, _, _):
+                .convertMarkToNote(let href, _, _), .setNoteArea(let href, _, _, _):
                 href
         }
     }
@@ -368,6 +371,7 @@ public enum InkOperation: Sendable, Equatable {
             case .transformStrokes(_, let noteID, _, _, _): noteID
             case .addMark(_, let mark): mark.id
             case .reanchorNote(_, let noteID, _, _): noteID
+            case .setNoteArea(_, let noteID, _, _): noteID
             case .reanchorMark(_, let markID, _, _): markID
             case .reclassifyMark(_, let markID, _), .convertMarkToNote(_, let markID, _): markID
             case .erase, .deleteNote, .replaceSection: nil
@@ -379,6 +383,12 @@ public enum InkOperation: Sendable, Equatable {
         switch self {
             case .addNote(_, let note):
                 guard !section.notes.contains(where: { $0.id == note.id }) else { return false }
+                // An empty note is space opened before writing, which only an area gives (ADR 015).
+                if let area = note.area {
+                    guard area.isValid, !note.isMarginNote else { return false }
+                } else if note.strokes.isEmpty {
+                    return false
+                }
                 section.notes.append(note)
                 return true
 
@@ -436,7 +446,10 @@ public enum InkOperation: Sendable, Equatable {
                     }
                     guard removedFromNote else { continue }
                     changed = true
-                    if section.notes[noteIndex].strokes.isEmpty {
+                    // An area the person sized stays as empty space to write in (ADR 015).
+                    if section.notes[noteIndex].strokes.isEmpty,
+                        section.notes[noteIndex].area == nil
+                    {
                         section.notes.remove(at: noteIndex)
                     } else {
                         section.notes[noteIndex].updatedAt = at
@@ -489,6 +502,16 @@ public enum InkOperation: Sendable, Equatable {
                 else { return false }
                 section.notes[index].anchor = anchor
                 section.notes[index].legacyCFI = nil
+                section.notes[index].updatedAt = at
+                return true
+
+            case .setNoteArea(_, let noteID, let area, let at):
+                guard let index = section.notes.firstIndex(where: { $0.id == noteID }),
+                    !section.notes[index].isMarginNote,
+                    section.notes[index].area != area,
+                    area?.isValid ?? !section.notes[index].strokes.isEmpty
+                else { return false }
+                section.notes[index].area = area
                 section.notes[index].updatedAt = at
                 return true
 

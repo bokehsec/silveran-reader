@@ -42,6 +42,20 @@ public final class ReaderStyleManager {
         self.bridge = bridge
     }
 
+    /// Points at the top and bottom of the screen that the reader's own status band covers. The
+    /// page's top and bottom margin is never smaller, so neither text nor ink is laid out beneath
+    /// it (OD-043: with the Narrow margin a note's last line was drawn under the band).
+    private var reservedPageEdge: Double = 0
+
+    public func setReservedPageEdge(_ points: Double) {
+        let rounded = points.rounded(.up)
+        // Only grows within a reading session: the band hides while the bars show, and the page
+        // must not reflow each time they do.
+        guard rounded > reservedPageEdge else { return }
+        reservedPageEdge = rounded
+        scheduleStyleUpdate()
+    }
+
     public func setReadaloudModeAvailable(_ available: Bool) {
         guard hasAudioNarration != available else { return }
         hasAudioNarration = available
@@ -146,6 +160,7 @@ public final class ReaderStyleManager {
             readaloudHighlightMode: settingsVM.readaloudHighlightMode,
             pageTurnStyle: settingsVM.pageTurnStyle,
             animateReadaloudPageTurns: settingsVM.animatePageTurnsDuringReadaloud,
+            reservedPageEdge: reservedPageEdge,
         )
     }
 }

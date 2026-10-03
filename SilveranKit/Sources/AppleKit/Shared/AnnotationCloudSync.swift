@@ -24,6 +24,8 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
     private let deferred: SyncDeferredRecordStore
     private let appVersion: String
     private let receiver: AnnotationRecordReceiver
+    private let database: String
+    private let binding: AnnotationCloudDatabaseBinding
     private let activity: SyncActivityLog
     private let library: LibraryIdentityStore
     private let identity: LibraryIdentityService
@@ -36,6 +38,7 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
         containerIdentifier: String,
         engine: AnnotationSyncEngine,
         stateURL: URL,
+        database: String,
         appVersion: String,
         activity: SyncActivityLog,
         library: LibraryIdentityStore,
@@ -45,6 +48,7 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
         self.engine = engine
         checkpoint = AnnotationTransportCheckpoint(url: stateURL)
         deferred = SyncDeferredRecordStore(directory: stateURL.deletingLastPathComponent())
+        self.database = database
         self.appVersion = appVersion
         self.activity = activity
         self.library = library
@@ -57,11 +61,18 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
             activity: activity,
             appVersion: appVersion
         )
+        binding = AnnotationCloudDatabaseBinding(
+            url: stateURL.deletingLastPathComponent().appendingPathComponent("cloudkit-database.json"),
+            engine: engine,
+            library: library,
+            deferred: deferred,
+            checkpoint: checkpoint
+        )
     }
 
     /// Starts the engine, creating the zone on first use and queueing everything pending.
     func start() async {
-        let serialization: CKSyncEngine.State.Serialization?
+        var serialization: CKSyncEngine.State.Serialization?
         do {
             serialization = try checkpoint.load(CKSyncEngine.State.Serialization.self)
         } catch {
@@ -82,6 +93,25 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
             await activity.record(.problem, await engine.persistenceStatus() ?? "Pending annotation changes need recovery.")
             return
         }
+        var rebuilt = false
+        switch await binding.prepare(for: database) {
+            case .unchanged:
+                break
+            case .rebuilt(let previous):
+                serialization = nil
+                rebuilt = true
+                await activity.record(
+                    .lifecycle,
+                    previous == nil
+                        ? "Checking this device's annotations against iCloud once: sending them all again and reading everything in iCloud"
+                        : "This device last synced with a different iCloud database; sending all its annotations again and reading everything in this one",
+                    detail: [previous.map { "Was: \($0)" }, "Now: \(database)"].compactMap { $0 }
+                        .joined(separator: "\n")
+                )
+            case .failed(let problem):
+                // Sync as before; the check runs again at the next start.
+                await activity.record(.problem, problem)
+        }
         let configuration = CKSyncEngine.Configuration(
             database: container.privateCloudDatabase,
             stateSerialization: serialization,
@@ -95,8 +125,8 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
         }
         await activity.record(
             .lifecycle,
-            serialization == nil
-                ? "Sync started for the first time on this device" : "Sync started",
+            rebuilt || serialization != nil
+                ? "Sync started" : "Sync started for the first time on this device",
             detail: container.containerIdentifier
         )
         await engine.reconcileAll()
@@ -742,6 +772,9 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
         ckRecord["clockCounter"] = Int64(record.clock.counter) as NSNumber
         ckRecord["clockDevice"] = record.clock.device as NSString
         ckRecord["deleted"] = (record.deleted ? 1 : 0) as NSNumber
+        // Absent means level 1, which every version reads (ADR 015).
+        let level = record.featureLevel
+        ckRecord["featureLevel"] = level > 1 ? level as NSNumber : nil
         let secure = ckRecord.encryptedValues
         secure["sourceID"] = record.bookID.sourceID as NSString
         secure["bookUUID"] = record.bookID.uuid as NSString
@@ -763,6 +796,12 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
     }
 
     static func syncRecord(from ckRecord: CKRecord) -> AnnotationSyncRecord? {
+        // Written by a newer version: unreadable here, so it is kept for after an update.
+        if let level = ckRecord["featureLevel"] as? Int,
+            level > AnnotationSyncRecord.supportedFeatureLevel
+        {
+            return nil
+        }
         let secure = ckRecord.encryptedValues
         guard let sourceID = secure["sourceID"] as? String,
             let uuid = secure["bookUUID"] as? String,

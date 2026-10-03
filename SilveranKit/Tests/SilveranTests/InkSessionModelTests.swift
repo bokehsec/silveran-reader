@@ -78,11 +78,19 @@ private final class FakeEngine: InkEngineCalling {
 
     func inkPageStartAnchor() async throws -> InkPageAnchor { pageAnchor }
 
+    /// Note boxes the page reports (ADR 015).
+    var areaFrames: [InkNoteAreaFrame] = []
+    func inkMeasureNoteAreas() async throws -> [InkNoteAreaFrame] { areaFrames }
+
     var marginCalls: [(hasNotes: Bool?, open: Bool?)] = []
+    var flowNoteReports: [Bool?] = []
     /// What the page answers: by default, what was asked for.
     var marginAnswer: ((_ open: Bool?) -> InkSession.MarginState)?
-    func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws -> InkSession.MarginState {
+    func inkSetMargin(hasNotes: Bool?, hasFlowNotes: Bool?, open: Bool?) async throws
+        -> InkSession.MarginState
+    {
         marginCalls.append((hasNotes, open))
+        flowNoteReports.append(hasFlowNotes)
         return marginAnswer?(open) ?? InkSession.MarginState(expanded: open ?? false)
     }
 }
@@ -832,6 +840,24 @@ struct InkSessionModelTests {
         )
     }
 
+    @Test("The page is told when the book has handwriting in the text, for narrow-column icons")
+    func flowNotesAreReported() async throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        #expect(!session.hasFlowNotes)
+        #expect(session.apply(.addNote(href: "c1", note: note("inline"))))
+        #expect(session.hasFlowNotes)
+        #expect(!session.hasMarginNotes)
+        await session.flush()
+        #expect(engine.flowNoteReports.last == true, "a narrow column can show the note as an icon")
+        #expect(engine.marginCalls.last?.hasNotes == false, "no margin gutter is asked for on a wide column")
+        #expect(session.deleteInk(href: "c1", id: "inline"))
+        await session.flush()
+        #expect(engine.flowNoteReports.last == false)
+    }
+
     @Test("Margin notes survive saving and reopening; notes without a placement stay in the text")
     func marginNotesRoundTrip() async throws {
         let marginNote = InkNote(
@@ -885,6 +911,155 @@ struct InkSessionModelTests {
         #expect(session.marginState == .init(expanded: true, available: true))
         await session.setMarginOpen(false)
         #expect(session.marginState.expanded == false)
+    }
+
+    // MARK: Writing areas by long-press (owner decision 2026-10-03)
+
+    private func areaFrame(_ id: String, top: Double) -> InkNoteAreaFrame {
+        InkNoteAreaFrame(
+            href: "c1",
+            noteID: id,
+            box: InkSelectionBounds(left: 50, top: top, right: 300, bottom: top + 60),
+            originX: 50,
+            scale: 1,
+            columnLeft: 50,
+            columnRight: 750,
+            pageBottom: 1000,
+            side: .left
+        )
+    }
+
+    @Test("A long-pressed note shows its handles alone; others stay untouchable until picked")
+    func longPressSelectsOneNote() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        let added = session.apply([
+            .addNote(href: "c1", note: note("a")),
+            .addNote(href: "c1", note: note("b")),
+        ])
+        #expect(added)
+        engine.areaFrames = [areaFrame("a", top: 100), areaFrame("b", top: 400)]
+        await session.refreshAreaFrames()
+        let hit = session.areaFrame(at: (x: 120, y: 130))
+        #expect(hit?.noteID == "a")
+        #expect(session.areaFrame(at: (x: 600, y: 130)) == nil, "beside the box is text")
+        #expect(!session.showsAreaHandles)
+        #expect(session.selectArea(hit!))
+        #expect(session.showsAreaHandles && session.selectedAreaNoteID == "a")
+        #expect(!session.beginResize(areaFrame("b", top: 400), handle: .bottom))
+        #expect(session.beginResize(hit!, handle: .bottom))
+        await session.cancelAreaDraft()
+        session.deselectArea()
+        #expect(!session.showsAreaHandles)
+    }
+
+    @Test("Turning the page puts down a picked note that is no longer showing")
+    func pageTurnDeselects() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        #expect(session.apply(.addNote(href: "c1", note: note("a"))))
+        engine.areaFrames = [areaFrame("a", top: 100)]
+        await session.refreshAreaFrames()
+        #expect(session.selectArea(session.areaFrames[0]))
+        engine.areaFrames = []
+        await session.refreshAreaFrames()
+        #expect(session.selectedAreaNoteID == nil)
+    }
+
+    // MARK: Remembered margin (owner decision 2026-10-03)
+
+    private final class MemoryBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var open: Set<String> = []
+        func contains(_ book: BookID) -> Bool { lock.withLock { open.contains(book.description) } }
+        func set(_ book: BookID, _ value: Bool) {
+            lock.withLock {
+                if value {
+                    open.insert(book.description)
+                } else {
+                    open.remove(book.description)
+                }
+            }
+        }
+        var memory: MarginOpenMemory {
+            MarginOpenMemory(isOpen: { self.contains($0) }, setOpen: { self.set($0, $1) })
+        }
+    }
+
+    private func settle(_ condition: () -> Bool) async -> Bool {
+        for _ in 0..<500 {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        return condition()
+    }
+
+    private func rememberingSession(_ box: MemoryBox, directory: URL) -> InkSession {
+        InkSession(store: InkActor(directory: directory), now: { stamp }, marginMemory: box.memory)
+    }
+
+    private func openRemembering(
+        _ box: MemoryBox,
+        directory: URL,
+        engine: FakeEngine
+    ) async -> InkSession {
+        let session = rememberingSession(box, directory: directory)
+        session.engine = engine
+        await session.open(bookID: bookID)
+        return session
+    }
+
+    @Test("A book whose margin was left open reopens with it open")
+    func rememberedMarginReopens() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let box = MemoryBox()
+        box.set(bookID, true)
+        let engine = FakeEngine()
+        let session = await openRemembering(box, directory: directory, engine: engine)
+        #expect(await settle { session.marginState.expanded })
+        #expect(engine.marginCalls.first?.open == true, "the first margin command reopens it")
+    }
+
+    @Test("The page's reports before the book's first margin command are not remembered")
+    func earlyReportsAreNotChoices() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let box = MemoryBox()
+        box.set(bookID, true)
+        let session = rememberingSession(box, directory: directory)
+        // The page lays out (closed) before the session has told it anything.
+        session.setMarginState(.init(expanded: false, available: true))
+        #expect(box.contains(bookID))
+        let engine = FakeEngine()
+        session.engine = engine
+        await session.open(bookID: bookID)
+        #expect(await settle { session.marginState.expanded })
+    }
+
+    @Test(
+        "Closing or opening the margin is remembered for the book; an unavailable margin keeps the choice"
+    )
+    func marginChoiceRemembered() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let box = MemoryBox()
+        let engine = FakeEngine()
+        let session = await openRemembering(box, directory: directory, engine: engine)
+        #expect(await settle { !engine.marginCalls.isEmpty })
+        #expect(engine.marginCalls.first?.open == nil, "a book never left open opens closed")
+        await session.setMarginOpen(true)
+        #expect(box.contains(bookID))
+        // Rotated to a column too narrow to write beside: the person's choice stays.
+        session.setMarginState(.init(expanded: false, available: false))
+        #expect(box.contains(bookID))
+        await session.setMarginOpen(false)
+        #expect(!box.contains(bookID))
+        #expect(!box.contains(BookID(sourceID: "source-2", uuid: "book-1")))
     }
 
     // MARK: Migration
@@ -1308,7 +1483,7 @@ struct InkSessionModelTests {
             noteID: "b",
             noteIDs: ["b", "missing", "inline", "a", "b"]
         )
-        #expect(selected == ["b", "a"])
+        #expect(selected == ["b", "inline", "a"], "handwriting from the text shows as an icon on a narrow column")
         #expect(!(await session.focusMarginNote(href: "c1", noteID: "inline")))
         #expect(!(await session.focusMarginNote(href: "other-chapter", noteID: "a")))
         let before = session.ink

@@ -154,6 +154,11 @@ public final class ReaderMessageRouter {
                         }
 
                     case "InkDebugMargin":
+                        // `{ space: true }` turns on the Space tool (ADR 015) instead.
+                        if (body as? [String: Any])?["space"] as? Bool == true {
+                            Task { @SilveranUIActor in bridge.inkSession.isArrangingSpace = true }
+                            break
+                        }
                         let open = (body as? [String: Any])?["open"] as? Bool ?? true
                         Task { @SilveranUIActor in await bridge.inkSession.setMarginOpen(open) }
 

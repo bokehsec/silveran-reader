@@ -27,10 +27,32 @@ public protocol InkEngineCalling: AnyObject {
     func inkSuggestRepairs(href: String, ids: [String]) async throws -> [InkRepairAnswer]
     /// The first word on the page now showing.
     func inkPageStartAnchor() async throws -> InkPageAnchor
-    /// Margin notes: whether the book has any (a thin gutter for their icons), and whether the
-    /// person has opened the wide margin. Nil leaves a value as it is. Returns what the page then
-    /// shows, which can differ from the request (a narrow column, a failure partway).
-    func inkSetMargin(hasNotes: Bool?, open: Bool?) async throws -> InkSession.MarginState
+    /// Margin notes: whether the book has any (a thin gutter for their icons), whether it has
+    /// handwritten notes in the text (a narrow column shows those as icons in that gutter,
+    /// BF-074), and whether the person has opened the wide margin. Nil leaves a value as it is.
+    /// Returns what the page then shows, which can differ from the request (a narrow column, a
+    /// failure partway).
+    func inkSetMargin(hasNotes: Bool?, hasFlowNotes: Bool?, open: Bool?) async throws
+        -> InkSession.MarginState
+    /// Writing areas (ADR 015): the boxes of the notes in the text on the page now showing.
+    func inkMeasureNoteAreas() async throws -> [InkNoteAreaFrame]
+    /// Shows a note at a draft area without saving anything (nil: as saved); returns its box then.
+    func inkPreviewNoteArea(href: String, noteID: String, area: InkNoteArea?) async throws
+        -> InkNoteAreaFrame?
+    /// Where space would open for a press at a viewport point, or nil (not between lines of text).
+    func inkSpaceTarget(x: Double, y: Double) async throws -> InkSpaceTarget?
+    /// Shows empty space opening at a target without saving it; nil ends the preview.
+    func inkPreviewSpace(target: InkSpaceTarget?, area: InkNoteArea?) async throws
+}
+
+/// Writing areas came later; an engine without them (an older page) measures nothing.
+extension InkEngineCalling {
+    public func inkMeasureNoteAreas() async throws -> [InkNoteAreaFrame] { [] }
+    public func inkPreviewNoteArea(href: String, noteID: String, area: InkNoteArea?) async throws
+        -> InkNoteAreaFrame?
+    { nil }
+    public func inkSpaceTarget(x: Double, y: Double) async throws -> InkSpaceTarget? { nil }
+    public func inkPreviewSpace(target: InkSpaceTarget?, area: InkNoteArea?) async throws {}
 }
 
 /// Apple Pencil ink for one open book (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.1).
@@ -111,6 +133,11 @@ public final class InkSession {
             if engine == nil { readySections.removeAll() }
             migrating.removeAll()
             reportedMarginNotes = nil
+            marginMemoryArmed = false
+            // Geometry measured on the old page means nothing on a new one.
+            areaDraft = nil
+            areaFrames = []
+            selectedAreaNoteID = nil
         }
     }
     private var rendererGeneration: UInt64 = 0
@@ -192,11 +219,13 @@ public final class InkSession {
         store: InkActor = .shared,
         makeID: @escaping () -> String = { UUID().uuidString },
         now: @escaping () -> Date = { Date() },
+        marginMemory: MarginOpenMemory = .none,
     ) {
         self.releaseDelay = releaseDelay
         self.store = store
         self.makeID = makeID
         self.now = now
+        self.marginMemory = marginMemory
     }
 
     deinit {
@@ -237,6 +266,7 @@ public final class InkSession {
         isOpen = true
         onUndoStateChanged?()
         reportedMarginNotes = nil
+        marginMemoryArmed = false
         reportMarginNotes()
         for href in readySections.sorted() { await prepare(href: href) }
     }
@@ -469,6 +499,8 @@ public final class InkSession {
             } catch {
                 debugLog("[InkSession] Drawing \(href) failed: \(error)")
             }
+            // Notes moved or changed: keep their boxes current for a long-press (ADR 015).
+            await self.refreshAreaFrames()
         }
     }
 
@@ -564,18 +596,40 @@ public final class InkSession {
 
     public private(set) var marginState = MarginState()
     public var onMarginStateChanged: (() -> Void)?
-    /// A margin note icon was tapped where the margin can't open (narrow screen): show it.
+    /// A note icon was tapped where the margin can't open (narrow screen): show it. On a narrow
+    /// column handwritten notes from the text show as icons too (BF-074).
     public var onMarginNotesTapped: ((_ href: String, _ noteIDs: [String]) -> Void)?
     public var onMarginNoteTapped: ((_ href: String, _ noteID: String) -> Void)?
-    private var reportedMarginNotes: Bool?
+    private var reportedMarginNotes: NotesPresence?
+    /// Whether each book's margin was left open, on this device (owner decision, 2026-10-03).
+    private let marginMemory: MarginOpenMemory
+    /// False until the page has answered this book's first margin command, which reopens a
+    /// margin left open. The page's earlier reports (closed, before that command) are not the
+    /// person's choice and are not remembered.
+    private var marginMemoryArmed = false
+
+    /// Which kinds of handwritten note the book has, as the page is told.
+    private struct NotesPresence: Equatable {
+        var margin: Bool
+        var flow: Bool
+    }
 
     /// True when some note in the book is a margin note.
     public var hasMarginNotes: Bool {
         ink.sections.values.contains { $0.notes.contains(where: \.isMarginNote) }
     }
 
+    /// True when some note in the book is handwriting in the text (not in the margin).
+    public var hasFlowNotes: Bool {
+        ink.sections.values.contains { $0.notes.contains(where: { !$0.isMarginNote }) }
+    }
+
     /// The page reports the margin's state.
     public func setMarginState(_ state: MarginState) {
+        // Where the margin can't open here (narrow column, scrolling) the person's choice is kept.
+        if marginMemoryArmed, state.available, let bookID {
+            marginMemory.setOpen(bookID, state.expanded)
+        }
         guard state != marginState else { return }
         marginState = state
         onMarginStateChanged?()
@@ -589,7 +643,11 @@ public final class InkSession {
         guard let engine else { return }
         let generation = rendererGeneration
         do {
-            let state = try await engine.inkSetMargin(hasNotes: hasMarginNotes, open: open)
+            let state = try await engine.inkSetMargin(
+                hasNotes: hasMarginNotes,
+                hasFlowNotes: hasFlowNotes,
+                open: open
+            )
             guard generation == rendererGeneration else { return }
             setMarginState(state)
         } catch {
@@ -597,24 +655,32 @@ public final class InkSession {
         }
     }
 
-    /// Tells the page whether the book has margin notes, when that changes.
+    /// Tells the page whether the book has margin notes and notes in the text, when that changes.
+    /// The first time for a book (or a new page), it also reopens a margin left open in this book.
     private func reportMarginNotes() {
-        let has = hasMarginNotes
+        let has = NotesPresence(margin: hasMarginNotes, flow: hasFlowNotes)
         guard has != reportedMarginNotes, let engine else { return }
         reportedMarginNotes = has
+        let restore = !marginMemoryArmed && bookID.map(marginMemory.isOpen) == true
         let generation = rendererGeneration
         Task { [weak self] in
             guard let self, generation == self.rendererGeneration else { return }
-            guard let state = try? await engine.inkSetMargin(hasNotes: has, open: nil),
+            guard
+                let state = try? await engine.inkSetMargin(
+                    hasNotes: has.margin,
+                    hasFlowNotes: has.flow,
+                    open: restore ? true : nil
+                ),
                 generation == self.rendererGeneration
             else { return }
+            self.marginMemoryArmed = true
             self.setMarginState(state)
         }
     }
 
     public func marginNoteTapped(href: String, noteID: String, noteIDs: [String]? = nil) {
         if let onMarginNotesTapped {
-            let available = Set(section(href).notes.filter(\.isMarginNote).map(\.id))
+            let available = Set(section(href).notes.map(\.id))
             var seen = Set<String>()
             let ids = (noteIDs ?? [noteID]).filter {
                 available.contains($0) && seen.insert($0).inserted
@@ -637,6 +703,239 @@ public final class InkSession {
             return shown && renderer == rendererGeneration && canEdit
                 && section(href).notes.first(where: { $0.id == noteID }) == note
         } catch { return false }
+    }
+
+    // MARK: - Writing areas (ADR 015)
+
+    /// The Space tool: every note in the text shows its writing area with handles, and pressing
+    /// between lines opens empty space. Writing, erasing and lasso selection are off meanwhile.
+    public var isArrangingSpace = false {
+        didSet {
+            guard isArrangingSpace != oldValue else { return }
+            if isArrangingSpace {
+                isSelectingInk = false
+                selectedAreaNoteID = nil
+                Task { await self.refreshAreaFrames() }
+            } else {
+                endAreaDraft()
+            }
+            onAreasChanged?()
+        }
+    }
+    /// A note picked by a long-press (owner decision 2026-10-03): only it shows its handles, with
+    /// no tool needed. Writing stays on, so the person can resize and keep writing.
+    public private(set) var selectedAreaNoteID: String?
+    /// Whether any writing-area handles are showing.
+    public var showsAreaHandles: Bool { isArrangingSpace || selectedAreaNoteID != nil }
+    /// The boxes of the notes in the text on the page now showing. Kept current after every
+    /// redraw and page turn, so a long-press can be checked at once against them.
+    public private(set) var areaFrames: [InkNoteAreaFrame] = []
+    /// An area being resized or space being opened, before release.
+    public private(set) var areaDraft: InkAreaDraft?
+    public var onAreasChanged: (() -> Void)?
+    private var areaGeneration: UInt64 = 0
+
+    /// The note box at a web view point, for a long-press.
+    public func areaFrame(at point: (x: Double, y: Double)) -> InkNoteAreaFrame? {
+        areaFrames.first {
+            point.x >= $0.box.left && point.x <= $0.box.right
+                && point.y >= $0.box.top && point.y <= $0.box.bottom
+        }
+    }
+
+    /// Picks a note's box (long-press): its handles show until it is put down.
+    @discardableResult
+    public func selectArea(_ frame: InkNoteAreaFrame) -> Bool {
+        guard canEdit, !isWriting, areaFrames.contains(frame) else { return false }
+        isSelectingInk = false
+        selectedAreaNoteID = frame.noteID
+        onAreasChanged?()
+        return true
+    }
+
+    /// Puts down the picked note (Done, a tap elsewhere, a page turn).
+    public func deselectArea() {
+        guard selectedAreaNoteID != nil else { return }
+        selectedAreaNoteID = nil
+        if !isArrangingSpace { endAreaDraft() }
+        onAreasChanged?()
+    }
+
+    /// Whether a note's handles may be used now.
+    private func canResize(_ noteID: String) -> Bool {
+        isArrangingSpace || selectedAreaNoteID == noteID
+    }
+
+    private func endAreaDraft() {
+        let draft = areaDraft
+        areaDraft = nil
+        Task { await self.endAreaPreview(draft) }
+    }
+
+    /// Measures the page's notes again (after a page turn, a redraw or a layout change).
+    public func refreshAreaFrames() async {
+        guard let engine else { return }
+        areaGeneration += 1
+        let generation = areaGeneration
+        let renderer = rendererGeneration
+        let frames = (try? await engine.inkMeasureNoteAreas()) ?? []
+        guard generation == areaGeneration, renderer == rendererGeneration else { return }
+        // Only notes the model knows, and only notes in the text (margins have no area).
+        areaFrames = frames.filter { frame in
+            frame.isValid
+                && section(frame.href).notes.contains { $0.id == frame.noteID && !$0.isMarginNote }
+        }
+        // A picked note that left the page (a page turn) is put down.
+        if let picked = selectedAreaNoteID, !areaFrames.contains(where: { $0.noteID == picked }),
+            areaDraft == nil
+        {
+            selectedAreaNoteID = nil
+        }
+        onAreasChanged?()
+    }
+
+    /// Starts resizing a note's area from one of its handles.
+    @discardableResult
+    public func beginResize(_ frame: InkNoteAreaFrame, handle: InkNoteAreaHandle) -> Bool {
+        guard canEdit, canResize(frame.noteID), !isWriting, frame.handles.contains(handle),
+            let note = section(frame.href).notes.first(where: { $0.id == frame.noteID }),
+            !note.isMarginNote
+        else { return false }
+        let start = frame.area(
+            left: frame.box.left,
+            right: frame.box.right,
+            bottom: frame.box.bottom
+        )
+        debugLog("[InkSession] Area resize began: \(handle.rawValue) on \(frame.noteID)")
+        areaDraft = .resize(frame: frame, handle: handle, area: start, original: note)
+        onAreasChanged?()
+        return true
+    }
+
+    /// Moves the dragged handle to a viewport point; the page shows the result, nothing is saved.
+    public func previewResize(to point: (x: Double, y: Double)) async {
+        guard case .resize(let frame, let handle, _, let original) = areaDraft, let engine else {
+            return
+        }
+        let area = frame.area(dragging: handle, to: point)
+        areaDraft = .resize(frame: frame, handle: handle, area: area, original: original)
+        onAreasChanged?()
+        let renderer = rendererGeneration
+        _ = try? await engine.inkPreviewNoteArea(href: frame.href, noteID: frame.noteID, area: area)
+        guard renderer == rendererGeneration else {
+            areaDraft = nil
+            return
+        }
+    }
+
+    /// Starts opening empty space for a press at a viewport point. False when the press is not
+    /// between lines of text on this page.
+    @discardableResult
+    public func beginInsert(at point: (x: Double, y: Double)) async -> Bool {
+        guard canEdit, isArrangingSpace, !isWriting, let engine else { return false }
+        let renderer = rendererGeneration
+        guard let target = try? await engine.inkSpaceTarget(x: point.x, y: point.y),
+            renderer == rendererGeneration, isArrangingSpace
+        else { return false }
+        let area = target.area(to: target.top)
+        areaDraft = .insert(target: target, area: area)
+        onAreasChanged?()
+        try? await engine.inkPreviewSpace(target: target, area: area)
+        return true
+    }
+
+    /// Pulls the space being opened down to a viewport y.
+    public func previewInsert(to y: Double) async {
+        guard case .insert(let target, _) = areaDraft, let engine else { return }
+        let area = target.area(to: y)
+        areaDraft = .insert(target: target, area: area)
+        onAreasChanged?()
+        try? await engine.inkPreviewSpace(target: target, area: area)
+    }
+
+    /// Saves the draft as one undo step. False (and the page restored) when the note changed
+    /// meanwhile or nothing would change.
+    @discardableResult
+    public func commitAreaDraft() async -> Bool {
+        guard let draft = areaDraft else { return false }
+        areaDraft = nil
+        var applied = false
+        switch draft {
+            case .resize(let frame, _, let area, let original):
+                if section(frame.href).notes.first(where: { $0.id == frame.noteID }) == original {
+                    applied = apply(
+                        .setNoteArea(href: frame.href, noteID: frame.noteID, area: area, at: now())
+                    )
+                }
+            case .insert(let target, let area):
+                let date = now()
+                let note = InkNote(
+                    id: makeID(),
+                    anchor: target.anchor,
+                    strokes: [],
+                    createdAt: date,
+                    area: area
+                )
+                applied = apply(.addNote(href: target.href, note: note))
+        }
+        // Kind and size only: anchors carry the book's words, which logs must not.
+        debugLog(
+            "[InkSession] Area draft \(applied ? "saved" : "not saved"): \(draft.logDescription)"
+        )
+        if !applied { await endAreaPreview(draft) }
+        await refreshAreaFrames()
+        return applied
+    }
+
+    /// Drops the draft and shows the saved ink again.
+    public func cancelAreaDraft() async {
+        let draft = areaDraft
+        if draft != nil { debugLog("[InkSession] Area draft cancelled") }
+        areaDraft = nil
+        onAreasChanged?()
+        await endAreaPreview(draft)
+    }
+
+    /// Grows or shrinks an area on its free edges in one undoable step (the accessible
+    /// alternative to dragging a handle).
+    @discardableResult
+    public func resizeArea(_ frame: InkNoteAreaFrame, growingWidth dw: Double, height dh: Double)
+        async -> Bool
+    {
+        guard canEdit, canResize(frame.noteID), areaDraft == nil else { return false }
+        let applied = apply(
+            .setNoteArea(
+                href: frame.href,
+                noteID: frame.noteID,
+                area: frame.area(growingWidth: dw, height: dh),
+                at: now()
+            )
+        )
+        await refreshAreaFrames()
+        return applied
+    }
+
+    /// "Fit to Writing": back to the box the ink gives. Empty space can't be fitted.
+    @discardableResult
+    public func fitAreaToWriting(href: String, noteID: String) async -> Bool {
+        guard canEdit else { return false }
+        let applied = apply(.setNoteArea(href: href, noteID: noteID, area: nil, at: now()))
+        await refreshAreaFrames()
+        return applied
+    }
+
+    private func endAreaPreview(_ draft: InkAreaDraft?) async {
+        guard let draft, let engine else { return }
+        switch draft {
+            case .resize(let frame, _, _, _):
+                _ = try? await engine.inkPreviewNoteArea(
+                    href: frame.href,
+                    noteID: frame.noteID,
+                    area: nil
+                )
+            case .insert:
+                try? await engine.inkPreviewSpace(target: nil, area: nil)
+        }
     }
 
     // MARK: - Repairing ink that lost its words (P5.1)
@@ -728,7 +1027,12 @@ public final class InkSession {
     public var isSelectingInk = false {
         didSet {
             guard isSelectingInk != oldValue else { return }
-            if !isSelectingInk { cancelSelection() }
+            if !isSelectingInk {
+                cancelSelection()
+            } else {
+                isArrangingSpace = false
+                deselectArea()
+            }
             onSelectionModeChanged?()
         }
     }
