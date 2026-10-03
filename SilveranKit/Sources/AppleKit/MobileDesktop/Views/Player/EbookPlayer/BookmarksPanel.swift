@@ -9,9 +9,16 @@ struct BookmarksPanel: View {
     let onDelete: (Highlight) -> Void
     let onAddBookmark: () -> Void
     let highlightColorResolver: (HighlightColor?) -> Color
+    /// Earlier Pencil highlights still kept as handwriting, which can be converted (ADR 019).
+    let pencilHighlightCount: Int
+    /// Converts them; returns what happened, to show.
+    let onConvertPencilHighlights: (() async -> String)?
 
     @State private var selectedTab: Tab = .bookmarks
     @State private var selectedHighlight: Highlight?
+    @State private var confirmingConversion = false
+    @State private var isConverting = false
+    @State private var conversionResult: String?
 
     init(
         bookmarks: [Highlight],
@@ -22,7 +29,11 @@ struct BookmarksPanel: View {
         onAddBookmark: @escaping () -> Void,
         highlightColorResolver: @escaping (HighlightColor?) -> Color,
         initialTab: Tab = .bookmarks,
+        pencilHighlightCount: Int = 0,
+        onConvertPencilHighlights: (() async -> String)? = nil,
     ) {
+        self.pencilHighlightCount = pencilHighlightCount
+        self.onConvertPencilHighlights = onConvertPencilHighlights
         self.bookmarks = bookmarks
         self.highlights = highlights
         self.onNavigate = onNavigate
@@ -37,16 +48,73 @@ struct BookmarksPanel: View {
         case highlights = "Highlights"
     }
 
-    /// Pencil highlighter marks are handwriting, not typed highlights (owner, 2026-10-01), so the
-    /// list says where they are on the iPad, where the Pencil writes.
+    /// The Pencil highlighter makes highlights too (ADR 019); said on the iPad, where it writes.
     private static var pencilHighlightsNote: String? {
         #if os(iOS)
         UIDevice.current.userInterfaceIdiom == .pad
-            ? "Highlights drawn with Apple Pencil are kept with your handwriting. Find them in Annotations, under Handwritten Marks."
+            ? "You can also sweep the Apple Pencil highlighter over words."
             : nil
         #else
         nil
         #endif
+    }
+
+    private var showsConversion: Bool {
+        onConvertPencilHighlights != nil && (pencilHighlightCount > 0 || conversionResult != nil)
+    }
+
+    /// Earlier Pencil highlights are kept as handwriting until the person converts them (ADR 019).
+    @ViewBuilder
+    private var conversionSection: some View {
+        Section {
+            if pencilHighlightCount > 0 {
+                Text(
+                    pencilHighlightCount == 1
+                        ? "1 highlight drawn earlier with Apple Pencil is kept as handwriting. Convert it to change its colour, add a note and list it here."
+                        : "\(pencilHighlightCount) highlights drawn earlier with Apple Pencil are kept as handwriting. Convert them to change their colour, add notes and list them here."
+                )
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                Button {
+                    confirmingConversion = true
+                } label: {
+                    if isConverting {
+                        HStack {
+                            ProgressView()
+                            Text("Converting…")
+                        }
+                    } else {
+                        Label("Convert Pencil Highlights", systemImage: "highlighter")
+                    }
+                }
+                .disabled(isConverting)
+            }
+            if let conversionResult {
+                Text(conversionResult)
+                    .font(.subheadline)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+        }
+        .confirmationDialog(
+            pencilHighlightCount == 1
+                ? "Convert 1 Pencil Highlight?" : "Convert \(pencilHighlightCount) Pencil Highlights?",
+            isPresented: $confirmingConversion,
+            titleVisibility: .visible
+        ) {
+            Button("Convert") {
+                guard let onConvertPencilHighlights else { return }
+                isConverting = true
+                Task {
+                    conversionResult = await onConvertPencilHighlights()
+                    isConverting = false
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "They will look and work like your other highlights. Any whose words can't be found exactly stay as handwriting."
+            )
+        }
     }
 
     private var emptyStateDescription: String {
@@ -199,7 +267,7 @@ struct BookmarksPanel: View {
 
     @ViewBuilder
     private var highlightsContent: some View {
-        if highlights.isEmpty {
+        if highlights.isEmpty, !showsConversion {
             VStack {
                 ContentUnavailableView(
                     "No Highlights",
@@ -210,6 +278,7 @@ struct BookmarksPanel: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List {
+                if showsConversion { conversionSection }
                 Section {
                     ForEach(highlights) { highlight in
                         HighlightRow(

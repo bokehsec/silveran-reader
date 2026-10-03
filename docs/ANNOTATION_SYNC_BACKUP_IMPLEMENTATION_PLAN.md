@@ -235,6 +235,13 @@ Scope notes for the implemented phases: reading positions, status and ratings fo
 
 ## Implementation progress
 
+### 2026-10-03 — Pencil highlights are typed highlights (ADR 019, BF-091)
+
+- Owner decisions recorded in the [Pencil plan](PENCIL_INK_IMPLEMENTATION_PLAN.md#product-decisions-settled): one kind of highlight, tap opens the bar, Pencil undo and eraser cover highlights, highlighter limited to highlight colours, explicit Convert for earlier Pencil highlights.
+- Code implemented: sweep measurement and highlight hand-off, session undo spanning ink and highlights, eraser, tap and Select-tool tap to open the bar, colour limits, Convert in the Highlights list.
+- Automated verification: web harness 236/236; `swift test` 661 tests/85 suites; iOS simulator build succeeded.
+- Simulator usability acceptance: **pending** (QA iPad install hung under host load, OD-051). Real-device Pencil and signed-cloud acceptance: pending.
+
 ### 2026-10-03 — Energy diagnostics handoff (planning only)
 
 - Added [ED-0–ED-6](ENERGY_DIAGNOSTICS_IMPLEMENTATION_PLAN.md) for daily device metrics, feature attribution, bounded private local reports, explicit export and offline developer comparisons, with automatic submission deferred to a separately provisioned stage.

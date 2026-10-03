@@ -99,7 +99,10 @@ struct EbookPlayerToolbar: ToolbarContent {
                         return Color(hex: hex) ?? color.color
                     },
                     initialTab: viewModel.bookmarksPanelInitialTab,
+                    pencilHighlightCount: viewModel.pencilHighlightMarkCount,
+                    onConvertPencilHighlights: { await viewModel.convertPencilHighlights() },
                 )
+                .onAppear { viewModel.refreshPencilHighlightCount() }
             }
         }
         ToolbarItem(id: "search-toggle") {

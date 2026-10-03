@@ -65,6 +65,9 @@ public struct InkProposal: Codable, Sendable, Hashable {
     public var start: TextAnchor?
     public var end: TextAnchor?
     public var geometry: InkMarkGeometry?
+    /// For a highlighter `mark` over words: those words measured as a selection, so the sweep is
+    /// stored as a typed highlight (ADR 019). Nil when the page couldn't measure them.
+    public var highlight: TextSelectionMessage?
     public var reason: String?
 
     public init(
@@ -81,7 +84,9 @@ public struct InkProposal: Codable, Sendable, Hashable {
         placement: InkNotePlacement? = nil,
         refWidth: Double? = nil,
         strokes: [InkStroke]? = nil,
+        highlight: TextSelectionMessage? = nil,
     ) {
+        self.highlight = highlight
         self.strokes = strokes
         self.placement = placement
         self.refWidth = refWidth
@@ -119,14 +124,53 @@ public struct InkHit: Codable, Sendable, Hashable {
     public var section: String?
     public var markIds: [String]
     public var strokes: [InkStrokeRef]
+    /// Typed highlights the path touched (ADR 019); the eraser removes those too.
+    public var highlightIds: [String]
 
-    public init(section: String? = nil, markIds: [String] = [], strokes: [InkStrokeRef] = []) {
+    public init(
+        section: String? = nil,
+        markIds: [String] = [],
+        strokes: [InkStrokeRef] = [],
+        highlightIds: [String] = []
+    ) {
         self.section = section
         self.markIds = markIds
         self.strokes = strokes
+        self.highlightIds = highlightIds
     }
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        section = try container.decodeIfPresent(String.self, forKey: .section)
+        markIds = try container.decodeIfPresent([String].self, forKey: .markIds) ?? []
+        strokes = try container.decodeIfPresent([InkStrokeRef].self, forKey: .strokes) ?? []
+        highlightIds = try container.decodeIfPresent([String].self, forKey: .highlightIds) ?? []
+    }
+
+    /// Nothing of the book's ink was touched (highlights aside).
     public var isEmpty: Bool { markIds.isEmpty && strokes.isEmpty }
+}
+
+/// An earlier Pencil highlight (an ink mark of kind `highlight`) measured as a typed highlight
+/// for an explicit conversion (ADR 019): `highlight` is set, or `reason` says why it stays ink.
+public struct InkHighlightMarkMeasurement: Codable, Sendable, Hashable {
+    public var id: String
+    public var highlight: TextSelectionMessage?
+    /// Measured in the section on screen (not a parsed copy of it).
+    public var onScreen: Bool?
+    public var reason: String?
+
+    public init(
+        id: String,
+        highlight: TextSelectionMessage? = nil,
+        onScreen: Bool? = nil,
+        reason: String? = nil
+    ) {
+        self.id = id
+        self.highlight = highlight
+        self.onScreen = onScreen
+        self.reason = reason
+    }
 }
 
 /// A move and/or resize of strokes inside one note, in the note's own coordinates: points are

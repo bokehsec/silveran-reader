@@ -105,8 +105,9 @@ public struct SearchErrorMessage: Codable {
     public let message: String
 }
 
-/// Sent from JS when user completes a text selection (after long-press)
-public struct TextSelectionMessage: Codable {
+/// Sent from JS when user completes a text selection (after long-press). The page measures a
+/// Pencil highlighter sweep over words the same way (ADR 019).
+public struct TextSelectionMessage: Codable, Sendable, Hashable {
     public let sectionIndex: Int
     public let cfi: String
     public let text: String

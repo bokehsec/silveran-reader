@@ -178,8 +178,30 @@ final class InkToolStrip {
     // MARK: Highlight colours
 
     func setHighlightPalette(_ palette: HighlightInkPalette) {
-        guard palette != highlightPalette else { return }
-        highlightPalette = palette
+        if palette != highlightPalette { highlightPalette = palette }
+        // Also when the palette is unchanged: slots saved before ADR 019 may hold other colours.
+        snapHighlighterColors()
+    }
+
+    /// The highlighter only writes in highlight colours (ADR 019): a slot or the highlighter's
+    /// colour holding any other colour takes the nearest highlight colour.
+    private func snapHighlighterColors() {
+        let snap = { (hex: String) -> String? in
+            guard self.highlightPalette.color(forInk: hex) == nil,
+                let nearest = self.highlightPalette.nearest(toInk: hex)
+            else { return nil }
+            return self.highlightPalette.hex(for: nearest)
+        }
+        for (index, hex) in strip.highlighterColors.enumerated() {
+            if let replacement = snap(hex) {
+                updateStrip { $0.setColor(replacement, at: index, for: .highlighter) }
+            }
+        }
+        if let replacement = snap(settings.highlighter.color) {
+            settings.highlighter.color = replacement
+            if !isSelecting, settings.selected == .highlighter { session.tool = settings.current }
+            saveTools()
+        }
     }
 
     /// A typed highlight was made or recoloured with `color`. When that colour is one of the

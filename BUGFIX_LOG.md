@@ -42,6 +42,70 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-092 — A deleted highlight stayed on the page
+
+- Date: 2026-10-03
+- Status: Fixed; web and portable suites pass; device check pending
+- Platforms: All reader platforms (shared reader page)
+- Components: `BookmarkManager.renderHighlights`, `BookmarkManager.removeHighlight`; `pencilHighlights.test.mjs`
+- Related links: BF-091; owner report 2026-10-03 (iPad mini)
+
+#### Symptom
+
+Choosing Delete on a highlight's bar removed it from storage and from the Highlights list, but its colour stayed on the page until the chapter was reloaded, so it looked as if deleting did nothing. Reported by the owner on an iPad after BF-091; the owner's iPad records show the delete committed (local mutation sequence 14 removed the highlight).
+
+#### Root cause
+
+After a delete commits, `EbookPlayerViewModel.applyHighlightMutation` reloads the list and re-sends it (`renderHighlights`) before `deleteHighlight` asks the page to remove the id (`removeHighlight`). `renderHighlights` replaced its map of highlights and then removed from the page only the ids in the **new** list, so the deleted highlight's drawing was never removed; the later `removeHighlight` found no entry for the id and returned early. Pre-existing; not introduced by BF-091, which only made deleting more common.
+
+#### Change
+
+`renderHighlights` takes every previously drawn highlight off its section's overlay and span highlighter before drawing the new list, and `removeHighlight` removes the id from every overlay even when it is no longer in the map. Colour changes and adds were unaffected (redrawing an id replaces its element).
+
+#### Validation
+
+- `cd SilveranKit/Tests/WebHarness && npm test`: 236 pass. The new assertions in `pencilHighlights.test.mjs` fail with the old `renderHighlights`/`removeHighlight` and pass with the fix.
+- `swift test`: 663 tests / 85 suites pass. iOS simulator build succeeded. Not yet re-checked on the owner's iPad.
+
+#### Compatibility and follow-up
+
+None known.
+
+### BF-091 — A long-press on a Pencil highlight offered to make a second highlight on top of it
+
+- Date: 2026-10-03
+- Status: Fixed for new Pencil highlights and converted ones; portable and web suites pass; iPad simulator workflow and real-Pencil acceptance pending
+- Platforms: iPadOS reader (Pencil authoring); shared reader page and Kit session (all reader platforms for tapping and conversion)
+- Components: `InkEngine.js`, `BookmarkManager.js`, `FoliateManager.js`, `InkSession`, `InkOperations` (`InkProposal.highlight`, `InkHit.highlightIds`), `EbookPlayerViewModel` (`InkHighlightOwning`), `InkToolStrip`, `BookmarksPanel`
+- Related links: [ADR 019](docs/decisions/019-pencil-highlights-are-typed-highlights.md); [Pencil plan decisions](docs/PENCIL_INK_IMPLEMENTATION_PLAN.md#product-decisions-settled)
+
+#### Symptom
+
+A highlight drawn with the Apple Pencil highlighter could not be changed: no colour change, note or delete apart from the eraser. A finger long-press on it selected the words and offered the selection bar, so choosing a colour stacked a second, different-looking highlight on top. Pencil highlights also looked paler than highlights made from the selection bar and kept their colour when the theme changed. Reproduce: in Pencil mode sweep the highlighter over a line, then long-press inside it with a finger.
+
+#### Root cause
+
+The two were separate records with separate renderers. A sweep became an `InkMark` of kind `highlight` drawn by `InkMarks.js` (35% opacity, multiply blend, fixed hex colour), while the long-press and the highlight bar (`BookmarkManager.#showSelectionToolbar` / `#showHighlightToolbar`) only hit-tested the typed-highlight overlayer, so the mark was invisible to them. On touch screens a plain tap never opened any highlight's bar (deliberately disabled because taps toggled the reader controls).
+
+#### Change
+
+Per ADR 019 (owner decision 2026-10-03), a highlighter sweep over words is stored as a typed `Highlight` through the same protected owner and placement capture as the selection bar. `InkEngine` measures the covered words with `BookmarkManager.payloadForRange` (extracted from the selection path) and attaches them to the proposal; `InkSession.applyWritten` sends them to `InkHighlightOwning` instead of writing a mark. Undo entries now hold section changes plus an optional highlight change, so Pencil undo/redo removes and re-creates (under a new id, keeping colour, note, creation time and placement) the highlight; the eraser hit test returns highlight ids and erasing is one step with any ink. A tap on any highlight opens its bar from `FoliateManager.#handleSingleClick` (it no longer toggles the reader controls there); a Select-tool Pencil tap does the same. The highlighter's colour editor offers only highlight colours and snaps custom slots to the nearest one. Existing highlight marks are converted only on request from the Highlights list (`InkSession.convertHighlightMarks`): highlights are stored first, then exactly those marks are erased in one undo step; marks whose words aren't found exactly once stay ink.
+
+Follow-up (2026-10-03, owner feedback): the Convert offer was too hard to find, so the reader now also asks once per book when it opens with earlier Pencil highlights (answer remembered per book on the device; the Highlights list keeps Convert). Conversion stores highlights in one pass and redraws once. The default highlight style is now Background (a highlighter look) instead of Underline; a stored style is kept as chosen, and the flat-colour theme migration treats the former default as uncustomized.
+
+Not changed: ink mark decoding, sync, backup and restore (old `highlight` marks remain valid); highlighter strokes that are not over text (still ink in a note); the long-press path for typed highlights; an unconverted Pencil highlight still behaves as before until converted.
+
+#### Validation
+
+- `cd SilveranKit/Tests/WebHarness && npm test`: **236 pass / 0 fail**, including the new `pencilHighlights.test.mjs` (sweep payload, no payload without owner or for pen marks, eraser highlight ids, conversion measurement on screen and from a parsed copy, missing/repeated words stay ink, `payloadForRange`/`highlightAt`/`highlightIdsAlong`).
+- `swift test` (`scripts/test`): **661 tests / 85 suites passed** on macOS 26.0.1, including 8 new `InkPencilHighlightTests` (sweep becomes a highlight with undo/redo and new ids, unmeasured/refused sweeps change nothing, no-owner fallback to ink, eraser with ink+highlight as one step and highlight-only, conversion ordering/partial/undo, nearest colour).
+- `SILVERAN_IOS_DESTINATION='platform=iOS Simulator,id=8AE562C2-1455-413B-9CA4-EE7BB8378D2B' SILVERAN_DISABLE_CODE_SIGNING=1 scripts/iosbuild` succeeded (Debug, iOS 26.2 simulator SDK) with no new warnings in changed files.
+- Simulator workflow (demo highlighter stroke → listed highlight → tap → recolour/delete; eraser; undo; Convert) not yet accepted: install on the isolated QA iPad hung under host load (see OD-051). Real Pencil, VoiceOver and signed multi-device iCloud remain unverified.
+
+#### Compatibility and follow-up
+
+No schema change or migration. Pencil-made highlights sync as ordinary highlights. Older app versions on other devices were declared out of scope by the owner. Existing Pencil highlights stay ink until converted.
+
 ### BF-090 — Full-library polling continued after every app surface backgrounded
 
 - Date: 2026-10-03

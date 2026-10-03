@@ -166,21 +166,9 @@ class BookmarkManager {
 
     this.#renderHighlightsForSection(sectionIndex, doc);
 
-    doc.addEventListener("click", (event) => {
-      // A reliable click can land on a highlight with a pointer (desktop). On
-      // touch, taps are unreliable and steal the overlay-toggle gesture, so the
-      // highlight bar is reached by long-pressing inside the highlight instead
-      // (handled in #showSelectionToolbar).
-      if (!this.#isTouchDevice()) {
-        const result = overlayer.hitTest({ x: event.clientX, y: event.clientY });
-        if (result && result.length > 0) {
-          const highlightId = result[0];
-          debugLog("BookmarkManager", "Highlight tapped:", highlightId);
-          this.#showHighlightToolbar(doc, highlightId, event.clientX, event.clientY);
-          event.stopPropagation();
-          return;
-        }
-      }
+    doc.addEventListener("click", () => {
+      // A tap or click on a highlight opens its bar from FoliateManager's single-click handling
+      // (`showHighlightBarAt`), which decides between that and the reader controls (ADR 019).
       const selection = doc.getSelection?.();
       if (!selection || selection.isCollapsed) {
         this.hideSelectionToolbar();
@@ -226,11 +214,21 @@ class BookmarkManager {
     const selection = doc.getSelection?.();
     if (!selection || selection.isCollapsed) return null;
 
-    const text = selection.toString().trim();
-    if (!text || text.length < 2) return null;
-
     const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
     if (!range) return null;
+    const payload = this.payloadForRange(sectionIndex, doc, range);
+    return payload ? { payload, range } : null;
+  }
+
+  /**
+   * What Swift needs to store a highlight of `range` in section `sectionIndex`: the same message
+   * a selection-bar highlight sends (without its colour). Used for selections, for Pencil
+   * highlighter sweeps over words and for converting earlier Pencil highlights (ADR 019). `doc`
+   * may be a parsed copy of the section that is not on screen. Null if the words can't be measured.
+   */
+  payloadForRange(sectionIndex, doc, range) {
+    const text = range.toString().trim();
+    if (!text || text.length < 2) return null;
 
     let cfi = null;
     try {
@@ -266,7 +264,56 @@ class BookmarkManager {
       endCharOffset: end.offset,
     };
 
-    return { payload, range };
+    return payload;
+  }
+
+  /** The section index a document shows, if it is one this manager set up. */
+  #sectionIndexOf(doc) {
+    for (const [index, overlayer] of this.#overlayers) {
+      if (doc.contains(overlayer.element)) return index;
+    }
+    return null;
+  }
+
+  /** The id of the highlight at (x, y) in `doc`'s viewport, or null. */
+  highlightAt(doc, x, y) {
+    const index = this.#sectionIndexOf(doc);
+    if (index == null) return null;
+    const hit = this.#overlayers.get(index)?.hitTest({ x, y });
+    return hit && hit.length > 0 ? hit[0] : null;
+  }
+
+  /**
+   * A tap at (x, y) in `doc`'s viewport: when it is on a highlight, opens that highlight's bar
+   * (colour, note, delete) and returns true; otherwise returns false (ADR 019).
+   */
+  showHighlightBarAt(doc, x, y) {
+    const id = this.highlightAt(doc, x, y);
+    if (id == null) return false;
+    debugLog("BookmarkManager", "Highlight tapped:", id);
+    this.#showHighlightToolbar(doc, id, x, y);
+    return true;
+  }
+
+  /**
+   * The highlights the eraser touches: `points` are [x, y] in `doc`'s viewport; a point within
+   * `radius` of a highlight's band touches it. Returns their ids (ADR 019).
+   */
+  highlightIdsAlong(doc, points, radius = 0) {
+    const index = this.#sectionIndexOf(doc);
+    const overlayer = index == null ? null : this.#overlayers.get(index);
+    if (!overlayer) return [];
+    const ids = new Set();
+    const offsets = radius > 0
+      ? [[0, 0], [radius, 0], [-radius, 0], [0, radius], [0, -radius]]
+      : [[0, 0]];
+    for (const [x, y] of points) {
+      for (const [dx, dy] of offsets) {
+        const hit = overlayer.hitTest({ x: x + dx, y: y + dy });
+        if (hit && hit.length > 0 && this.#userHighlights.has(hit[0])) ids.add(hit[0]);
+      }
+    }
+    return [...ids];
   }
 
   #showSelectionToolbar(sectionIndex, doc) {
@@ -597,6 +644,12 @@ class BookmarkManager {
       return;
     }
 
+    // Take every highlight drawn so far off the page first: drawing only removes the ids in the
+    // new list, so a highlight deleted since the last render would otherwise stay on screen.
+    for (const [id, old] of this.#userHighlights) {
+      this.#overlayers.get(old.sectionIndex)?.remove(id);
+      this.#spanHighlighters.get(old.sectionIndex)?.remove(id);
+    }
     this.#userHighlights.clear();
     this.#renderedSpanState.clear();
 
@@ -644,7 +697,12 @@ class BookmarkManager {
     debugLog("BookmarkManager", `removeHighlight(id: ${id})`);
 
     const highlight = this.#userHighlights.get(id);
-    if (!highlight) return;
+    if (!highlight) {
+      // Already gone from the list (a newer render): still make sure it isn't drawn anywhere.
+      for (const overlayer of this.#overlayers.values()) overlayer.remove(id);
+      for (const spans of this.#spanHighlighters.values()) spans.remove(id);
+      return;
+    }
 
     this.#userHighlights.delete(id);
     this.#renderedSpanState.delete(highlight.sectionIndex);

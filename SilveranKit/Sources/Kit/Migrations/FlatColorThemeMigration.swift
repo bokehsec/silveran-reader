@@ -96,7 +96,9 @@ extension FilesystemActor {
             || reading.userHighlightLabel4 != defaults.userHighlightLabel4
             || reading.userHighlightLabel5 != defaults.userHighlightLabel5
             || reading.userHighlightLabel6 != defaults.userHighlightLabel6
-            || reading.userHighlightMode != defaults.userHighlightMode
+            // "underline" was the default when this migration was written (changed 2026-10-03),
+            // so neither it nor the current default counts as a customization.
+            || ![defaults.userHighlightMode, "underline"].contains(reading.userHighlightMode)
             || reading.customCSS != defaults.customCSS
 
         guard hasCustomColors else { return nil }

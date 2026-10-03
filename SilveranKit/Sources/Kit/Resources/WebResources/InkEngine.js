@@ -53,9 +53,34 @@ export default class InkEngine {
   #loaded = new Map();
   #post;
 
+  /**
+   * The page's typed highlights (BookmarkManager), for Pencil highlighter sweeps that become
+   * highlights and for the eraser (ADR 019): `{ payload(index, doc, range), idsAlong(doc, points, radius) }`.
+   */
+  #highlights = null;
+
   /** `post(name, payload)` reaches Swift; injectable for tests. */
   constructor({ post } = {}) {
     this.#post = post ?? ((name, payload) => window.webkit?.messageHandlers?.[name]?.postMessage(payload));
+  }
+
+  setHighlights(highlights) {
+    this.#highlights = highlights;
+  }
+
+  /**
+   * A highlighter sweep over words becomes a typed highlight (ADR 019): measures the covered
+   * words as a selection would be and attaches that to the proposal as `highlight`. A sweep that
+   * can't be measured keeps no `highlight`, and Swift does not store it.
+   */
+  #withHighlight(proposal, contents) {
+    if (proposal?.op !== "mark" || proposal.markKind !== "highlight" || !this.#highlights) return proposal;
+    const { index, doc } = contents;
+    const text = buildTextIndex(doc.body);
+    const offsets = proposal.start && proposal.end ? resolveMarkOffsets(text.text, proposal) : null;
+    const range = offsets ? text.rangeFor(doc, offsets[0], offsets[1]) : null;
+    const payload = range ? this.#highlights.payload(index, doc, range) : null;
+    return payload ? { ...proposal, highlight: payload } : proposal;
   }
 
   setView(view) {
@@ -360,12 +385,12 @@ export default class InkEngine {
     const contents = this.#currentContents();
     if (!contents) return { op: "none", reason: "no-section" };
     const href = this.#href(contents.index);
-    return proposeStroke({
+    return this.#withHighlight(proposeStroke({
       doc: contents.doc,
       href,
       stroke,
       viewportWidth: window.innerWidth,
-    });
+    }), contents);
   }
 
   /**
@@ -376,7 +401,8 @@ export default class InkEngine {
     const contents = this.#currentContents();
     if (!contents) return [{ op: "none", reason: "no-section" }];
     const href = this.#href(contents.index);
-    return proposeGroup({ doc: contents.doc, href, strokes, viewportWidth: window.innerWidth });
+    return proposeGroup({ doc: contents.doc, href, strokes, viewportWidth: window.innerWidth })
+      .map(p => this.#withHighlight(p, contents));
   }
 
   /** What the eraser path touches on the current page. */
@@ -388,9 +414,41 @@ export default class InkEngine {
     const hit = hitTestNotes({
       doc: contents.doc, notes: section?.notes ?? [], points, radius, markLayer: this.#markLayers.get(contents.doc) ?? null,
     });
+    const docPoints = points.map(p => toDoc(contents.doc, p));
     const margins = this.#marginLayers.get(contents.doc);
-    if (margins) hit.strokes.push(...margins.hitTest(points.map(p => toDoc(contents.doc, p)), radius));
-    return { section: href, ...hit };
+    if (margins) hit.strokes.push(...margins.hitTest(docPoints, radius));
+    const highlightIds = this.#highlights?.idsAlong(contents.doc, docPoints, radius) ?? [];
+    return { section: href, ...hit, highlightIds };
+  }
+
+  /**
+   * Earlier Pencil highlights (ink marks of kind `highlight`) of section `href`, measured as
+   * typed highlights for an explicit conversion (ADR 019). Uses the section on screen if it is
+   * loaded, else a parsed copy. Each answer is `{ id, highlight }`, or `{ id, reason }` when the
+   * mark's words are not found exactly once and the mark should stay ink.
+   */
+  async measureHighlightMarks(href, marks) {
+    const index = this.#view?.book?.sections?.findIndex(s => s.id === href) ?? -1;
+    if (index < 0 || !this.#highlights) return marks.map(m => ({ id: m.id, reason: "no-section" }));
+    let doc = this.#contentsFor(href)?.doc ?? null;
+    const onScreen = !!doc;
+    if (!doc) {
+      try {
+        doc = await this.#view.book.sections[index].createDocument();
+      } catch {
+        doc = null;
+      }
+    }
+    if (!doc?.body) return marks.map(m => ({ id: m.id, reason: "no-section" }));
+    const text = buildTextIndex(doc.body);
+    return marks.map(mark => {
+      // Anchors resolve only to a single place; repeated or missing words stay ink.
+      const offsets = mark.start && mark.end ? resolveMarkOffsets(text.text, mark) : null;
+      if (!offsets) return { id: mark.id, reason: "not-found" };
+      const range = text.rangeFor(doc, offsets[0], offsets[1]);
+      const highlight = range ? this.#highlights.payload(index, doc, range) : null;
+      return highlight ? { id: mark.id, highlight, onScreen } : { id: mark.id, reason: "not-measured" };
+    });
   }
 
   /** The strokes a lasso path encloses on the current page; see InkSelection.selectInLasso. */

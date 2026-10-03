@@ -26,7 +26,10 @@ struct InkToolStripTests {
         #expect(strip.selectedSlot(for: .eraser) == nil)
         #expect(strip.colors(for: .eraser).isEmpty)
         strip.setColor("#123456", at: 2, for: .highlighter)
-        #expect(strip.highlighterColors == ["#ffb600", "#00915a", "#123456"])
+        let defaults = [HighlightColor.yellow, .green].compactMap {
+            HighlightInkPalette.default.hex(for: $0)
+        }
+        #expect(strip.highlighterColors == defaults + ["#123456"])
         strip.setColor("#123456", at: 3, for: .pen)
         #expect(strip.penColors == InkToolStripSettings.defaultPenColors)
     }

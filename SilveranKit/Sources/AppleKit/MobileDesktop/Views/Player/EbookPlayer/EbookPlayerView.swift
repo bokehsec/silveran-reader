@@ -359,7 +359,10 @@ public struct EbookPlayerView: View {
                         return Color(hex: hex) ?? color.color
                     },
                     initialTab: viewModel.bookmarksPanelInitialTab,
+                    pencilHighlightCount: viewModel.pencilHighlightMarkCount,
+                    onConvertPencilHighlights: { await viewModel.convertPencilHighlights() },
                 )
+                .onAppear { viewModel.refreshPencilHighlightCount() }
                 .navigationTitle("Bookmarks & Highlights")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -425,6 +428,7 @@ public struct EbookPlayerView: View {
                 exportRecovery: viewModel.exportHighlightRecovery,
             )
         }
+        .modifier(PencilHighlightConversionPrompt(viewModel: viewModel))
         .alert(
             "Server Has Newer Position",
             isPresented: $viewModel.showServerPositionDialog,
@@ -1252,5 +1256,47 @@ private struct TitleBarConfigurator: NSViewRepresentable {
     }
 }
 #endif
+
+/// Asks once per book whether to convert earlier Pencil highlights, and shows progress and the
+/// result (ADR 019). Separate from `EbookPlayerView.body` to keep its type-checking tractable.
+@available(macOS 14.0, iOS 17.0, *)
+private struct PencilHighlightConversionPrompt: ViewModifier {
+    @Bindable var viewModel: EbookPlayerViewModel
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if viewModel.isConvertingPencilHighlights {
+                    ProgressView("Converting Pencil highlights…")
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                }
+            }
+            .alert(
+                viewModel.pencilHighlightMarkCount == 1
+                    ? "Convert 1 Pencil Highlight?"
+                    : "Convert \(viewModel.pencilHighlightMarkCount) Pencil Highlights?",
+                isPresented: $viewModel.showPencilHighlightConversionOffer,
+            ) {
+                Button("Convert") { viewModel.convertPencilHighlightsFromOffer() }
+                Button("Not Now", role: .cancel) { viewModel.declinePencilHighlightConversion() }
+            } message: {
+                Text(
+                    "Highlights drawn earlier with Apple Pencil are kept as handwriting. Convert them to change their colour, add notes and list them in Highlights. You can also do this later from Highlights."
+                )
+            }
+            .alert(
+                "Pencil Highlights",
+                isPresented: Binding(
+                    get: { viewModel.pencilHighlightConversionResult != nil },
+                    set: { if !$0 { viewModel.pencilHighlightConversionResult = nil } }
+                ),
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(viewModel.pencilHighlightConversionResult ?? "")
+            }
+    }
+}
 
 #endif

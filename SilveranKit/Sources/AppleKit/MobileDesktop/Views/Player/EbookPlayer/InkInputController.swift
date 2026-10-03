@@ -254,12 +254,29 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
                 let selecting = strokeIsLasso
                 Task { @MainActor in
                     if selecting {
+                        // A tap with the Select tool on a highlight opens its bar (ADR 019).
+                        if Self.isTap(stroke.points), let point = stroke.points.first,
+                            await session.showHighlightBar(at: (point[0], point[1]))
+                        {
+                            stroke.layer.removeFromSuperlayer()
+                            return
+                        }
                         if session.isSelectingInk { await session.selectInk(lasso: stroke.points) }
                     } else if !session.isSelectingInk {
                         await session.finishStroke(points: stroke.points)
                     }
                     stroke.layer.removeFromSuperlayer()
                 }
+        }
+    }
+}
+
+extension InkInputController {
+    /// A stroke that stayed within a few points of where it started: a tap, not a lasso.
+    static func isTap(_ points: [[Double]], tolerance: Double = 8) -> Bool {
+        guard let first = points.first, first.count >= 2 else { return false }
+        return points.allSatisfy {
+            $0.count >= 2 && abs($0[0] - first[0]) <= tolerance && abs($0[1] - first[1]) <= tolerance
         }
     }
 }

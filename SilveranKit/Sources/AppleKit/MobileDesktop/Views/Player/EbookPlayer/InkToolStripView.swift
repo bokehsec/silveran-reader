@@ -230,7 +230,9 @@ struct InkToolStripView: View {
                 set: { if !$0 { editingSlot = nil } }
             )
         ) {
-            InkColorEditor(color: hex, sections: editorSections) { strip.setColor($0, at: index) }
+            InkColorEditor(color: hex, sections: editorSections, allowsAnyColor: !isHighlighter) {
+                strip.setColor($0, at: index)
+            }
             .presentationCompactAdaptation(.popover)
         }
     }
@@ -247,19 +249,14 @@ struct InkToolStripView: View {
         return InkColorName.describe(hex)
     }
 
-    /// The highlighter offers the reader's highlight colours first, so highlighter ink can match
-    /// typed highlights; the pen offers its own presets.
+    /// The highlighter offers only the reader's highlight colours, since its sweeps over words
+    /// become highlights (ADR 019); the pen offers its own presets and any colour.
     private var editorSections: [InkColorEditor.Section] {
         guard isHighlighter else {
             return [.init(title: nil, colors: InkColorEditor.penPresets.map { ($0, nil) })]
         }
         let shared = strip.highlightPalette.entries.map { ($0.hex, Optional("\($0.label) highlight")) }
-        let sharedHexes = Set(shared.map(\.0))
-        let others = InkColorEditor.highlighterPresets.filter { !sharedHexes.contains($0) }
-        return [
-            .init(title: "Highlight Colours", colors: shared),
-            .init(title: "Other Colours", colors: others.map { ($0, nil) }),
-        ]
+        return [.init(title: "Highlight Colours", colors: shared)]
     }
 
     private var thicknessButton: some View {
@@ -377,7 +374,7 @@ struct InkToolStripView: View {
     }
 }
 
-/// Changes one of the strip's three colours: presets in labelled groups, or any colour.
+/// Changes one of the strip's three colours: presets in labelled groups, or (pen) any colour.
 private struct InkColorEditor: View {
     struct Section {
         let title: String?
@@ -387,15 +384,13 @@ private struct InkColorEditor: View {
 
     let color: String
     let sections: [Section]
+    /// The highlighter keeps to highlight colours (ADR 019); the pen may use any colour.
+    let allowsAnyColor: Bool
     let onPick: (String) -> Void
 
     static let penPresets = [
         "#000000", "#8e8e93", "#1f4fd1", "#d12f1f", "#1f9d3a",
         "#8e3fd1", "#e8890c", "#8b5a2b", "#139aa8", "#d1336b",
-    ]
-    static let highlighterPresets = [
-        "#ffd60a", "#7ee081", "#ff9ecb", "#ffb347", "#7fd8ff",
-        "#c8a2ff", "#a8f0d0", "#ff8080", "#9db8ff", "#d0d0d0",
     ]
 
     var body: some View {
@@ -415,14 +410,16 @@ private struct InkColorEditor: View {
                     }
                 }
             }
-            ColorPicker(
-                "Any Colour",
-                selection: Binding(
-                    get: { Color(uiColor: UIColor(inkHex: color)) },
-                    set: { onPick(UIColor($0).inkHex) }
-                ),
-                supportsOpacity: false
-            )
+            if allowsAnyColor {
+                ColorPicker(
+                    "Any Colour",
+                    selection: Binding(
+                        get: { Color(uiColor: UIColor(inkHex: color)) },
+                        set: { onPick(UIColor($0).inkHex) }
+                    ),
+                    supportsOpacity: false
+                )
+            }
         }
         .padding()
         .frame(width: 236)

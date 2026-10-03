@@ -235,6 +235,20 @@ struct FlatColorThemeMigrationTests {
         #expect(!(await filesystem.migrationSentinelExists(migrationID)))
     }
 
+    @Test("The highlight style that was the default when themes arrived is not a customization")
+    func formerDefaultHighlightStyle() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = configURL(root)
+        let former = Data(#"{"reading":{"userHighlightMode":"underline"}}"#.utf8)
+        try former.write(to: url)
+        let settings = SettingsActor(storageURL: url)
+        let filesystem = FilesystemActor(applicationSupportDirectory: root)
+        try await filesystem.runFlatColorThemeMigrationIfNeeded(settings: settings)
+        #expect(await settings.config.themes.customThemes.isEmpty)
+        #expect(await settings.config.reading.userHighlightMode == "underline", "kept as chosen")
+    }
+
     @Test("Missing, default-only and Unicode sources follow the same completion rules")
     func absenceAndUnicode() async throws {
         let root = try root()

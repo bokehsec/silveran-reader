@@ -46,6 +46,43 @@ public protocol InkEngineCalling: AnyObject {
     func inkSpaceTarget(x: Double, y: Double) async throws -> InkSpaceTarget?
     /// Shows empty space opening at a target without saving it; nil ends the preview.
     func inkPreviewSpace(target: InkSpaceTarget?, area: InkNoteArea?) async throws
+    /// A Pencil tap with the Select tool at a viewport point: opens the bar of the highlight
+    /// there, if any (ADR 019). True when one was shown.
+    func inkShowHighlightBar(x: Double, y: Double) async throws -> Bool
+    /// Earlier Pencil highlights of a section measured as typed highlights (ADR 019).
+    func inkMeasureHighlightMarks(href: String, marks: [InkMark]) async throws
+        -> [InkHighlightMarkMeasurement]
+}
+
+/// A Pencil highlighter sweep (or an earlier Pencil highlight being converted) to store as a
+/// typed highlight (ADR 019): the words measured as a selection and the highlighter's colour.
+public struct InkHighlightRequest: Sendable, Hashable {
+    public var selection: TextSelectionMessage
+    /// The ink colour, `#rrggbb` as it looks on a light page.
+    public var inkColor: String
+    /// The words were measured in the section on screen, so the measurement can be recorded as
+    /// that section's (false for a parsed copy of a section that isn't shown).
+    public var measuredOnScreen: Bool
+
+    public init(selection: TextSelectionMessage, inkColor: String, measuredOnScreen: Bool) {
+        self.selection = selection
+        self.inkColor = inkColor
+        self.measuredOnScreen = measuredOnScreen
+    }
+}
+
+/// The reader's owner of typed highlights, as the ink session uses it (ADR 019), so Pencil undo,
+/// the eraser and conversion reach highlights through their protected owner.
+@SilveranUIActor
+public protocol InkHighlightOwning: AnyObject {
+    /// Stores highlights; one answer per request, nil where that one couldn't be stored.
+    func inkAddHighlights(_ requests: [InkHighlightRequest]) async -> [Highlight?]
+    /// Stores copies of removed highlights under new ids (colour, note, creation time and
+    /// placement kept), so a sync deletion is never revived under its old id. Returns the copies
+    /// stored, or nil when none could be.
+    func inkRestoreHighlights(_ highlights: [Highlight]) async -> [Highlight]?
+    /// Removes highlights; returns the records removed (missing ids are skipped).
+    func inkRemoveHighlights(ids: [UUID]) async -> [Highlight]
 }
 
 /// Writing areas came later; an engine without them (an older page) measures nothing.
@@ -59,6 +96,10 @@ extension InkEngineCalling {
     { nil }
     public func inkSpaceTarget(x: Double, y: Double) async throws -> InkSpaceTarget? { nil }
     public func inkPreviewSpace(target: InkSpaceTarget?, area: InkNoteArea?) async throws {}
+    public func inkShowHighlightBar(x: Double, y: Double) async throws -> Bool { false }
+    public func inkMeasureHighlightMarks(href: String, marks: [InkMark]) async throws
+        -> [InkHighlightMarkMeasurement]
+    { throw ReaderCommsBridgeError.jsNotAvailable }
 }
 
 /// Apple Pencil ink for one open book (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.1).
@@ -146,6 +187,9 @@ public final class InkSession {
             selectedAreaNoteID = nil
         }
     }
+    /// Typed highlights: a highlighter sweep over words is stored there, and undo and the eraser
+    /// reach it (ADR 019). Without an owner such a sweep is kept as an ink mark, as before.
+    public weak var highlightOwner: (any InkHighlightOwning)?
     private var rendererGeneration: UInt64 = 0
     private var isDetaching = false
     private var acceptedWork: UInt64 = 0
@@ -194,10 +238,30 @@ public final class InkSession {
     public var canUndo: Bool { canEdit && (!undoStack.isEmpty || !writtenStrokes.isEmpty) }
     public var canRedo: Bool { canEdit && !redoStack.isEmpty }
 
-    private struct Entry {
+    private struct SectionChange {
         let href: String
         let before: SectionInk
         let after: SectionInk
+    }
+
+    /// Typed highlights an undo step added and removed (ADR 019). A class: undo and redo
+    /// re-create highlights under new ids and record them here for the next step.
+    private final class HighlightChange {
+        /// Highlights the step added (they exist while the step is applied).
+        var added: [Highlight]
+        /// Highlights the step removed (they exist while the step is undone).
+        var removed: [Highlight]
+
+        init(added: [Highlight] = [], removed: [Highlight] = []) {
+            self.added = added
+            self.removed = removed
+        }
+    }
+
+    /// One undo step: section changes and, for Pencil highlights, typed highlight changes.
+    private struct Entry {
+        var sections: [SectionChange]
+        var highlights: HighlightChange?
     }
 
     private let releaseDelay: Duration
@@ -423,20 +487,31 @@ public final class InkSession {
         guard operation.apply(to: &after) else { return false }
         commit(href: href, before: before, after: after, focus: operation.focusID)
         if operation.isUndoable {
-            undoStack.append(Entry(href: href, before: before, after: after))
-            if undoStack.count > Self.undoLimit {
-                undoStack.removeFirst(undoStack.count - Self.undoLimit)
-            }
-            redoStack.removeAll()
-            onUndoStateChanged?()
+            record(Entry(sections: [SectionChange(href: href, before: before, after: after)]))
         }
         return true
     }
 
-    /// Applies changes made together (one written group) as one undo step per section.
+    private func record(_ entry: Entry) {
+        undoStack.append(entry)
+        if undoStack.count > Self.undoLimit {
+            undoStack.removeFirst(undoStack.count - Self.undoLimit)
+        }
+        redoStack.removeAll()
+        onUndoStateChanged?()
+    }
+
+    /// Applies changes made together (one written group) as one undo step.
     @discardableResult
     public func apply(_ operations: [InkOperation]) -> Bool {
         guard operations.count > 1 else { return operations.first.map { apply($0) } ?? false }
+        return apply(operations, highlights: nil)
+    }
+
+    /// Applies ink changes and records them, with any typed highlight changes made with them, as
+    /// one undo step. True when something changed.
+    @discardableResult
+    private func apply(_ operations: [InkOperation], highlights: HighlightChange?) -> Bool {
         guard canEdit else { return false }
         if isPreviewingMarginConversion { cancelMarginConversion() }
         if selection != nil { cancelSelection() }
@@ -444,7 +519,8 @@ public final class InkSession {
         for operation in operations where !hrefs.contains(operation.href) {
             hrefs.append(operation.href)
         }
-        var changed = false
+        var changes: [SectionChange] = []
+        var undoable = true
         for href in hrefs {
             let group = operations.filter { $0.href == href }
             let before = section(href)
@@ -453,17 +529,19 @@ public final class InkSession {
             for operation in group where operation.apply(to: &after) { applied = true }
             guard applied else { continue }
             commit(href: href, before: before, after: after, focus: group.last?.focusID)
-            if group.allSatisfy(\.isUndoable) {
-                undoStack.append(Entry(href: href, before: before, after: after))
-            }
-            changed = true
+            changes.append(SectionChange(href: href, before: before, after: after))
+            if !group.allSatisfy(\.isUndoable) { undoable = false }
         }
-        guard changed else { return false }
-        if undoStack.count > Self.undoLimit {
-            undoStack.removeFirst(undoStack.count - Self.undoLimit)
+        let highlightsChanged = highlights.map { !$0.added.isEmpty || !$0.removed.isEmpty } ?? false
+        guard !changes.isEmpty || highlightsChanged else { return false }
+        if undoable {
+            record(Entry(sections: changes, highlights: highlightsChanged ? highlights : nil))
+        } else if highlightsChanged {
+            record(Entry(sections: [], highlights: highlights))
+        } else {
+            redoStack.removeAll()
+            onUndoStateChanged?()
         }
-        redoStack.removeAll()
-        onUndoStateChanged?()
         return true
     }
 
@@ -472,7 +550,12 @@ public final class InkSession {
         cancelMarginConversion()
         cancelSelection()
         guard canEdit, let entry = undoStack.popLast() else { return false }
-        commit(href: entry.href, before: entry.after, after: entry.before, focus: nil)
+        for change in entry.sections.reversed() {
+            commit(href: change.href, before: change.after, after: change.before, focus: nil)
+        }
+        if let highlights = entry.highlights {
+            changeHighlights(remove: \.added, restore: \.removed, of: highlights)
+        }
         redoStack.append(entry)
         onUndoStateChanged?()
         return true
@@ -483,10 +566,38 @@ public final class InkSession {
         cancelMarginConversion()
         cancelSelection()
         guard canEdit, let entry = redoStack.popLast() else { return false }
-        commit(href: entry.href, before: entry.before, after: entry.after, focus: nil)
+        for change in entry.sections {
+            commit(href: change.href, before: change.before, after: change.after, focus: nil)
+        }
+        if let highlights = entry.highlights {
+            changeHighlights(remove: \.removed, restore: \.added, of: highlights)
+        }
         undoStack.append(entry)
         onUndoStateChanged?()
         return true
+    }
+
+    /// Undo or redo of typed highlights (ADR 019): removes the highlights now in one list and
+    /// re-creates those in the other under new ids, recording the copies for the next step.
+    /// Runs in order with strokes and erasing.
+    private func changeHighlights(
+        remove: ReferenceWritableKeyPath<HighlightChange, [Highlight]>,
+        restore: ReferenceWritableKeyPath<HighlightChange, [Highlight]>,
+        of change: HighlightChange
+    ) {
+        guard let owner = highlightOwner else { return }
+        let previous = strokeTail
+        let task = Task { [weak owner] in
+            await previous?.value
+            guard let owner else { return }
+            let gone = change[keyPath: remove]
+            if !gone.isEmpty { _ = await owner.inkRemoveHighlights(ids: gone.map(\.id)) }
+            let back = change[keyPath: restore]
+            if !back.isEmpty, let copies = await owner.inkRestoreHighlights(back) {
+                change[keyPath: restore] = copies
+            }
+        }
+        strokeTail = task
     }
 
     private func commit(href: String, before: SectionInk, after: SectionInk, focus: String?) {
@@ -1438,9 +1549,110 @@ public final class InkSession {
             debugLog("[InkSession] Hit test failed: \(error)")
             return
         }
-        guard let href = hit.section, !hit.isEmpty else { return }
-        apply(.erase(href: href, strokes: hit.strokes, markIDs: hit.markIds, at: now()))
+        var removed: [Highlight] = []
+        if let owner = highlightOwner {
+            let ids = hit.highlightIds.compactMap(UUID.init(uuidString:))
+            if !ids.isEmpty { removed = await owner.inkRemoveHighlights(ids: ids) }
+        }
+        let change = removed.isEmpty ? nil : HighlightChange(removed: removed)
+        var operations: [InkOperation] = []
+        if let href = hit.section, !hit.isEmpty {
+            operations.append(
+                .erase(href: href, strokes: hit.strokes, markIDs: hit.markIds, at: now())
+            )
+        }
+        guard !operations.isEmpty || change != nil else { return }
+        apply(operations, highlights: change)
         await renderTail?.value
+    }
+
+    // MARK: - Highlights (ADR 019)
+
+    /// Waits for queued strokes, erasing and highlight undo/redo to finish (tests).
+    func settleQueuedWork() async {
+        await strokeTail?.value
+    }
+
+    /// A Pencil tap with the Select tool at a web view point: opens the bar of the highlight
+    /// there, if any. True when one was shown.
+    @discardableResult
+    public func showHighlightBar(at point: (x: Double, y: Double)) async -> Bool {
+        guard let engine else { return false }
+        return (try? await engine.inkShowHighlightBar(x: point.x, y: point.y)) ?? false
+    }
+
+    /// Earlier Pencil highlights in this book: ink marks of kind `highlight`, which a person can
+    /// convert to typed highlights.
+    public var highlightMarkCount: Int {
+        ink.sections.values.reduce(0) { $0 + $1.marks.filter { $0.kind == .highlight }.count }
+    }
+
+    public struct HighlightConversion: Equatable, Sendable {
+        /// Pencil highlights now typed highlights.
+        public var converted: Int
+        /// Pencil highlights kept as handwriting: their words weren't found exactly once, or
+        /// storing them failed.
+        public var kept: Int
+    }
+
+    /// Converts this book's earlier Pencil highlights to typed highlights, on the person's
+    /// request (ADR 019). Each mark's words are measured in its section; highlights are stored
+    /// first and only the marks that were stored are then erased, all as one undo step, so a
+    /// failure leaves a duplicate rather than a loss. Marks whose words aren't found exactly once
+    /// stay ink. Nil when it couldn't start (no page or highlight owner, ink not editable).
+    public func convertHighlightMarks() async -> HighlightConversion? {
+        guard !isDetaching, restoreSuspendedReason == nil else { return nil }
+        await commitWrittenStrokes()
+        guard canEdit, let engine, let owner = highlightOwner else { return nil }
+        let generation = openGeneration
+        var requests: [InkHighlightRequest] = []
+        var marksForRequests: [(href: String, id: String)] = []
+        var total = 0
+        for href in ink.sections.keys.sorted() {
+            let marks = ink.sections[href]?.marks.filter { $0.kind == .highlight } ?? []
+            guard !marks.isEmpty else { continue }
+            total += marks.count
+            let measured: [InkHighlightMarkMeasurement]
+            do {
+                measured = try await engine.inkMeasureHighlightMarks(href: href, marks: marks)
+            } catch {
+                debugLog("[InkSession] Measuring Pencil highlights in \(href) failed: \(error)")
+                continue
+            }
+            for answer in measured {
+                guard let selection = answer.highlight,
+                    let mark = marks.first(where: { $0.id == answer.id })
+                else { continue }
+                requests.append(
+                    InkHighlightRequest(
+                        selection: selection,
+                        inkColor: mark.stroke.color,
+                        measuredOnScreen: answer.onScreen == true
+                    )
+                )
+                marksForRequests.append((href, mark.id))
+            }
+        }
+        guard generation == openGeneration, canEdit else { return nil }
+        guard !requests.isEmpty else { return HighlightConversion(converted: 0, kept: total) }
+        let stored = await owner.inkAddHighlights(requests)
+        guard generation == openGeneration else { return nil }
+        var added: [Highlight] = []
+        var erased: [String: [String]] = [:]
+        for (index, highlight) in stored.enumerated() where index < marksForRequests.count {
+            guard let highlight else { continue }
+            added.append(highlight)
+            erased[marksForRequests[index].href, default: []].append(marksForRequests[index].id)
+        }
+        let at = now()
+        let operations = erased.keys.sorted().map {
+            InkOperation.erase(href: $0, strokes: [], markIDs: erased[$0] ?? [], at: at)
+        }
+        if !added.isEmpty {
+            apply(operations, highlights: HighlightChange(added: added))
+            await renderTail?.value
+        }
+        return HighlightConversion(converted: added.count, kept: total - added.count)
     }
 
     /// A Pencil stroke finished. The page decides what it is; the result is applied. Strokes are
@@ -1503,14 +1715,49 @@ public final class InkSession {
             for stroke in strokes { await process(stroke, queuedAt: queuedAt) }
             return
         }
-        let stamp = now()
-        apply(proposals.flatMap { operations(for: $0, at: stamp) })
+        await applyWritten(proposals)
         let proposed = ContinuousClock.now
         await renderTail?.value
         let ms = { (d: Duration) in Int(d / .milliseconds(1)) }
         debugLog(
             "[InkSession] Group of \(strokes.count) as \(proposals.map { "\($0.op)" }.joined(separator: ",")) waited \(ms(started - queuedAt))ms, placed \(ms(proposed - started))ms, drawn \(ms(ContinuousClock.now - proposed))ms"
         )
+    }
+
+    /// Applies what written strokes turned out to be, as one undo step: ink changes, and highlighter
+    /// sweeps over words stored as typed highlights (ADR 019). A sweep that can't be measured or
+    /// stored changes nothing; the highlight owner reports a failure to store.
+    private func applyWritten(_ proposals: [InkProposal]) async {
+        let stamp = now()
+        var operations: [InkOperation] = []
+        var requests: [InkHighlightRequest] = []
+        for proposal in proposals {
+            if highlightOwner != nil, proposal.op == .mark, proposal.markKind == .highlight {
+                if let selection = proposal.highlight, let color = proposal.stroke?.color {
+                    requests.append(
+                        InkHighlightRequest(
+                            selection: selection,
+                            inkColor: color,
+                            measuredOnScreen: true
+                        )
+                    )
+                } else {
+                    debugLog("[InkSession] Highlighter sweep not measured; nothing stored")
+                }
+                continue
+            }
+            operations += self.operations(for: proposal, at: stamp)
+        }
+        var added: [Highlight] = []
+        if !requests.isEmpty, let owner = highlightOwner {
+            added = await owner.inkAddHighlights(requests).compactMap { $0 }
+        }
+        let change = added.isEmpty ? nil : HighlightChange(added: added)
+        if operations.count == 1, change == nil {
+            apply(operations[0])
+        } else {
+            apply(operations, highlights: change)
+        }
     }
 
     /// The changes a proposal asks for.
@@ -1574,7 +1821,7 @@ public final class InkSession {
             debugLog("[InkSession] Proposing a stroke failed: \(error)")
             return
         }
-        for operation in operations(for: proposal, at: now()) { apply(operation) }
+        await applyWritten([proposal])
         let proposed = ContinuousClock.now
         // The caller removes its live stroke once the page has drawn the result.
         await renderTail?.value

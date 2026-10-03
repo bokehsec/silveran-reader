@@ -48,6 +48,23 @@ extension ReaderCommsBridge: InkEngineCalling {
         return try decodeInkResult(Shown.self, from: result).shown
     }
 
+    public func inkShowHighlightBar(x: Double, y: Double) async throws -> Bool {
+        struct Shown: Decodable { let shown: Bool }
+        let result = try await callInk(
+            "return await window.foliateManager.inkShowHighlightBarAt(\(x), \(y));"
+        )
+        return try decodeInkResult(Shown.self, from: result).shown
+    }
+
+    public func inkMeasureHighlightMarks(href: String, marks: [InkMark]) async throws
+        -> [InkHighlightMarkMeasurement]
+    {
+        let result = try await callInk(
+            "return await window.foliateManager.inkMeasureHighlightMarks(\(try jsString(href)), \(try jsLiteral(marks)));"
+        )
+        return try decodeInkResult([InkHighlightMarkMeasurement].self, from: result)
+    }
+
     public func inkSelect(lasso: [[Double]]) async throws -> InkSelectionHit {
         let result = try await callInk(
             "return await window.foliateManager.inkSelect(\(try jsLiteral(lasso)));"

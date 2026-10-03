@@ -25,7 +25,7 @@ final class HeadlessReaderSettings: ReaderSettingsReading {
     var singleColumnMode: Bool { false }
     var scrollingMode: Bool { false }
     var enableMarginClickNavigation: Bool { false }
-    var userHighlightMode: String { "underline" }
+    var userHighlightMode: String { kDefaultUserHighlightMode }
     var readaloudHighlightMode: String { "underline" }
     var lockViewToAudio: Bool { true }
 }

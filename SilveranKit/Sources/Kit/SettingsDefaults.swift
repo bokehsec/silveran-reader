@@ -28,7 +28,15 @@ public let kDefaultReaderAppearance = ReaderAppearanceMode.system.rawValue
 // Slot order is defined by HighlightColor's case order: Pink, Orange, Yellow,
 // Green, Blue, Purple. These palettes are indexed by that position and must
 // stay aligned with it.
+/// Light, highlighter-pen colours for light themes (owner, 2026-10-03; were the darker
+/// "#B849B8", "#E67400", "#FFB600", "#00915A", "#005493", "#6C3CC1", chosen for underlines).
+/// Highlights store the colour's slot, so themes using these defaults recolour existing ones.
 public let kDefaultUserHighlightColorsLight = [
+    "#FF9ED2", "#FFC170", "#FFF25C", "#A8F08A", "#96D8FF", "#D2B0FF",
+]
+/// The light-theme defaults before 2026-10-03, by slot. Highlighter colours saved with them are
+/// matched to the same slot of the current palette (`HighlightInkPalette.nearest`).
+public let kFormerDefaultUserHighlightColorsLight = [
     "#B849B8", "#E67400", "#FFB600", "#00915A", "#005493", "#6C3CC1",
 ]
 public let kDefaultUserHighlightColorsDark = [
@@ -50,7 +58,8 @@ public let kDefaultUserHighlightLabel3 = kDefaultUserHighlightLabels[2]
 public let kDefaultUserHighlightLabel4 = kDefaultUserHighlightLabels[3]
 public let kDefaultUserHighlightLabel5 = kDefaultUserHighlightLabels[4]
 public let kDefaultUserHighlightLabel6 = kDefaultUserHighlightLabels[5]
-public let kDefaultUserHighlightMode = "underline"
+/// Highlights look like a highlighter unless the person picks another style (owner, 2026-10-03).
+public let kDefaultUserHighlightMode = "background"
 public let kDefaultReadaloudHighlightMode = "background"
 
 public let kDefaultPlaybackSpeed: Double = 1.0

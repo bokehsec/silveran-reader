@@ -154,6 +154,12 @@ class EbookPlayerViewModel {
     var commsBridge: ReaderCommsBridge? = nil
     /// Per-book lifecycle ownership keeps pending edits alive beyond a view or WebView.
     let inkSession: InkSession
+    /// Earlier Pencil highlights kept as handwriting, which the Highlights list offers to convert.
+    var pencilHighlightMarkCount = 0
+    /// The reader asks once per book whether to convert them (ADR 019).
+    var showPencilHighlightConversionOffer = false
+    var isConvertingPencilHighlights = false
+    var pencilHighlightConversionResult: String?
     /// The iPad writing-tool strip for this book; it outlives the web view like the session.
     let inkToolStrip: InkToolStrip
     var inkPersistenceState: InkSessionPersistenceState = .saved
@@ -311,6 +317,8 @@ class EbookPlayerViewModel {
     /// models take the callbacks, so note icon taps, save status, margin state and repair
     /// counts stopped reaching the reader on screen (BF-075).
     func attachInkSession() {
+        // Pencil highlighter sweeps over words are stored as highlights here (ADR 019).
+        inkSession.highlightOwner = self
         inkPersistenceState = inkSession.persistenceState
         inkSession.onPersistenceStateChanged = { [weak self] in
             guard let self else { return }
@@ -1010,6 +1018,7 @@ class EbookPlayerViewModel {
     func openInk() async {
         guard let bookID = bookData?.metadata.id, let bridge = commsBridge else { return }
         await bridge.inkSession.open(bookID: bookID)
+        offerPencilHighlightConversionIfNeeded()
     }
 
     func loadHighlights() async {
@@ -1113,6 +1122,28 @@ class EbookPlayerViewModel {
         color: HighlightColor?,
         note: String? = nil,
     ) async {
+        guard let bookID = bookData?.metadata.id,
+            let highlight = await makeHighlight(from: selection, color: color, note: note),
+            await applyHighlightMutation(.add(highlight), bookID: bookID)
+        else { return }
+
+        pendingSelection = nil
+
+        await sendHighlightsToJS()
+
+        debugLog("[EbookPlayerViewModel] Added highlight: isBookmark=\(highlight.isBookmark)")
+    }
+
+    /// A highlight of measured words (a selection, or a Pencil sweep over words, ADR 019), not yet
+    /// stored. Nil, with `highlightPersistenceError` set, when the words can't be verified for
+    /// this book. `recordMeasurement` is false for words measured in a parsed copy of a section
+    /// that isn't on screen, whose measurement must not replace the shown section's.
+    private func makeHighlight(
+        from selection: TextSelectionMessage,
+        color: HighlightColor?,
+        note: String?,
+        recordMeasurement: Bool = true
+    ) async -> Highlight? {
         guard let bookID = bookData?.metadata.id, let expectedSession = session,
             let scope = expectedSession.preparedAnnotationScope,
             let asset = expectedSession.preparedAssetFingerprint,
@@ -1122,7 +1153,7 @@ class EbookPlayerViewModel {
         else {
             highlightPersistenceError =
                 "The passage couldn't be verified. Select the words again; your existing annotations are preserved."
-            return
+            return nil
         }
         do {
             let currentScope = try await BookServiceActor.shared.annotationScope(for: bookID)
@@ -1130,11 +1161,11 @@ class EbookPlayerViewModel {
             else {
                 highlightPersistenceError =
                     "The book or account changed. Reopen the book before adding this annotation."
-                return
+                return nil
             }
         } catch {
             highlightPersistenceError = error.localizedDescription
-            return
+            return nil
         }
 
         let locator = BookLocator(
@@ -1178,15 +1209,17 @@ class EbookPlayerViewModel {
             )
         } catch {
             highlightPersistenceError = error.localizedDescription
-            return
+            return nil
         }
-        expectedSession.recordSectionMeasurement(
-            href: selection.href,
-            normalizedText: evidence.normalizedText,
-            measurementID: measurementID
-        )
+        if recordMeasurement {
+            expectedSession.recordSectionMeasurement(
+                href: selection.href,
+                normalizedText: evidence.normalizedText,
+                measurementID: measurementID
+            )
+        }
 
-        let highlight = Highlight(
+        return Highlight(
             bookID: bookID,
             locator: locator,
             text: selection.text,
@@ -1194,14 +1227,6 @@ class EbookPlayerViewModel {
             note: note,
             placement: placement,
         )
-
-        guard await applyHighlightMutation(.add(highlight), bookID: bookID) else { return }
-
-        pendingSelection = nil
-
-        await sendHighlightsToJS()
-
-        debugLog("[EbookPlayerViewModel] Added highlight: isBookmark=\(highlight.isBookmark)")
     }
 
     func deleteHighlight(_ highlight: Highlight) async {
@@ -1266,11 +1291,7 @@ class EbookPlayerViewModel {
             translateAvailable = false
         }
 
-        // Highlighter ink is stored as it looks on a light page, so it shares the light theme's
-        // highlight colours whichever theme is showing.
-        let lightTheme =
-            settingsVM.resolveTheme(id: settingsVM.selectedLightThemeId) ?? .builtInLight
-        inkToolStrip.setHighlightPalette(HighlightInkPalette(lightTheme: lightTheme))
+        inkToolStrip.setHighlightPalette(highlightInkPalette)
 
         do {
             try await bridge.sendJsSetHighlightPalette(entries)
@@ -1280,6 +1301,14 @@ class EbookPlayerViewModel {
         } catch {
             debugLog("[EbookPlayerViewModel] Failed to send highlight palette to JS: \(error)")
         }
+    }
+
+    /// Highlighter ink is stored as it looks on a light page, so it shares the light theme's
+    /// highlight colours whichever theme is showing.
+    private var highlightInkPalette: HighlightInkPalette {
+        let lightTheme =
+            settingsVM.resolveTheme(id: settingsVM.selectedLightThemeId) ?? .builtInLight
+        return HighlightInkPalette(lightTheme: lightTheme)
     }
 
     /// Speak and Spell follow the system's Speak Selection setting, as in Apple's own text menus.
@@ -1460,6 +1489,146 @@ class EbookPlayerViewModel {
         guard await applyHighlightMutation(.add(highlight), bookID: bookID) else { return }
 
         debugLog("[EbookPlayerViewModel] Added bookmark: \(position.text.prefix(50))...")
+    }
+}
+
+extension EbookPlayerViewModel {
+    func refreshPencilHighlightCount() {
+        pencilHighlightMarkCount = inkSession.highlightMarkCount
+    }
+
+    private static let declinedConversionKey = "SilveranDeclinedPencilHighlightConversion"
+
+    /// Books whose earlier Pencil highlights the person was already asked about, on this device.
+    private var declinedConversionBooks: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: Self.declinedConversionKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue).sorted(), forKey: Self.declinedConversionKey) }
+    }
+
+    private var conversionBookKey: String? {
+        bookData.map { "\($0.metadata.id.sourceID)/\($0.metadata.id.uuid)" }
+    }
+
+    /// A book opened with earlier Pencil highlights kept as handwriting: ask once whether to
+    /// convert them (ADR 019). "Not Now" is remembered for the book on this device; the
+    /// Highlights list still offers Convert.
+    func offerPencilHighlightConversionIfNeeded() {
+        refreshPencilHighlightCount()
+        guard pencilHighlightMarkCount > 0, let key = conversionBookKey,
+            !declinedConversionBooks.contains(key)
+        else { return }
+        showPencilHighlightConversionOffer = true
+    }
+
+    func declinePencilHighlightConversion() {
+        guard let key = conversionBookKey else { return }
+        declinedConversionBooks.insert(key)
+    }
+
+    /// Converts from the reader's prompt and shows what happened. Either answer is remembered,
+    /// so highlights that can't be converted don't bring the question back.
+    func convertPencilHighlightsFromOffer() {
+        declinePencilHighlightConversion()
+        isConvertingPencilHighlights = true
+        Task {
+            pencilHighlightConversionResult = await convertPencilHighlights()
+            isConvertingPencilHighlights = false
+        }
+    }
+
+    /// Converts the book's earlier Pencil highlights to highlights, on request (ADR 019), and
+    /// says what happened.
+    func convertPencilHighlights() async -> String {
+        let result = await inkSession.convertHighlightMarks()
+        refreshPencilHighlightCount()
+        guard let result else {
+            return "Pencil highlights can't be converted right now. Nothing was changed."
+        }
+        let plural = { (n: Int, one: String, many: String) in n == 1 ? one : "\(n) \(many)" }
+        var parts: [String] = []
+        if result.converted > 0 {
+            parts.append(
+                "Converted \(plural(result.converted, "1 Pencil highlight", "Pencil highlights"))."
+            )
+        }
+        if result.kept > 0 {
+            parts.append(
+                "\(plural(result.kept, "1 couldn't be matched to its words and stays", "couldn't be matched to their words and stay")) as handwriting, in Annotations under Handwritten Marks."
+            )
+            if result.converted == 0, let error = highlightPersistenceError { parts.append(error) }
+        }
+        return parts.isEmpty ? "Nothing needed converting." : parts.joined(separator: " ")
+    }
+}
+
+/// Pencil highlights are typed highlights (ADR 019): the ink session stores a highlighter sweep
+/// over words, its undo and the eraser through this protected owner.
+extension EbookPlayerViewModel: InkHighlightOwning {
+    func inkAddHighlights(_ requests: [InkHighlightRequest]) async -> [Highlight?] {
+        guard let bookID = bookData?.metadata.id, !hasPendingHighlightChanges else {
+            return requests.map { _ in nil }
+        }
+        let palette = highlightInkPalette
+        var stored: [Highlight?] = []
+        // Each highlight is committed by the protected owner; the list is reloaded and redrawn
+        // once at the end (a conversion can store many).
+        hasPendingHighlightChanges = true
+        for request in requests {
+            let color = palette.nearest(toInk: request.inkColor) ?? .yellow
+            guard
+                let highlight = await makeHighlight(
+                    from: request.selection,
+                    color: color,
+                    note: nil,
+                    recordMeasurement: request.measuredOnScreen
+                )
+            else {
+                stored.append(nil)
+                continue
+            }
+            switch await BookmarkActor.shared.addHighlight(highlight) {
+                case .success: stored.append(highlight)
+                case .failure(let error):
+                    highlightPersistenceError = error.message
+                    stored.append(nil)
+            }
+        }
+        hasPendingHighlightChanges = await BookmarkActor.shared.hasPendingChanges(bookID: bookID)
+        await loadHighlights()
+        return stored
+    }
+
+    func inkRestoreHighlights(_ removed: [Highlight]) async -> [Highlight]? {
+        guard let bookID = bookData?.metadata.id else { return nil }
+        var copies: [Highlight] = []
+        for original in removed {
+            let copy = Highlight(
+                bookID: original.bookID,
+                locator: original.locator,
+                text: original.text,
+                color: original.color,
+                note: original.note,
+                createdAt: original.createdAt,
+                placement: original.placement,
+            )
+            if await applyHighlightMutation(.add(copy), bookID: bookID) { copies.append(copy) }
+        }
+        guard !copies.isEmpty else { return nil }
+        await sendHighlightsToJS()
+        return copies
+    }
+
+    func inkRemoveHighlights(ids: [UUID]) async -> [Highlight] {
+        guard let bookID = bookData?.metadata.id else { return [] }
+        var removed: [Highlight] = []
+        for id in ids {
+            guard let existing = highlights.first(where: { $0.id == id }),
+                await applyHighlightMutation(.delete(id), bookID: bookID)
+            else { continue }
+            removed.append(existing)
+            try? await commsBridge?.sendJsRemoveHighlight(id: id.uuidString)
+        }
+        return removed
     }
 }
 

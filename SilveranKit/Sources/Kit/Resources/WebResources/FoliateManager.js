@@ -251,6 +251,10 @@ class FoliateManager {
     this.#bookmarkManager.setView(this.#view);
     // Before anything records a position: CFIs must ignore handwritten notes.
     this.#inkEngine.setView(this.#view);
+    this.#inkEngine.setHighlights({
+      payload: (index, doc, range) => this.#bookmarkManager.payloadForRange(index, doc, range),
+      idsAlong: (doc, points, radius) => this.#bookmarkManager.highlightIdsAlong(doc, points, radius),
+    });
 
     debugLog("FoliateManager", "Book opened, reporting structure to Swift");
     await this.#reportBookStructureReady();
@@ -533,6 +537,11 @@ class FoliateManager {
     const marginIDs = doc ? this.#inkEngine.marginIconIDsAt(doc, event.clientX, event.clientY) : [];
     if (marginIDs.length) {
       this.#handleMarginIconTap(doc, marginIDs);
+      return;
+    }
+
+    // A tap on a highlight opens its bar (colour, note, delete) instead of the reader controls (ADR 019).
+    if (doc && this.#bookmarkManager.showHighlightBarAt(doc, event.clientX, event.clientY)) {
       return;
     }
 
@@ -1777,6 +1786,26 @@ class FoliateManager {
   /** What the eraser path touches on the current page. */
   inkHitTest(pointsJSON, radius) {
     return JSON.stringify(this.#inkEngine.hitTest(JSON.parse(pointsJSON), radius));
+  }
+
+  /**
+   * A Pencil tap with the Select tool at a viewport point: opens the bar of the highlight there,
+   * if any (ADR 019). Returns `{ shown }`.
+   */
+  inkShowHighlightBarAt(x, y) {
+    for (const { doc } of this.#view?.renderer?.getContents?.() ?? []) {
+      if (!doc) continue;
+      const frame = doc.defaultView?.frameElement?.getBoundingClientRect() ?? { left: 0, top: 0 };
+      if (this.#bookmarkManager.showHighlightBarAt(doc, x - frame.left, y - frame.top)) {
+        return JSON.stringify({ shown: true });
+      }
+    }
+    return JSON.stringify({ shown: false });
+  }
+
+  /** Earlier Pencil highlights of a section measured as typed highlights (ADR 019). */
+  async inkMeasureHighlightMarks(href, marksJSON) {
+    return JSON.stringify(await this.#inkEngine.measureHighlightMarks(href, JSON.parse(marksJSON)));
   }
 
   /** The strokes a lasso path (viewport points) encloses on the current page, or null. */

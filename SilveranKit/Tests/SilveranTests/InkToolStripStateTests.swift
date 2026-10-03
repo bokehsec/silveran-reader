@@ -89,5 +89,23 @@ struct InkToolStripStateTests {
         strip.setColor("#123456", at: 2)
         #expect(reported == [.green])
     }
+
+    @Test("Highlighter colours that aren't highlight colours take the nearest one (ADR 019)")
+    func snapsOtherHighlighterColours() throws {
+        let (strip, session, cleanUp) = try makeStrip()
+        defer { cleanUp() }
+        let palette = HighlightInkPalette.default
+        let nearest = try #require(palette.nearest(toInk: "#fee000").flatMap { palette.hex(for: $0) })
+        strip.select(.highlighter)
+        strip.setColor("#fee000", at: 0)
+        #expect(session.tool.color == "#fee000")
+
+        // The same palette again still snaps: slots saved before ADR 019 may hold any colour.
+        strip.setHighlightPalette(palette)
+        #expect(strip.strip.highlighterColors[0] == nearest)
+        #expect(strip.settings.highlighter.color == nearest)
+        #expect(session.tool.color == nearest)
+        #expect(strip.strip.highlighterColors.allSatisfy { palette.color(forInk: $0) != nil })
+    }
 }
 #endif
