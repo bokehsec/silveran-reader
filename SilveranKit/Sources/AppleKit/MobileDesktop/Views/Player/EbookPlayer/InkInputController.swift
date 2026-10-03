@@ -168,6 +168,7 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if session.isPreviewingMarginConversion { return false }
         if gestureRecognizer === spacePress { return session.isArrangingSpace && !isBlocked() }
         if gestureRecognizer === noteHold {
             return !session.isArrangingSpace && !session.isSelectingInk && !isBlocked()
@@ -175,7 +176,10 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
         return !isBlocked()
     }
 
-    func cancelSelectionForLayoutChange() { session.cancelSelection() }
+    func cancelSelectionForLayoutChange() {
+        session.cancelMarginConversion()
+        session.cancelSelection()
+    }
 
     /// The page's own long-press (text selection) waits for a long-press on a note to fail, which
     /// it does at once off a note.
@@ -200,6 +204,7 @@ final class InkInputController: NSObject, UIGestureRecognizerDelegate {
     }
 
     private func handle(_ event: InkStrokeGestureRecognizer.Event) {
+        guard !session.isPreviewingMarginConversion else { return }
         guard let webView else { return }
         func convert(_ sample: InkSample) -> InkSample {
             InkSample(

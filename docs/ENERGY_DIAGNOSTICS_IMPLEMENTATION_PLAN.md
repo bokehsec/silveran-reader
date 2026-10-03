@@ -1,6 +1,6 @@
 # Energy diagnostics and developer reporting implementation plan
 
-Date: 2026-10-03. Status: **planning only; no collection, instrumentation, reporting tool or device acceptance implemented by this change**. Canonical backlog: [phased implementation plan](ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md), cross-phase energy diagnostics (ED-0–ED-6).
+Date: 2026-10-03. Status: **ED-0/ED-1 and ED-3/ED-4 local code implemented; ED-2 selective coverage implemented with listed gaps. Automated verification is recorded below. iPhone simulator usability passed after fixing BF-083/BF-084; iPad simulator interaction and ED-5 device/energy acceptance remain open; ED-6 is deferred.** Canonical backlog: [phased implementation plan](ANNOTATION_SYNC_BACKUP_IMPLEMENTATION_PLAN.md), cross-phase energy diagnostics (ED-0–ED-6).
 
 ## Outcome and handoff
 
@@ -105,11 +105,11 @@ Prioritize save/reflow/sync/backup in ED-2, then reader/audio/library coverage b
 
 | Package | Deliverable | Depends on | Current status |
 | --- | --- | --- | --- |
-| ED-0 | Inventory, ADR, API matrix, report contract, defaults and fixtures | Existing architecture/integrity rules | Planned |
-| ED-1 | Collector, no-op contract, store, lifecycle and configuration policy | ED-0 | Planned |
-| ED-2 | Named operations and bounded renderer/native activity summaries | ED-1 | Planned |
-| ED-3 | Diagnostics screen and shareable report | ED-1; ED-2 for full coverage | Planned |
-| ED-4 | Offline developer comparison tool and documented workflow | ED-0 contract; ED-1–ED-3 integration | Planned |
+| ED-0 | Inventory, ADR, API matrix, report contract, defaults and fixtures | Existing architecture/integrity rules | Implemented; delivery qualification pending |
+| ED-1 | Collector, no-op contract, store, lifecycle and configuration policy | ED-0 | Implemented; device payload pending |
+| ED-2 | Named operations and bounded renderer/native activity summaries | ED-1 | Partial coverage implemented; see evidence gaps |
+| ED-3 | Diagnostics screen and shareable report | ED-1; ED-2 for full coverage | Implemented; UI usability pending |
+| ED-4 | Offline developer comparison tool and documented workflow | ED-0 contract; ED-1–ED-3 integration | Implemented; physical export input pending |
 | ED-5 | Real-device baselines, overhead qualification and regression gates | ED-1–ED-4; hardware availability | Planned |
 | ED-6 | Opt-in automatic delivery and hosted developer trends | ED-0–ED-5; service/retention decisions | Later, not part of first increment |
 
@@ -182,10 +182,10 @@ Each increment records code, automated checks, simulator usability and physical-
 
 | Area | Code | Automated | Simulator usability | Real-device / signed service |
 | --- | --- | --- | --- | --- |
-| Collector/store/configuration (ED-1) | Not started | Not run | Not run | Not run |
-| Native/renderer instrumentation (ED-2) | Not started | Not run | Not run | Not run |
-| Diagnostics/export (ED-3) | Not started | Not run | Not run | Not run |
-| Developer comparison (ED-4) | Not started | Not run | N/A, offline tool | Real exported input pending |
+| Collector/store/configuration (ED-1) | Implemented; BF-083 fixed | Portable + iPhone and iPad components pass (13/13 each) | iPhone passed (context, off/on); iPad pending | Actual OS payload pending |
+| Native/renderer instrumentation (ED-2) | Selective coverage; explicit gaps | Portable, WebHarness (229) + iPhone/iPad components pass | Pending | Instruments/process coverage pending |
+| Diagnostics/export (ED-3) | Implemented; BF-084 fixed | Local collector ZIP round trip + clear/off/on pass on iPhone and iPad | iPhone passed (export/Files/cancel/clear/large text); iPad, VoiceOver, landscape pending | Physical share round trip pending |
+| Developer comparison (ED-4) | Implemented | Six fixture tests pass | N/A, offline tool | Physical exported input pending |
 | Baselines/overhead (ED-5) | Protocol only | Not run | Cannot establish energy | Not run |
 | Automatic reporting (ED-6) | Later | Not run | Not run | Not provisioned |
 
@@ -214,3 +214,13 @@ Apple documentation was consulted on 2026-10-03, including through Context7 `/we
 - [Measuring power with Power Profiler](https://developer.apple.com/documentation/xcode/measuring-your-app-s-power-use-with-power-profiler): device/OS requirements, process/system distinction, charging/pairing effects and comparable-device traces.
 
 Planning validation: documentation-only change; no runtime builds, tests, collection, profiling or cloud operations performed. Link and whitespace checks are recorded in the canonical plan's planning entry.
+
+## Implementation progress — 2026-10-03
+
+[ADR 017](decisions/017-local-performance-diagnostics.md) and the [dated evidence index](evidence/energy-diagnostics-2026-10-03/README.md) record the installed SDK matrix, schema fixtures, portable injection/no-op, disposable retention, iOS app-lifetime subscriber, sampled static operation intervals, bounded typed renderer summaries, Settings export/clear/off-on and offline comparisons. The first complete portable run passed 635 tests/81 suites; iPhone component inventory contains all 12 diagnostics tests. See the evidence index for final iPad/WebHarness/tool results, exact commands, preserved concurrent work and limits. No energy budget, phase acceptance, service delivery or physical payload is claimed.
+
+ED-2 retains the original operation scope as follow-up gaps: full async Foliate/WebKit layout/process coverage, read-aloud preparation, resumed/folder transfers and background reading-state upload lifetimes, precise multi-window context, optional thermal/charging/low-power snapshots and complete cache/transport outcomes. Implemented callback/style timings and sampled resources are labeled partial/inclusive. UI access failed twice because the Mac was locked; component tests do not close export/open/cancel, accessibility/narrow-layout or share-sheet usability checks. A connected iPad alone does not supply ED-5's optimized repeated baseline, overhead, real daily payload or physical export evidence. ED-5 and those interaction checks remain open. ED-6 is unchanged: later separate opt-in/service stage.
+
+## Continuation — 2026-10-03 (after handoff)
+
+Reran all automated checks (portable 638/81, WebHarness 229, comparison tool 6, PerformanceDiagnosticsTests 13/13 on the iPhone and iPad QA simulators) and ran the first visible iPhone simulator pass. It found and fixed two defects: missing foreground context at launch/after enable or clear ([BF-083](../BUGFIX_LOG.md)) and share-sheet staging cleanup that also blocked Clear history ([BF-084](../BUGFIX_LOG.md)). Smaller usability changes: Title Case row/title, “Saved summaries” label, timestamped export filenames and build-labelled comparison warnings. Exact results and the remaining iPad/VoiceOver/landscape checks are in the [evidence index](evidence/energy-diagnostics-2026-10-03/README.md). ED-5 is unchanged: it needs physical devices, optimized builds and a real delivered daily payload.

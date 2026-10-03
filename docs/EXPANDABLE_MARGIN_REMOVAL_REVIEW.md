@@ -1,6 +1,6 @@
 # Review: retire the expandable writing margin
 
-Date: 2026-10-03. Status: review only; removal is not implemented. Inspected HEAD `4763414` plus the existing uncommitted writing-area, margin and sync changes. Those changes are part of the reviewed baseline, not changes made by this review.
+Date: 2026-10-03. Status: historical design review; implementation is recorded in the follow-through below, ADR 016 and the canonical plan. Inspected HEAD `4763414` plus the existing uncommitted writing-area, margin and sync changes. Those changes are part of the reviewed baseline, not changes made by this review.
 
 ## Confirmed scope
 
@@ -44,3 +44,7 @@ Read architecture, contribution guidance, annotation review, canonical plan, Pha
 Baseline verification: `cd SilveranKit/Tests/WebHarness && npm test` — **224/224 passed**, 2026-10-03. This verifies the current renderer baseline, not the proposed removal. No Swift build, simulator workflow, hardware or signed-cloud test was run for this design review. No bugfix was implemented, so no BF entry is added.
 
 Primary implementation references: [model](../SilveranKit/Sources/Kit/Models/InkModels.swift), [operations](../SilveranKit/Sources/Kit/Models/InkOperations.swift), [session](../SilveranKit/Sources/Kit/Reader/InkSession.swift), [remembered state](../SilveranKit/Sources/Kit/Reader/MarginOpenMemory.swift), [renderer](../SilveranKit/Sources/Kit/Resources/WebResources/InkEngine.js), [page controller](../SilveranKit/Sources/Kit/Resources/WebResources/FoliateManager.js), [margin control](../SilveranKit/Sources/Kit/Resources/WebResources/InkMarginControl.js), [area layout](../SilveranKit/Sources/Kit/Resources/WebResources/InkLayout.js), [viewer](../SilveranKit/Sources/AppleKit/MobileDesktop/Views/Player/EbookPlayer/MarginNoteSheet.swift), [sync merge](../SilveranKit/Sources/Kit/Sync/AnnotationSync.swift), [writing-area decision](decisions/015-resizable-writing-areas.md).
+
+## Implementation follow-through (2026-10-03)
+
+The owner subsequently instructed implementation of this review. [ADR 016](decisions/016-retire-expandable-writing-margin.md) accepts explicit previewed conversion, retirement and permanent legacy compatibility. See the canonical plan's dated progress entry and checklist 77 for current verification status; the findings and original baseline above remain historical review evidence.

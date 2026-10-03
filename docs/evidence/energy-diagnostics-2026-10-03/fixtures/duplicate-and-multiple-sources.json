@@ -1,0 +1,167 @@
+[
+  {
+    "schema": 1,
+    "instrumentation": 1,
+    "id": "00000000-0000-0000-0000-000000000001",
+    "identity": "fixture",
+    "source": "activity",
+    "begin": "2026-10-03T10:00:00Z",
+    "end": "2026-10-03T11:00:00Z",
+    "received": "2026-10-03T11:01:00Z",
+    "environment": {
+      "platform": "iOS",
+      "deviceModel": "iPad16,1",
+      "osVersion": "18.6",
+      "appVersion": "1",
+      "build": "100",
+      "provenance": "development"
+    },
+    "mixedBuilds": false,
+    "partial": true,
+    "metrics": {},
+    "intervalResources": [],
+    "dropped": {},
+    "operations": [
+      {
+        "operation": "annotation.commitInk",
+        "coverage": "native",
+        "count": 100,
+        "outcomes": {
+          "success": 100
+        },
+        "histogram": {
+          "buckets": [
+            0,
+            0,
+            100,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        "work": {
+          "items": 100
+        },
+        "durationSamples": 100,
+        "resourceSampleEvery": 16
+      }
+    ],
+    "contextSeconds": {},
+    "openSpans": 0
+  },
+  {
+    "schema": 1,
+    "instrumentation": 1,
+    "id": "00000000-0000-0000-0000-000000000001",
+    "identity": "fixture",
+    "source": "activity",
+    "begin": "2026-10-03T10:00:00Z",
+    "end": "2026-10-03T11:00:00Z",
+    "received": "2026-10-03T11:01:00Z",
+    "environment": {
+      "platform": "iOS",
+      "deviceModel": "iPad16,1",
+      "osVersion": "18.6",
+      "appVersion": "1",
+      "build": "100",
+      "provenance": "development"
+    },
+    "mixedBuilds": false,
+    "partial": true,
+    "metrics": {},
+    "intervalResources": [],
+    "dropped": {},
+    "operations": [
+      {
+        "operation": "annotation.commitInk",
+        "coverage": "native",
+        "count": 100,
+        "outcomes": {
+          "success": 100
+        },
+        "histogram": {
+          "buckets": [
+            0,
+            0,
+            100,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        "work": {
+          "items": 100
+        },
+        "durationSamples": 100,
+        "resourceSampleEvery": 16
+      }
+    ],
+    "contextSeconds": {},
+    "openSpans": 0
+  },
+  {
+    "schema": 1,
+    "instrumentation": 1,
+    "id": "00000000-0000-0000-0000-000000000001",
+    "identity": "other-source",
+    "source": "metrickit",
+    "begin": "2026-10-03T10:00:00Z",
+    "end": "2026-10-03T11:00:00Z",
+    "received": "2026-10-03T11:01:00Z",
+    "environment": {
+      "platform": "iOS",
+      "deviceModel": "iPad16,1",
+      "osVersion": "18.6",
+      "appVersion": "1",
+      "build": "100",
+      "provenance": "development"
+    },
+    "mixedBuilds": false,
+    "partial": true,
+    "metrics": {},
+    "intervalResources": [],
+    "dropped": {},
+    "operations": [
+      {
+        "operation": "annotation.commitInk",
+        "coverage": "native",
+        "count": 100,
+        "outcomes": {
+          "success": 100
+        },
+        "histogram": {
+          "buckets": [
+            0,
+            0,
+            100,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        "work": {
+          "items": 100
+        },
+        "durationSamples": 100,
+        "resourceSampleEvery": 16
+      }
+    ],
+    "contextSeconds": {},
+    "openSpans": 0
+  }
+]

@@ -13,6 +13,9 @@ public protocol InkEngineCalling: AnyObject {
     func inkRender(href: String, section: SectionInk, focus: String?) async throws
     /// What the eraser path (web view coordinates) touches on the current page.
     func inkHitTest(points: [[Double]], radius: Double) async throws -> InkHit
+    /// Projects a legacy conversion without changing the renderer's saved section cache.
+    func inkPreviewMarginConversion(href: String, noteID: String, area: InkNoteArea) async throws
+        -> Bool
     func inkFocusMarginNote(href: String, noteID: String) async throws -> Bool
     func inkSelect(lasso: [[Double]]) async throws -> InkSelectionHit
     func inkPreviewSelection(
@@ -47,6 +50,9 @@ public protocol InkEngineCalling: AnyObject {
 
 /// Writing areas came later; an engine without them (an older page) measures nothing.
 extension InkEngineCalling {
+    public func inkPreviewMarginConversion(href: String, noteID: String, area: InkNoteArea)
+        async throws -> Bool
+    { false }
     public func inkMeasureNoteAreas() async throws -> [InkNoteAreaFrame] { [] }
     public func inkPreviewNoteArea(href: String, noteID: String, area: InkNoteArea?) async throws
         -> InkNoteAreaFrame?
@@ -127,13 +133,13 @@ public final class InkSession {
     public weak var engine: (any InkEngineCalling)? {
         didSet {
             guard oldValue !== engine else { return }
+            cancelMarginConversion()
             cancelSelection()
             isSelectingInk = false
             rendererGeneration += 1
             if engine == nil { readySections.removeAll() }
             migrating.removeAll()
             reportedMarginNotes = nil
-            marginMemoryArmed = false
             // Geometry measured on the old page means nothing on a new one.
             areaDraft = nil
             areaFrames = []
@@ -176,6 +182,7 @@ public final class InkSession {
     public var tool: InkTool = .pen {
         didSet {
             guard tool != oldValue else { return }
+            if isPreviewingMarginConversion { cancelMarginConversion() }
             onToolChanged?(tool)
         }
     }
@@ -225,7 +232,6 @@ public final class InkSession {
         self.store = store
         self.makeID = makeID
         self.now = now
-        self.marginMemory = marginMemory
     }
 
     deinit {
@@ -238,6 +244,7 @@ public final class InkSession {
     /// Opening the book that is already open (its web view was rebuilt) keeps the ink in memory
     /// and the undo history, and only redraws.
     public func open(bookID: BookID) async {
+        cancelMarginConversion()
         if isOpen, self.bookID == bookID {
             debugLog("[InkSession] Reattached to \(bookID.uuid); keeping undo history")
             for href in readySections.sorted() { await prepare(href: href) }
@@ -266,7 +273,6 @@ public final class InkSession {
         isOpen = true
         onUndoStateChanged?()
         reportedMarginNotes = nil
-        marginMemoryArmed = false
         reportMarginNotes()
         for href in readySections.sorted() { await prepare(href: href) }
     }
@@ -277,6 +283,7 @@ public final class InkSession {
     @discardableResult
     public func reloadFromStore() async -> Bool {
         guard isOpen, let bookID else { return true }
+        cancelMarginConversion()
         cancelSelection()
         guard await flush() else { return false }
         openGeneration += 1
@@ -321,6 +328,7 @@ public final class InkSession {
     /// and removes it without reloading if preparation fails before any restore write.
     func setRestoreSuspended(_ suspended: Bool) {
         if suspended {
+            cancelMarginConversion()
             cancelSelection()
             restoreSuspendedReason =
                 "Handwriting editing is paused while backup restore is in progress."
@@ -407,6 +415,7 @@ public final class InkSession {
     @discardableResult
     public func apply(_ operation: InkOperation) -> Bool {
         guard canEdit else { return false }
+        if isPreviewingMarginConversion { cancelMarginConversion() }
         if selection != nil { cancelSelection() }
         let href = operation.href
         let before = section(href)
@@ -429,6 +438,7 @@ public final class InkSession {
     public func apply(_ operations: [InkOperation]) -> Bool {
         guard operations.count > 1 else { return operations.first.map { apply($0) } ?? false }
         guard canEdit else { return false }
+        if isPreviewingMarginConversion { cancelMarginConversion() }
         if selection != nil { cancelSelection() }
         var hrefs: [String] = []
         for operation in operations where !hrefs.contains(operation.href) {
@@ -459,6 +469,7 @@ public final class InkSession {
 
     @discardableResult
     public func undo() -> Bool {
+        cancelMarginConversion()
         cancelSelection()
         guard canEdit, let entry = undoStack.popLast() else { return false }
         commit(href: entry.href, before: entry.after, after: entry.before, focus: nil)
@@ -469,6 +480,7 @@ public final class InkSession {
 
     @discardableResult
     public func redo() -> Bool {
+        cancelMarginConversion()
         cancelSelection()
         guard canEdit, let entry = redoStack.popLast() else { return false }
         commit(href: entry.href, before: entry.before, after: entry.after, focus: nil)
@@ -509,8 +521,12 @@ public final class InkSession {
         revision += 1
         pendingSections[href] = revision
         let command = SectionCommand(
-            operationID: UUID(), bookID: bookID, href: href,
-            expected: before, intended: section(href), revision: revision
+            operationID: UUID(),
+            bookID: bookID,
+            href: href,
+            expected: before,
+            intended: section(href),
+            revision: revision
         )
         pendingCommands.append(command)
         if case .failed = persistenceState {} else { persistenceState = .saving }
@@ -523,18 +539,26 @@ public final class InkSession {
             await previous?.value
             // A failed predecessor keeps its exact identity and before/after transition.
             // Later edits remain rendered/pending, but cannot collapse an erase into a re-add.
-            guard pendingCommands.first(where: { $0.href == command.href })?.operationID
-                == command.operationID else { return }
+            guard
+                pendingCommands.first(where: { $0.href == command.href })?.operationID
+                    == command.operationID
+            else { return }
             let result = await store.setSection(
-                command.intended, href: command.href, bookID: command.bookID,
-                expected: command.expected, operationID: command.operationID
+                command.intended,
+                href: command.href,
+                bookID: command.bookID,
+                expected: command.expected,
+                operationID: command.operationID
             )
             switch result {
                 case .success:
-                    committedInk.sections[command.href] = command.intended.isEmpty ? nil : command.intended
+                    committedInk.sections[command.href] =
+                        command.intended.isEmpty ? nil : command.intended
                     committedInk.version = BookInk.currentVersion
                     pendingCommands.removeAll { $0.operationID == command.operationID }
-                    if pendingSections[command.href] == command.revision { pendingSections[command.href] = nil }
+                    if pendingSections[command.href] == command.revision {
+                        pendingSections[command.href] = nil
+                    }
                     if pendingSections.isEmpty { persistenceState = .saved }
                 case .failure(let error):
                     persistenceState = .failed(error.message)
@@ -583,12 +607,11 @@ public final class InkSession {
 
     // MARK: - Margin notes (P5.2)
 
-    /// The page's margin: `available` is false where a column is too narrow to write beside
-    /// (margin notes then show as icons only).
+    /// Compatibility state for older bridge messages. Expansion is always unavailable (ADR 016).
     public struct MarginState: Equatable, Sendable, Codable {
         public var expanded = false
-        public var available = true
-        public init(expanded: Bool = false, available: Bool = true) {
+        public var available = false
+        public init(expanded: Bool = false, available: Bool = false) {
             self.expanded = expanded
             self.available = available
         }
@@ -596,18 +619,11 @@ public final class InkSession {
 
     public private(set) var marginState = MarginState()
     public var onMarginStateChanged: (() -> Void)?
-    /// A note icon was tapped where the margin can't open (narrow screen): show it. On a narrow
+    /// A legacy note icon was tapped: show it. On a narrow
     /// column handwritten notes from the text show as icons too (BF-074).
     public var onMarginNotesTapped: ((_ href: String, _ noteIDs: [String]) -> Void)?
     public var onMarginNoteTapped: ((_ href: String, _ noteID: String) -> Void)?
     private var reportedMarginNotes: NotesPresence?
-    /// Whether each book's margin was left open, on this device (owner decision, 2026-10-03).
-    private let marginMemory: MarginOpenMemory
-    /// False until the page has answered this book's first margin command, which reopens a
-    /// margin left open. The page's earlier reports (closed, before that command) are not the
-    /// person's choice and are not remembered.
-    private var marginMemoryArmed = false
-
     /// Which kinds of handwritten note the book has, as the page is told.
     private struct NotesPresence: Equatable {
         var margin: Bool
@@ -624,44 +640,31 @@ public final class InkSession {
         ink.sections.values.contains { $0.notes.contains(where: { !$0.isMarginNote }) }
     }
 
-    /// The page reports the margin's state.
+    /// Compatibility reports never re-enable the retired writing rail.
     public func setMarginState(_ state: MarginState) {
-        // Where the margin can't open here (narrow column, scrolling) the person's choice is kept.
-        if marginMemoryArmed, state.available, let bookID {
-            marginMemory.setOpen(bookID, state.expanded)
-        }
-        guard state != marginState else { return }
-        marginState = state
+        let retired = MarginState(expanded: false, available: false)
+        guard marginState != retired else { return }
+        marginState = retired
         onMarginStateChanged?()
     }
 
-    /// Opens or closes the wide margin to write margin notes in. The page's answer becomes the
-    /// margin state, so the toolbar follows the page even if its own report was lost (OD-028).
-    /// When the page fails partway it has already reported what it shows.
+    /// Old bridge/debug callers are harmless; only the icon gutter remains.
     public func setMarginOpen(_ open: Bool) async {
-        debugLog("[InkSession] Margin \(open ? "open" : "closed") requested")
         guard let engine else { return }
-        let generation = rendererGeneration
-        do {
-            let state = try await engine.inkSetMargin(
-                hasNotes: hasMarginNotes,
-                hasFlowNotes: hasFlowNotes,
-                open: open
-            )
-            guard generation == rendererGeneration else { return }
-            setMarginState(state)
-        } catch {
-            debugLog("[InkSession] Setting the margin failed: \(error)")
-        }
+        _ = try? await engine.inkSetMargin(
+            hasNotes: hasMarginNotes,
+            hasFlowNotes: hasFlowNotes,
+            open: false
+        )
+        setMarginState(.init())
     }
 
     /// Tells the page whether the book has margin notes and notes in the text, when that changes.
-    /// The first time for a book (or a new page), it also reopens a margin left open in this book.
+    /// Remembered expansion is ignored; it is obsolete local view state.
     private func reportMarginNotes() {
         let has = NotesPresence(margin: hasMarginNotes, flow: hasFlowNotes)
         guard has != reportedMarginNotes, let engine else { return }
         reportedMarginNotes = has
-        let restore = !marginMemoryArmed && bookID.map(marginMemory.isOpen) == true
         let generation = rendererGeneration
         Task { [weak self] in
             guard let self, generation == self.rendererGeneration else { return }
@@ -669,11 +672,10 @@ public final class InkSession {
                 let state = try? await engine.inkSetMargin(
                     hasNotes: has.margin,
                     hasFlowNotes: has.flow,
-                    open: restore ? true : nil
+                    open: false
                 ),
                 generation == self.rendererGeneration
             else { return }
-            self.marginMemoryArmed = true
             self.setMarginState(state)
         }
     }
@@ -691,18 +693,104 @@ public final class InkSession {
         }
     }
 
-    /// Selects one crowded margin canvas as presentation only; its passage stays unchanged.
-    public func focusMarginNote(href: String, noteID: String) async -> Bool {
-        guard canEdit, !isWriting, let engine,
-            let note = section(href).notes.first(where: { $0.id == noteID && $0.isMarginNote })
+    /// Obsolete focus commands cannot restore margin editing.
+    public func focusMarginNote(href: String, noteID: String) async -> Bool { false }
+
+    // MARK: Legacy margin transition (ADR 016)
+
+    public struct MarginConversionDraft: Sendable {
+        public let href: String
+        public let original: InkNote
+        public let area: InkNoteArea
+        fileprivate let revision: UInt64
+        fileprivate let renderer: UInt64
+    }
+    public private(set) var marginConversion: MarginConversionDraft?
+    public var onMarginConversionChanged: (() -> Void)?
+    private var conversionGeneration: UInt64 = 0
+    private var conversionPreparing = false
+    public var isPreviewingMarginConversion: Bool { conversionPreparing || marginConversion != nil }
+
+    /// Preview is a projection only. A stale note, unsaved predecessor or unresolved anchor refuses it.
+    public func previewMarginConversion(href: String, expected: InkNote) async -> Bool {
+        cancelMarginConversion()
+        guard canEdit, !isWriting, !hasPendingChanges, let engine,
+            section(href).notes.first(where: { $0.id == expected.id }) == expected,
+            let area = expected.areaForMovingIntoText
         else { return false }
         isSelectingInk = false
+        isArrangingSpace = false
+        deselectArea()
+        conversionPreparing = true
+        onSelectionModeChanged?()
+        let request = conversionGeneration
         let renderer = rendererGeneration
+        let version = revision
+        await renderTail?.value
         do {
-            let shown = try await engine.inkFocusMarginNote(href: href, noteID: noteID)
-            return shown && renderer == rendererGeneration && canEdit
-                && section(href).notes.first(where: { $0.id == noteID }) == note
-        } catch { return false }
+            let shown = try await engine.inkPreviewMarginConversion(
+                href: href,
+                noteID: expected.id,
+                area: area
+            )
+            guard shown, request == conversionGeneration, renderer == rendererGeneration,
+                version == revision, canEdit,
+                section(href).notes.first(where: { $0.id == expected.id }) == expected
+            else {
+                if request == conversionGeneration { cancelMarginConversion() }
+                scheduleRender(href: href, focus: nil)
+                return false
+            }
+            marginConversion = MarginConversionDraft(
+                href: href,
+                original: expected,
+                area: area,
+                revision: version,
+                renderer: renderer
+            )
+            conversionPreparing = false
+            onMarginConversionChanged?()
+            onSelectionModeChanged?()
+            return true
+        } catch {
+            if request == conversionGeneration { cancelMarginConversion() }
+            scheduleRender(href: href, focus: nil)
+            return false
+        }
+    }
+
+    public func cancelMarginConversion() {
+        guard isPreviewingMarginConversion else { return }
+        conversionGeneration += 1
+        let draft = marginConversion
+        marginConversion = nil
+        conversionPreparing = false
+        if let draft { scheduleRender(href: draft.href, focus: nil) }
+        onMarginConversionChanged?()
+        onSelectionModeChanged?()
+    }
+
+    /// True only after the existing durable writer has committed; failures stay retryable.
+    public func commitMarginConversion() async -> Bool {
+        guard let draft = marginConversion, canEdit, !isWriting,
+            draft.revision == revision, draft.renderer == rendererGeneration,
+            section(draft.href).notes.first(where: { $0.id == draft.original.id }) == draft.original
+        else {
+            cancelMarginConversion()
+            return false
+        }
+        cancelMarginConversion()
+        guard apply(.moveMarginNoteIntoText(href: draft.href, expected: draft.original, at: now()))
+        else { return false }
+        let saved = await flush()
+        if saved,
+            let frame = areaFrames.first(where: {
+                $0.href == draft.href && $0.noteID == draft.original.id
+            })
+        {
+            _ = selectArea(frame)
+        }
+        return saved
     }
 
     // MARK: - Writing areas (ADR 015)
@@ -713,6 +801,7 @@ public final class InkSession {
         didSet {
             guard isArrangingSpace != oldValue else { return }
             if isArrangingSpace {
+                if isPreviewingMarginConversion { cancelMarginConversion() }
                 isSelectingInk = false
                 selectedAreaNoteID = nil
                 Task { await self.refreshAreaFrames() }
@@ -1030,6 +1119,7 @@ public final class InkSession {
             if !isSelectingInk {
                 cancelSelection()
             } else {
+                if isPreviewingMarginConversion { cancelMarginConversion() }
                 isArrangingSpace = false
                 deselectArea()
             }
@@ -1325,7 +1415,9 @@ public final class InkSession {
     /// The eraser passed over `points` (web view coordinates): everything it touched goes, as one
     /// undo step. Runs in order with strokes.
     public func erase(points: [[Double]]) async {
-        guard !isDetaching, restoreSuspendedReason == nil else { return }
+        guard !isDetaching, restoreSuspendedReason == nil, !isPreviewingMarginConversion else {
+            return
+        }
         await commitWrittenStrokes()
         acceptedWork += 1
         let previous = strokeTail
@@ -1354,7 +1446,9 @@ public final class InkSession {
     /// A Pencil stroke finished. The page decides what it is; the result is applied. Strokes are
     /// processed strictly in order, and this returns once the page has drawn the result.
     public func finishStroke(_ stroke: InkStrokeInput) async {
-        guard !isDetaching, restoreSuspendedReason == nil else { return }
+        guard !isDetaching, restoreSuspendedReason == nil, !isPreviewingMarginConversion else {
+            return
+        }
         acceptedWork += 1
         if isWriting {
             // Mid-word: hold it until the Pencil pauses (see `writtenStrokes`).
@@ -1437,8 +1531,6 @@ public final class InkSession {
                             anchor: anchor,
                             strokes: strokes,
                             createdAt: stamp,
-                            placement: proposal.placement,
-                            refWidth: proposal.refWidth,
                         )
                     )
                 ]
@@ -1498,7 +1590,7 @@ public final class InkSession {
 
     /// The Pencil touched the page.
     public func penDown() {
-        guard restoreSuspendedReason == nil else { return }
+        guard restoreSuspendedReason == nil, !isPreviewingMarginConversion else { return }
         releaseTask?.cancel()
         releaseTask = nil
         isWriting = true

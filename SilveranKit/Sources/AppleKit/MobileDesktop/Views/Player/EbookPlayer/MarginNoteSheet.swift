@@ -46,19 +46,25 @@ struct MarginNoteSheet: View {
                                 StrokeThumbnail(strokes: note.strokes)
                                     .frame(maxWidth: .infinity).frame(height: 200)
                                     .accessibilityLabel(
-                                        note.isMarginNote ? "Handwritten margin note" : "Handwritten note"
+                                        note.isMarginNote
+                                            ? "Handwritten margin note" : "Handwritten note"
                                     )
                                 Text("Near “\(note.anchor.exact)”")
-                                Button("View Full Drawing") { viewing = note }
+                                if note.strokes.isEmpty {
+                                    Text("Empty writing area").foregroundStyle(.secondary)
+                                } else {
+                                    Button("View Full Drawing") { viewing = note }
+                                }
                                 if let edit, note.isMarginNote {
                                     Button(
-                                        editing == note.id ? "Opening…" : "Edit This Note in Margin"
+                                        editing == note.id
+                                            ? "Preparing Preview…" : "Move into Text…"
                                     ) {
                                         editing = note.id
                                         Task {
                                             if !(await edit(note)) {
                                                 errorMessage =
-                                                    "The page changed or the reader is busy. Close and tap the note group again."
+                                                    "This note couldn’t be previewed. It may need passage repair, or the reader has unsaved changes. Close and try again after resolving them."
                                             }
                                             editing = nil
                                         }

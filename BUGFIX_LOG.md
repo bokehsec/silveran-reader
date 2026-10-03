@@ -42,6 +42,102 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-084 — Performance report share left its staged ZIP behind and blocked Clear history
+
+- Date: 2026-10-03
+- Status: Fixed; iPhone simulator verified, iPad simulator interaction pending
+- Platforms: iOS/iPadOS (AppleKit Settings)
+- Components: `PerformanceDiagnosticsView`, `PerformanceReportShare`, `ApplePerformanceDiagnostics.finishExport`
+- Related links: [energy diagnostics evidence](docs/evidence/energy-diagnostics-2026-10-03/README.md), [ADR 017](docs/decisions/017-local-performance-diagnostics.md)
+
+#### Symptom
+
+After Settings → Performance Diagnostics → Export performance report, either saving to Files or closing the share sheet left the staged `Silveran-performance*.zip` in the app's diagnostics `exports` folder until the next launch or export. Tapping **Clear history** afterwards did nothing: no confirmation appeared. Reproduced reliably on the isolated Energy QA iPhone (iOS 26.2).
+
+#### Root cause
+
+The `UIActivityViewController` dismisses itself when an activity completes or is cancelled. SwiftUI's `.sheet(item:)` binding therefore stayed non-nil, so its `onDismiss` (which calls `finishExport()` to delete staging) never ran. While SwiftUI still considered the sheet presented, it would not present the Clear history confirmation dialog.
+
+#### Change
+
+`PerformanceReportShare` sets `completionWithItemsHandler` and calls back to clear the `export` item on the main actor. That runs the existing `onDismiss` cleanup and resets presentation state. No change to export contents, retention or the store.
+
+#### Validation
+
+- iPhone simulator (Silveran Energy QA iPhone, iOS 26.2, Debug build from this tree): exported, closed the share sheet, confirmed `PerformanceDiagnostics/exports` was removed; Clear history then showed its confirmation, cancel kept 8 summaries, and confirm cleared to 0 with Export disabled and "No measurements to export yet."
+- Before the fix the same sequence left the ZIP in place and Clear history did not respond.
+- `scripts/iostest` PerformanceDiagnosticsTests 13/13 on iPhone 17 Pro iOS 26.2 and iPad (A16) iPadOS 18.6 (component host; it does not drive the share sheet).
+- iPad simulator interaction not run: the host was overloaded (load average 200–300, 11 simulators booted) and the app did not start on the iPad QA device.
+
+#### Compatibility and follow-up
+
+None known. Staging was already cleaned on next launch/export, so no stale files need migration.
+
+### BF-083 — Performance diagnostics missed foreground time until the first background transition
+
+- Date: 2026-10-03
+- Status: Fixed; automated and iPhone simulator verified
+- Platforms: iOS/iPadOS collector (AppleKit); shared Kit recorder
+- Components: `ApplePerformanceDiagnostics.start/applyEnabled/clear/status`, `PerformanceRecorder.drain`
+- Related links: [energy diagnostics evidence](docs/evidence/energy-diagnostics-2026-10-03/README.md), [ADR 017](docs/decisions/017-local-performance-diagnostics.md)
+
+#### Symptom
+
+An export made after using the app in the foreground showed empty context (`contextSeconds: {}`) for every window, so foreground duration—the denominator the comparison tool uses for CPU-per-foreground-hour—was missing for a session's first foreground period. The same happened after turning collection back on or clearing history.
+
+#### Root cause
+
+Activity context came only from `didBecomeActive`/`didEnterBackground` notifications, and the observers were registered asynchronously on the diagnostics queue during startup, after the launch activation had usually fired. Enabling collection and Clear history both reset the recorder's open activity intervals, and nothing restarted them until the next lifecycle transition. Seeding the current state exposed a second problem: `status()` flushed the recorder on every Settings refresh, so a foreground-only interval would write a new tiny summary each time—including immediately after Clear history.
+
+#### Change
+
+After enabling (including at startup) and after a clear while enabled, read `UIApplication.applicationState` on the main thread and set the foreground/background activity on the diagnostics queue; repeated activation is idempotent. `PerformanceRecorder.drain` gains `includeContextOnly` (default `true`); `status()` passes `false`, so a window holding only activity time stays open until a lifecycle transition, export or operation summary closes it. Lifecycle/export flushes, operation recording and retention are unchanged.
+
+#### Validation
+
+- New portable test `contextOnlyWindowStaysOpenForStatusReads`; `scripts/test` → 638 tests / 81 suites pass.
+- `scripts/iostest -only-testing:'Silveran Component Tests (iOS)/PerformanceDiagnosticsTests'` → 13/13 on iPhone 17 Pro iOS 26.2 and iPad (A16) iPadOS 18.6, including the existing "nothing exportable after clear" assertion.
+- iPhone simulator export after the fix: foreground windows of 28 s and 20 s recorded; the collection-off interval correctly has no data; Clear history leaves 0 saved summaries.
+- Not verified on a physical device or with real MetricKit payloads (ED-5).
+
+#### Compatibility and follow-up
+
+None known. Diagnostics are disposable; old windows without foreground context remain valid and the comparison tool already treats missing context as unknown.
+
+### BF-082 — Retire expandable margin authoring without stranding existing notes
+
+- Date: 2026-10-03
+- Status: Implemented; automated verification in progress, simulator interaction acceptance pending
+- Platforms: Shared Kit/renderer; Apple reader (iPad/iPhone/macOS)
+- Components: `InkSession`, `InkOperation.moveMarginNoteIntoText`, `InkNote.areaForMovingIntoText`, ink bridge, `InkEngine`, `InkLayout`, `InkMarginControl`, `InkMargin`, reader toolbar/view model, `MarginNoteSheet`, input/navigation guards
+- Related links: [removal review](docs/EXPANDABLE_MARGIN_REMOVAL_REVIEW.md), [ADR 016](docs/decisions/016-retire-expandable-writing-margin.md)
+
+#### Symptom
+
+The owner requested removal of the expandable writing rail after adopting resizable in-text areas. Removing only the toolbar would leave remembered state, icon taps and focus commands able to reopen it; deleting margin components would also strand existing margin notes and ordinary/empty-area notes on narrow screens. Existing area bounds measured sample centers rather than painted edges, which would clip negative left extents or let negative top ink escape the new converted box.
+
+#### Root cause
+
+Authoring expansion and shared viewing used the same state/controller/layer. Legacy `placement`/`refWidth` are durable format fields and cannot be deleted with the interaction. Stroke values are sync identities: translating them during conversion would create duplicate strokes on merge. Area floors previously used point bounds without pressure/outline padding or a vertical rendering origin for negative ink. Once negative top ink is included, handle calculations must use its shifted coordinate origin to avoid height drift. Foliate's delayed anchor/selection reflows can arrive after preview preparation; treating them as navigation would cancel a valid preview and publish its temporary pagination.
+
+#### Change
+
+Retire the expansion toolbar, remembered reopening, icon/focus opening, open-margin CSS and runtime margin-writing classifier. Compatibility commands cannot reopen it. Keep shared icons/grouping, hit testing, page-tap suppression, passage/full drawing viewer, confirmed deletion, annotation browsing/repair/export, and legacy codecs/sync/restore. New handwriting uses the text path. Empty writing areas have a readable empty-state label in the viewer.
+
+Move into Text is a Kit-owned, revision/renderer/note-checked preview followed by one existing protected mutation/undo step. Derive a right-side area from original width and painted bounds; retain ID, anchor, legacy locator, creation date, reference width and every stroke sample/tool/color/width/pressure. Preview keeps renderer section cache and saved model untouched; cancel restores the current projection, stale/unresolved/invalid notes refuse safely. Writing/navigation are paused during preview; layout, tools, incoming reload, edits, restore and renderer replacement invalidate it. Confirmation reports success only after durable flush; failure retains edits for Retry/Export. Area rendering now unions painted bounds and offsets negative x/y without rebasing; `noteOrigin` maps continued writing back correctly, and native handles use that shifted origin without accumulating height. Anchor/selection reflow messages keep the preview without publishing temporary progress; real navigation or explicit layout/style changes cancel it. Reading-margin preferences, bracket marks and current sync conflict/tombstone rules stay unchanged.
+
+#### Validation
+
+- WebHarness: 227/227 passed before final cleanup; final rerun and native/component/build results to be recorded below.
+- Portable suite: 624 tests/80 suites passed before adding the native WebKit conversion test; the next run exposed a missing mock `resolveCFI` in that new test setup, corrected without changing product code. Final rerun pending.
+- Synthetic persistence checks cover protected legacy/conversion round trips, failed-save retry/export, restart, one-step undo/redo, stale/deleted notes, renderer replacement, late legacy merge without duplicated strokes, and old backup/sync through the protected owner. Renderer checks include disabled expansion, offset-zero anchors, cancel, narrow empty icons and negative painted extents.
+- Initial iOS build raced concurrent performance-diagnostics work and failed in that unrelated view; retry running. Existing changes in the shared workspace are preserved.
+- Native UI input is blocked by the locked Mac; user notified asynchronously. Existing QA simulators/data were not changed. Fresh QA devices: 12.9-inch iPad `4692C6EA-671F-4AB3-829D-D426FB491A1B`, mini `A81CC8D4-019B-4D26-BFFC-30719094BD18`, iPhone `E9BAB313-6B4F-4C86-8F62-A0336D7761F2`, iOS 26.2. Exact pending workflows are checklist 77.
+
+#### Compatibility and follow-up
+
+No schema/storage migration or new cloud record kind. Old margin records remain supported indefinitely. Existing per-note property clocks can restore margin placement after an offline edit; those records still open the viewer and can be converted again. Existing retained conflicts/local before-after journals/backups supply recovery beyond session undo. Areas require feature level 2 and its Production CloudKit schema deployment; all writing devices must support areas. Real Pencil/palm, manual VoiceOver/undo/layout acceptance and signed two-device delivery remain open. No server receives annotations.
+
 ### BF-081 — Writing more under a note after a pause sometimes started a second note, splitting the writing around a line of the book
 
 - Date: 2026-10-03

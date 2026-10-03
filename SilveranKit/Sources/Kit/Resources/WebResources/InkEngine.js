@@ -10,7 +10,7 @@ import { ensureInkStyle, placeNotes, clearNotes, sizeNote, noteOrigin, noteEleme
 import { proposeStroke, proposeGroup, proposeSpace, hitTestNotes, visibleWidth, pageStartOffset, toDoc } from "./InkGeometry.js";
 import { selectInLasso, transformPoints } from "./InkSelection.js";
 import { strokeAttributes } from "./InkStrokeShape.js";
-import { MarginLayer, proposeMarginStroke, proposeMarginGroup, isMarginNote, setMarginRoom, inkBounds } from "./InkMargin.js";
+import { MarginLayer, isMarginNote, setMarginRoom, inkBounds } from "./InkMargin.js";
 
 /**
  * InkEngine - the page's half of Apple Pencil ink (docs/PENCIL_INK_IMPLEMENTATION_PLAN.md, 2.1).
@@ -35,7 +35,7 @@ export default class InkEngine {
   #markLayers = new WeakMap();
   /** doc -> the margin notes drawn beside its lines (P5.2). */
   #marginLayers = new WeakMap();
-  /** Whether the margin is wide enough to show and write margin notes (else icons). */
+  /** Legacy bridge state: the writing rail is retired; margin notes always use icons. */
   #marginExpanded = false;
   /**
    * Whether the column is too narrow to show handwriting in the text (iPhone, Slide Over): those
@@ -179,12 +179,13 @@ export default class InkEngine {
   }
 
   /**
-   * Shows margin notes as handwriting (`expanded`) or as icons, and handwritten notes in the text
-   * as handwriting or (`flowIcons`, a narrow column) as icons; redraws the loaded sections.
+   * Updates the shared icon gutter and narrow-column projection. The old expansion argument is
+   * ignored; legacy margin notes always remain icons.
    */
   setMarginExpanded(expanded, { flowIcons = this.#flowIcons, iconGutter = this.#iconGutter } = {}) {
+    expanded = false; // ADR 016: old callers cannot restore margin authoring.
     if (this.#marginExpanded === !!expanded && this.#flowIcons === !!flowIcons && this.#iconGutter === !!iconGutter) return;
-    this.#marginExpanded = !!expanded;
+    this.#marginExpanded = false;
     this.#flowIcons = !!flowIcons;
     this.#iconGutter = !!iconGutter;
     for (const { doc } of this.#contents()) setMarginRoom(doc, this.#marginExpanded, { icons: this.#iconGutter });
@@ -199,24 +200,24 @@ export default class InkEngine {
     return this.#flowIcons;
   }
 
-  /**
-   * Brings a margin note's line into view (after the margin opened and the text reflowed) and shows
-   * the note, fitted to the page down to `minScale` of its written size. True when the note is
-   * drawn; false when it is not here or would be smaller than that (the caller shows the sheet).
-   */
+  /** Obsolete editing/focus calls cannot expand the page. */
   revealMarginNote(id, href = null, { minScale = 0 } = {}) {
-    for (const { doc, index } of this.#contents()) {
-      if (href && this.#href(index) !== href) continue;
-      const layer = this.#marginLayers.get(doc);
-      if (!layer) continue;
-      if (!layer.focusNote(id, { minScale })) continue;
-      const range = layer.rangeOf(id);
-      if (range) {
-        this.#view?.renderer?.scrollToAnchor?.(range);
-        return !!layer.placement(id);
-      }
-    }
     return false;
+  }
+
+  /** Projects one legacy note into the text without mutating its saved section. */
+  previewMarginConversion(href, id, area) {
+    const section = this.#sections.get(href);
+    const contents = this.#contentsFor(href);
+    const note = section?.notes.find(n => n.id === id && isMarginNote(n));
+    if (!note || !contents || resolveAnchor(buildTextIndex(contents.doc.body).text, note.anchor) == null) return false;
+    const candidate = { ...note, placement: null, area };
+    try {
+      const result = this.render(href, { ...section, notes: section.notes.map(n => n.id === id ? candidate : n) }, id);
+      return !result.orphaned?.includes(id);
+    } finally {
+      this.#sections.set(href, section);
+    }
   }
 
   // MARK: Writing areas (ADR 015). Measured and previewed here; Swift decides and saves.
@@ -354,19 +355,11 @@ export default class InkEngine {
     if (box.left < left || box.right > right) this.#view?.renderer?.scrollToAnchor?.(range);
   }
 
-  /** What to do with a finished stroke; see InkMargin.proposeMarginStroke and InkGeometry.proposeStroke. */
+  /** New handwriting belongs to the text/area path, never to the retired rail. */
   propose(stroke) {
     const contents = this.#currentContents();
     if (!contents) return { op: "none", reason: "no-section" };
     const href = this.#href(contents.index);
-    if (this.#marginExpanded) {
-      const margin = proposeMarginStroke({
-        doc: contents.doc, href, stroke, viewportWidth: window.innerWidth,
-        layer: this.#marginLayers.get(contents.doc) ?? null,
-        notes: this.#sections.get(href)?.notes ?? [],
-      });
-      if (margin) return margin;
-    }
     return proposeStroke({
       doc: contents.doc,
       href,
@@ -376,22 +369,13 @@ export default class InkEngine {
   }
 
   /**
-   * What strokes written without pausing mean, together: margin writing when the wide margin is
-   * open and they qualify (InkMargin.proposeMarginGroup), otherwise InkGeometry.proposeGroup.
+   * Classifies a written group in the text using the current area geometry.
    */
   proposeGroup(strokes) {
     if (strokes.length === 1) return [this.propose(strokes[0])];
     const contents = this.#currentContents();
     if (!contents) return [{ op: "none", reason: "no-section" }];
     const href = this.#href(contents.index);
-    if (this.#marginExpanded) {
-      const margin = proposeMarginGroup({
-        doc: contents.doc, href, strokes, viewportWidth: window.innerWidth,
-        layer: this.#marginLayers.get(contents.doc) ?? null,
-        notes: this.#sections.get(href)?.notes ?? [],
-      });
-      if (margin) return [margin];
-    }
     return proposeGroup({ doc: contents.doc, href, strokes, viewportWidth: window.innerWidth });
   }
 

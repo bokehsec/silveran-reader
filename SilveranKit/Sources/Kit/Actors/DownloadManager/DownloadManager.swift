@@ -44,6 +44,7 @@ public actor DownloadManager {
     }()
 
     private var downloads: [UUID: DownloadRecord] = [:]
+    private var performanceSpans: [UUID: PerformanceMeasurement] = [:]
     private var activeTasks: [UUID: URLSessionDownloadTask] = [:]
     private var bookMetadataCache: [BookID: BookMetadata] = [:]
     private var observers: [UUID: @Sendable ([DownloadRecord]) -> Void] = [:]
@@ -288,6 +289,7 @@ public actor DownloadManager {
             task.cancel()
         }
 
+        performanceSpans.removeValue(forKey: id)?.finish(.cancelled)
         downloads.removeValue(forKey: id)
         await deleteResumeData(for: id)
 
@@ -384,6 +386,10 @@ public actor DownloadManager {
     }
 
     func handleFileDownloaded(downloadId: String, tempURL: URL) async {
+        let measurement = UUID(uuidString: downloadId).flatMap { performanceSpans.removeValue(forKey: $0) }
+        var measuredOutcome: PerformanceOutcome = .failure
+        var measuredBytes = 0
+        defer { measurement?.finish(measuredOutcome, work: [.transferredBytes: measuredBytes]) }
         guard let downloadID = UUID(uuidString: downloadId) else {
             try? FileManager.default.removeItem(at: tempURL)
             return
@@ -426,6 +432,8 @@ public actor DownloadManager {
                 filename: filename,
             )
 
+            measuredOutcome = .success
+            measuredBytes = Int(min(record.receivedBytes, 1_000_000_000))
             record.state = .completed
             record.lastUpdatedAt = Date()
             if let expected = record.expectedBytes {
@@ -454,6 +462,7 @@ public actor DownloadManager {
             var record = downloads[downloadID]
         else { return }
 
+        performanceSpans.removeValue(forKey: downloadID)?.finish(.failure, work: [.retries: 1])
         activeTasks.removeValue(forKey: downloadID)
 
         if let resumeData {
@@ -484,6 +493,7 @@ public actor DownloadManager {
             var record = downloads[downloadID]
         else { return }
 
+        performanceSpans.removeValue(forKey: downloadID)?.finish(.failure, work: [.retries: 1])
         activeTasks.removeValue(forKey: downloadID)
         await deleteResumeData(for: downloadID)
 
@@ -581,6 +591,8 @@ public actor DownloadManager {
         updated.lastUpdatedAt = Date()
         downloads[record.id] = updated
 
+        performanceSpans.removeValue(forKey: record.id)?.finish(.incomplete)
+        if performanceSpans.count < 256 { performanceSpans[record.id] = PerformanceMeasurement(.sourceDownload) }
         task.resume()
 
         await persistState()

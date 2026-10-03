@@ -16,6 +16,7 @@ public enum SilveranPlatform {
     public private(set) nonisolated(unsafe) static var folderWatcher: (any FolderWatching)?
     public private(set) nonisolated(unsafe) static var applicationStorage:
         (any ApplicationStorageProviding)?
+    public private(set) nonisolated(unsafe) static var performance: any PerformanceMeasuring = NoopPerformanceMeasurement()
     /// True once bootstrap has run. Entry points use this to install platform
     /// defaults only when the app shell has not already chosen its own.
     public private(set) nonisolated(unsafe) static var isBootstrapped = false
@@ -28,6 +29,7 @@ public enum SilveranPlatform {
         fontMetadata: (any FontMetadataProbing)? = nil,
         folderWatcher: (any FolderWatching)? = nil,
         applicationStorage: (any ApplicationStorageProviding)? = nil,
+        performance: any PerformanceMeasuring = NoopPerformanceMeasurement(),
     ) {
         Self.audioPlayerFactory = audioPlayerFactory
         Self.nowPlaying = nowPlaying
@@ -36,6 +38,7 @@ public enum SilveranPlatform {
         Self.fontMetadata = fontMetadata
         Self.folderWatcher = folderWatcher
         Self.applicationStorage = applicationStorage
+        Self.performance = performance
         Self.isBootstrapped = true
     }
 }

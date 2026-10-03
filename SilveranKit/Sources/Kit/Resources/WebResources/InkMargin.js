@@ -1,6 +1,6 @@
 import { resolveAnchor, anchorForBoundary, buildTextIndex } from "./InkAnchoring.js";
 import { strokeAttributes, MAX_WIDTH_FACTOR } from "./InkStrokeShape.js";
-import { bbox, round1 } from "./InkLayout.js";
+import { bbox, round1, paintedBounds } from "./InkLayout.js";
 import { toDoc, visibleLines, columnLines, caretAt } from "./InkGeometry.js";
 
 /**
@@ -27,29 +27,18 @@ export const ICON_SIZE = 16;
  * of any gap outside the section frame, where ink cannot be drawn (OD-022).
  */
 export const MARGIN_ROOM = 0.28;
-/**
- * The `<html>` attribute saying what the section's right margin holds: "open" (the wide margin;
- * InkLayout's style narrows the text by `MARGIN_ROOM`) or "icons" (a gutter of note icons, which
- * keeps the text clear of them even with the Narrow margin; OD-044). Absent otherwise.
- */
+/** The section attribute for the shared icon gutter; the old "open" value is never set. */
 export const MARGIN_OPEN_ATTRIBUTE = "data-silveran-margin";
 
-/** Marks a section document as showing the open wide margin, a gutter of icons, or neither. */
+/** Retains the old function signature but accepts only icon-gutter presence (ADR 016). */
 export const setMarginRoom = (doc, open, { icons = false } = {}) => {
-  const mode = open ? "open" : icons ? "icons" : null;
+  const mode = icons ? "icons" : null;
   if (mode) doc.documentElement.setAttribute(MARGIN_OPEN_ATTRIBUTE, mode);
   else doc.documentElement.removeAttribute(MARGIN_OPEN_ATTRIBUTE);
 };
 
-/**
- * The paginator gap. The open margin has none: the paginator keeps half of any gap outside the
- * section frame, where ink cannot be drawn, so with a gap the outermost strip of the margin cut off
- * what people wrote up to the screen's edge (OD-042). The page instead reaches the screen's edges
- * and the text keeps its distance from them by padding (InkLayout's style). Collapsed phone gutters
- * must fit a legible tile; scrolling needs a gutter too.
- */
+/** Gap for readable note icons; reading-margin settings remain independent. */
 export const marginGap = ({ hasNotes = false, expanded = false, narrow = false, scrolling = false }) => {
-  if (expanded && !scrolling) return "0%";
   if (!hasNotes) return "0%";
   return narrow && !scrolling ? "12%" : "6%";
 };
@@ -120,22 +109,7 @@ const TILE_SHIFT = 48;
  * The painted extent of strokes in their own coordinates: sample bounds widened by the widest a
  * pen gets under pressure (plus its outline) or by half the highlighter's width. Null for no ink.
  */
-export const inkBounds = strokes => {
-  let result = null;
-  for (const stroke of strokes ?? []) {
-    if (!stroke.points?.length) continue;
-    const box = bbox(stroke.points);
-    const half = (stroke.width ?? 2) / 2;
-    const pad = stroke.tool === "highlighter" ? half : half * MAX_WIDTH_FACTOR + 0.3;
-    result = {
-      left: Math.min(result?.left ?? Infinity, box.left - pad),
-      top: Math.min(result?.top ?? Infinity, box.top - pad),
-      right: Math.max(result?.right ?? -Infinity, box.right + pad),
-      bottom: Math.max(result?.bottom ?? -Infinity, box.bottom + pad),
-    };
-  }
-  return result;
-};
+export const inkBounds = paintedBounds;
 
 const overlaps = (a, b, clearance = 0) =>
   a.left < b.right + clearance && b.left < a.right + clearance &&

@@ -116,6 +116,10 @@ public actor InkActor {
         expected: SectionInk? = nil,
         operationID: UUID = UUID()
     ) async -> Result<Void, InkPersistenceFailure> {
+        let measurement = PerformanceMeasurement(.commitInk)
+        var outcome: PerformanceOutcome = .failure
+        var payloadBytes = 0
+        defer { measurement.finish(outcome, work: [.payloadBytes: payloadBytes]) }
         // No suspension from journal validation through payload and completion persistence.
         let url = await fileURL(bookID: bookID)
         journalCache.begin()
@@ -133,6 +137,7 @@ public actor InkActor {
                 guard try journal.isCompleted(existing) else {
                     throw InkPersistenceFailure(message: "The original local ink save is still incomplete.")
                 }
+                outcome = .success
                 return .success(())
             }
             try settleLocalMutations(bookID: bookID, file: url)
@@ -164,10 +169,11 @@ public actor InkActor {
             )
             try mutationEpoch.withMutation {
                 try journal.prepare(record)
-                try commitSection(section, href: href, loaded: loaded, file: url, encoded: intended)
+                payloadBytes = try commitSection(section, href: href, loaded: loaded, file: url, encoded: intended)
                 try journal.complete(record)
             }
             LocalDataChangeSignal.post(bookID: bookID)
+            outcome = .success
             return .success(())
         } catch {
             debugLog("[InkActor] Local ink transaction failed: \(error)")
@@ -250,9 +256,10 @@ public actor InkActor {
     }
 
     /// `encoded` is the section's already validated `encodedSection` bytes, when the caller has them.
+    @discardableResult
     private func commitSection(
         _ section: SectionInk, href: String, loaded: InkLoadResult, file: URL, encoded: Data? = nil
-    ) throws {
+    ) throws -> Int {
         var candidate = loaded.ink
         candidate.sections[href] = section.isEmpty ? nil : section
         candidate.version = BookInk.currentVersion
@@ -261,7 +268,7 @@ public actor InkActor {
         committed[file] = nil
         if candidate.isEmpty {
             if loaded.state != .missing { try removeFile(file) }
-            return
+            return 0
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -275,6 +282,7 @@ public actor InkActor {
         if let stamp = InkFileStamp(file) {
             committed[file] = CommittedInk(ink: candidate, fragments: fragments, stamp: stamp)
         }
+        return data.count
     }
 
     public func committedTransitions(bookID: BookID, afterSequence: UInt64) async throws -> [InkCommittedTransition] {

@@ -59,7 +59,7 @@ public final class ReadingSessionStore {
         if releasedInkSessions.count > 128 {
             releasedInkSessions = releasedInkSessions.filter { $0.value.value != nil }
         }
-        let created = InkSession(marginMemory: .userDefaults)
+        let created = InkSession()
         if restoreSuspended { created.setRestoreSuspended(true) }
         inkSessions[bookID] = created
         inkInventoryGeneration += 1
@@ -308,6 +308,9 @@ public final class ReadingSession {
         preparedAssetFingerprint = nil
         sectionMeasurements = [:]
         nativeLoadingTask = Task { @SilveranUIActor in
+            let measurement = PerformanceMeasurement(.readerOpen)
+            var outcome: PerformanceOutcome = .failure
+            defer { measurement.finish(Task.isCancelled ? .cancelled : outcome) }
             defer { self.isNativeLoadingFinished = true }
             do {
                 let prepStarted = Date()
@@ -324,6 +327,7 @@ public final class ReadingSession {
                     accountID: prepared.accountScopeID
                 )
                 self.preparedAssetFingerprint = prepared.contentFingerprint
+                outcome = .success
                 self.ebookFileFormat = EbookFileFormat(fileURL: prepared.originalURL)
                 self.extractedEbookPath = prepared.readerURL
                 debugLog(
@@ -548,6 +552,7 @@ public final class ReadingSession {
     }
 
     public func attachBridge(_ bridge: ReaderCommsBridge, isRecovery: Bool) {
+        SilveranPlatform.performance.setActivity(.reader, active: true)
         commsBridge = bridge
         sectionMeasurements = [:]
         isViewAttached = true
@@ -927,6 +932,7 @@ public final class ReadingSession {
     }
 
     private func clearViewHooks() {
+        SilveranPlatform.performance.setActivity(.reader, active: false)
         onComicPrepared = nil
         onUserNavigation = nil
         isViewRecovering = nil

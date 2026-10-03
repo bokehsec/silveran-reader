@@ -85,6 +85,9 @@ public actor BackupService {
     // MARK: Backup
 
     public func createArchive() async throws -> BackupArchive {
+        let measurement = PerformanceMeasurement(.backupCapture)
+        var outcome: PerformanceOutcome = .failure
+        defer { measurement.finish(Task.isCancelled ? .cancelled : outcome) }
         for _ in 0..<3 {
             let before = mutationEpoch.snapshot()
             guard before.isIdle else {
@@ -115,12 +118,14 @@ public actor BackupService {
                 await Task.yield()
                 continue
             }
-            return try BackupArchiveCodec.manifest(
+            let archive = try BackupArchiveCodec.manifest(
                 appVersion: appVersion,
                 deviceID: deviceID,
                 deviceClass: deviceClass,
                 captures: captures
             )
+            outcome = .success
+            return archive
         }
         throw BackupFailure(
             "Data changed while the backup was being captured. No complete backup was created; retry when changes have settled."

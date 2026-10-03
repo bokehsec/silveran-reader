@@ -385,6 +385,11 @@ extension SettingsView {
 
                 Section {
                     NavigationLink {
+                        PerformanceDiagnosticsView()
+                    } label: {
+                        Label("Performance Diagnostics", systemImage: "chart.line.uptrend.xyaxis")
+                    }
+                    NavigationLink {
                         IOSDebugLogView()
                     } label: {
                         Label("Debug Log", systemImage: "doc.text")

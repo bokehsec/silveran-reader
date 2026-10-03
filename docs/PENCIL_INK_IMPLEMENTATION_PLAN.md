@@ -49,7 +49,7 @@ Design and spike record: [`PENCIL_INK_PLAN.md`](PENCIL_INK_PLAN.md). This plan s
 
 | Decision | Choice |
 |---|---|
-| Retire expandable writing margin (owner, 2026-10-03) | Remove the expandable note margin now that notes in the text have resizable writing areas; keep Narrow/Normal/Wide reading-margin settings. This supersedes offering expandable margin writing in the older decisions below. Review only, removal not implemented: [removal review](EXPANDABLE_MARGIN_REMOVAL_REVIEW.md). Preserve existing annotations; the proposed explicit conversion/editing transition remains open. |
+| Retire expandable writing margin (owner, 2026-10-03; ADR 016) | Implement the removal review: no expandable blank rail or new margin authoring. Keep Narrow/Normal/Wide reading margins. Legacy icons open the drawing/passage viewer on every screen; Move into Text previews then confirms one undoable conversion, preserving original stroke values, identity and evidence. No automatic rewriting. This supersedes earlier expansion/focus/remembered-open decisions below, whose historical evidence is retained. Simulator/Pencil/VoiceOver/signed-cloud acceptance is tracked separately. |
 | Tool palette (owner, 2026-10-01; replaces "Apple's `PKToolPicker`") | Silveran's own slim strip: pen, highlighter, eraser, select; three colours per writing tool, each changeable; fine/bold; undo/redo. Apple's palette took too much room for a reader. |
 | Tool strip placement (owner, 2026-10-01) | Close to the screen edge; top by default; the reader can drag it to the top, bottom, left or right. |
 | Rolling up the strip (owner, 2026-10-01) | It rolls up into one button showing the tool in hand, with a visible cue that it unrolls, and stays rolled up until tapped with a finger or the Pencil (a Pencil touch on the page does not unroll it). |
@@ -103,7 +103,7 @@ Pencil up   ──► InkSession.finishStroke(stroke)  → held; live stroke sta
               ──► then the lock is released                              (writing lock OFF)
 ```
 
-The page is measured once per group, against the layout the person saw while writing (as built 2026-10-01, BF-051; earlier each stroke was placed and drawn on its own, which split words). Erasing, lasso selection, undo/redo, saving and closing commit held strokes first. If the page cannot answer for a group, strokes are placed one at a time. With the wide margin open, `proposeGroup` first applies the margin rule above (`InkMargin.proposeMarginGroup`).
+The page is measured once per group, against the layout the person saw while writing (as built 2026-10-01, BF-051; earlier each stroke was placed and drawn on its own, which split words). Erasing, lasso selection, undo/redo, saving and closing commit held strokes first. If the page cannot answer for a group, strokes are placed one at a time. ADR 016 retires the runtime margin classifier: all new groups use the in-text/area path.
 
 Erase is the same path with `InkEngine.hitTest(path)` → ids → `InkSession.apply(.erase(ids))`. Undo/redo call `apply` with the inverse operation and re-render only the affected section.
 

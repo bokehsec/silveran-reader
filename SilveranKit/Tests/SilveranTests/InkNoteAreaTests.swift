@@ -196,6 +196,30 @@ struct InkNoteAreaTests {
 
     // MARK: Handles (viewport points -> area)
 
+    @Test("Resizing converted negative-top ink uses its shifted origin without height drift")
+    func negativeTopResize() {
+        let frame = InkNoteAreaFrame(
+            href: "c",
+            noteID: "n",
+            box: InkSelectionBounds(left: 0, top: 100, right: 200, bottom: 220),
+            originX: 0,
+            scale: 0.5,
+            columnLeft: 0,
+            columnRight: 400,
+            pageBottom: 600,
+            ink: InkSelectionBounds(left: 0, top: -40, right: 100, bottom: 100),
+            side: .left,
+            hasArea: true
+        )
+        #expect(frame.originY == 120)
+        #expect(frame.area(growingWidth: 0, height: 0).height == 200)
+        #expect(frame.area(growingWidth: 0, height: 20).height == 240)
+        #expect(
+            frame.area(growingWidth: 0, height: -200).height == 100,
+            "shrinking cannot put the bottom above the painted ink"
+        )
+    }
+
     private func frame(side: InkNoteArea.Side? = nil, ink: InkSelectionBounds? = nil)
         -> InkNoteAreaFrame
     {

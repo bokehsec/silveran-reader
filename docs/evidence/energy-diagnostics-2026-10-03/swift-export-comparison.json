@@ -1,0 +1,46 @@
+{
+  "changes": [],
+  "cohorts": [
+    {
+      "appTotalCPUSecondsPerForegroundHour": [],
+      "begin": "2026-10-03T14:45:45Z",
+      "captureSeconds": [
+        3600.0
+      ],
+      "cohort": [
+        "iOS",
+        "iPad16,1",
+        "18.6",
+        "development",
+        "1",
+        "100",
+        1,
+        "metrickit"
+      ],
+      "end": "2026-10-03T15:45:45Z",
+      "operations": {},
+      "perReportMeasurements": {
+        "cpuSeconds": [
+          12
+        ]
+      },
+      "perReportObservedContextSeconds": [
+        {}
+      ],
+      "reports": 1,
+      "sampledIntervalResources": []
+    }
+  ],
+  "limits": [
+    "Resource intervals overlap and are sampled 1/16; never sum or extrapolate their totals.",
+    "Activity durations/counts are not energy. CPU includes background work; foreground ratios do not split CPU.",
+    "Merged compatible duration histograms provide bucket upper bounds, not averaged percentiles.",
+    "Unknown metrics and missing builds remain unknown. Regression thresholds await ED-5 real-device baselines."
+  ],
+  "osChanges": [],
+  "schema": 1,
+  "warnings": [
+    "100: missing foregroundSeconds",
+    "100: partial metrickit coverage"
+  ]
+}

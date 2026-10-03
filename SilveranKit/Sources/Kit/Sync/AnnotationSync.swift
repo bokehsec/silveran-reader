@@ -333,12 +333,16 @@ public actor AnnotationSyncEngine {
     }
 
     public func reconcile(bookID: BookID) async -> Bool {
+        let measurement = PerformanceMeasurement(.reconcile)
+        var outcome: PerformanceOutcome = .failure
+        defer { measurement.finish(Task.isCancelled ? .cancelled : outcome) }
         guard await beginCall() else { return false }
         defer { endCall() }
         do {
             await lock(bookID)
             defer { unlock(bookID) }
             try await reconcileLocked(bookID)
+            outcome = .success
             return true
 
         } catch {
@@ -453,6 +457,9 @@ public actor AnnotationSyncEngine {
     /// version is kept in recovery; handwritten strokes are combined.
     @discardableResult
     public func receive(_ incoming: AnnotationSyncRecord, systemFields: Data? = nil) async -> Bool {
+        let measurement = PerformanceMeasurement(.syncApply)
+        var outcome: PerformanceOutcome = .failure
+        defer { measurement.finish(Task.isCancelled ? .cancelled : outcome, work: [.items: 1]) }
         do {
             let inbox = ReceiveInbox(
                 record: incoming,
@@ -467,7 +474,7 @@ public actor AnnotationSyncEngine {
                 guard try JSONDecoder().decode(String.self, from: completed) == identity else {
                     throw SyncStorageFailure("Completed operation record is damaged.")
                 }
-                return true
+                outcome = .success; return true
             }
             let url = inboxURL(identity)
             if let existing = try read(url) {
@@ -481,7 +488,7 @@ public actor AnnotationSyncEngine {
             defer { endCall() }
             try await processInbox(inbox, identity: identity)
             lastFailure = nil
-            return true
+            outcome = .success; return true
         } catch {
             lastFailure = error.localizedDescription
             try? keep(

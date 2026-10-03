@@ -61,6 +61,8 @@ targets:
           - AnnotationImageExportTests.swift
           - InkBridgeTests.swift
           - InkSessionModelTests.swift
+          - MarginConversionTests.swift
+          - InkNoteAreaTests.swift
           - InkModelsTests.swift
           - InkMarginWebKitTests.swift
           - AnnotationRepairCommandsTests.swift
@@ -82,6 +84,7 @@ targets:
           - BackupParticipantTests.swift
           - BackupRestoreTests.swift
           - ConfigurationSyncTests.swift
+          - PerformanceDiagnosticsTests.swift
     dependencies:
       - target: Silveran Component Test Host (iOS)
       - package: Silveran

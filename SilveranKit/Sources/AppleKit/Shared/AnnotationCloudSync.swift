@@ -31,6 +31,13 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
     private let identity: LibraryIdentityService
     private let lock = NSLock()
     private var syncEngine: CKSyncEngine?
+    private var fetchMeasurement: PerformanceMeasurement?
+    private var sendMeasurement: PerformanceMeasurement?
+    private var fetchFailed = false
+    private var sendFailed = false
+    private var fetchItems = 0
+    private var sendItems = 0
+    private var sendRetries = 0
     private var refreshing = false
     private var refreshAgain = false
 
@@ -136,7 +143,11 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
     }
 
     func stop() {
-        lock.withLock { syncEngine = nil }
+        lock.withLock {
+            syncEngine = nil
+            fetchMeasurement?.finish(.incomplete); fetchMeasurement = nil
+            sendMeasurement?.finish(.incomplete); sendMeasurement = nil
+        }
         Task { [activity] in await activity.record(.lifecycle, "Sync stopped") }
     }
 
@@ -306,6 +317,22 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
         // apply or checkpoint changes while the restore boundary owns the files.
         guard lock.withLock({ self.syncEngine === syncEngine }) else { return }
         switch event {
+            case .willFetchChanges:
+                lock.withLock {
+                    fetchMeasurement?.finish(.incomplete)
+                    fetchMeasurement = PerformanceMeasurement(.syncFetch); fetchFailed = false; fetchItems = 0
+                }
+            case .willSendChanges:
+                lock.withLock {
+                    sendMeasurement?.finish(.incomplete)
+                    sendMeasurement = PerformanceMeasurement(.syncSend); sendFailed = false; sendItems = 0; sendRetries = 0
+                }
+            case .didSendChanges:
+                lock.withLock {
+                    sendMeasurement?.finish(sendFailed ? .failure : .success,
+                        work: [.items: sendItems, .retries: sendRetries, .emptyChecks: sendItems == 0 ? 1 : 0])
+                    sendMeasurement = nil
+                }
             case .stateUpdate(let update):
                 do {
                     try checkpoint.save(update.stateSerialization)
@@ -384,6 +411,7 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
                 let modifications = changes.modifications.map(\.record)
                     .filter { $0.recordID.zoneID == Self.zoneID }
                 let deletions = changes.deletions.filter { $0.recordID.zoneID == Self.zoneID }
+                lock.withLock { fetchItems += modifications.count + deletions.count }
                 let tally = await receiver.receive(modifications)
                 for deletion in deletions {
                     if !(await engine.forgetRecord(named: deletion.recordID.recordName)) { checkpoint.blockReceipt() }
@@ -414,14 +442,25 @@ final class AnnotationCloudSync: CKSyncEngineDelegate, @unchecked Sendable {
                 }
             case .didFetchRecordZoneChanges(let fetched):
                 if let error = fetched.error {
+                    lock.withLock { fetchFailed = true }
                     await activity.record(
                         .problem,
                         "Checking iCloud failed: \(Self.describe(error))"
                     )
                 }
             case .didFetchChanges:
+                lock.withLock {
+                    fetchMeasurement?.finish(fetchFailed ? .failure : .success,
+                        work: [.items: fetchItems, .emptyChecks: fetchItems == 0 ? 1 : 0])
+                    fetchMeasurement = nil
+                }
                 await activity.markChecked()
             case .sentRecordZoneChanges(let sent):
+                lock.withLock {
+                    sendItems += sent.savedRecords.count
+                    sendRetries += sent.failedRecordSaves.count
+                    sendFailed = sendFailed || !sent.failedRecordSaves.isEmpty
+                }
                 await recordSent(sent)
                 var retry: [CKSyncEngine.PendingRecordZoneChange] = []
                 for saved in sent.savedRecords {

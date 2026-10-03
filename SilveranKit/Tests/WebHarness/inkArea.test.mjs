@@ -93,3 +93,20 @@ test("a note without an area is laid out exactly as before", () => {
   assert.ok(!el.hasAttribute("data-area"));
   assert.equal(el.style.getPropertyValue("height"), `${Math.ceil(40 + 8)}px`);
 });
+
+test("converted negative painted extents fit the area without rebasing strokes", () => {
+  const doc = setup();
+  const note = { id: "converted", strokes: [{ tool: "pen", width: 10, color: "#000", points: [[-40, -10], [130, 300]] }],
+    area: { left: 0, width: 160, height: 320, side: "right" } };
+  const before = structuredClone(note);
+  const el = noteElement(doc, note);
+  doc.body.appendChild(el);
+  el.getBoundingClientRect = () => ({ left: 20, top: 100, width: 400, right: 420, height: 400, bottom: 500 });
+  sizeNote(el, note, 500);
+  assert.ok(parseFloat(el.dataset.originX) < -40, "painted left edge, including pressure, is kept");
+  assert.ok(parseFloat(el.dataset.shiftY) < -10, "painted top is shifted into the box");
+  assert.ok(parseFloat(el.style.height) > 330);
+  const origin = noteOrigin(el);
+  assert.ok(origin.top + (-10) * origin.scale >= 100, "negative top samples remain in the box");
+  assert.deepEqual(note, before);
+});

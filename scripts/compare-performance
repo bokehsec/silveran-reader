@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""Offline Silveran performance ZIP validation/comparison. No extraction or network."""
+import argparse
+import collections
+import json
+import math
+import pathlib
+import sys
+import zipfile
+from datetime import datetime
+
+CAP = 20 * 1024 * 1024
+BOUNDS = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 60]
+OPERATIONS = {'reader.open', 'reader.chapterLayout', 'reader.reflow', 'annotation.commitInk',
+              'annotation.commitHighlight', 'annotation.reconcile', 'annotationSync.fetch',
+              'annotationSync.apply', 'annotationSync.send', 'backup.capture', 'backup.compress',
+              'backup.upload', 'source.refresh', 'source.download', 'readingState.sync',
+              'audio.prepare', 'audio.positionUpdate', 'library.index', 'library.coverProcess'}
+METRICS = {'cpuSeconds', 'cpuInstructions', 'gpuSeconds', 'logicalWriteBytes',
+           'wifiUploadBytes', 'wifiDownloadBytes', 'cellularUploadBytes', 'cellularDownloadBytes',
+           'foregroundSeconds', 'backgroundSeconds', 'backgroundAudioSeconds'}
+WORK = {'items', 'payloadBytes', 'transferredBytes', 'retries', 'emptyChecks', 'cacheHits', 'cacheMisses'}
+OUTCOMES = {'success', 'cancelled', 'failure', 'incomplete'}
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def number(value, maximum=1e18):
+    return type(value) in (int, float) and math.isfinite(value) and 0 <= value <= maximum
+
+
+def count(value, maximum=10**12):
+    return type(value) is int and 0 <= value <= maximum
+
+
+def date(value):
+    require(isinstance(value, str) and len(value) <= 32, 'invalid UTC timestamp')
+    result = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    require(result.tzinfo is not None and result.utcoffset().total_seconds() == 0, 'timestamp must be UTC')
+    return result
+
+
+def validate(report):
+    require(type(report['schema']) is int and type(report['instrumentation']) is int and report['schema'] == 1 and report['instrumentation'] == 1, 'unsupported report schema/instrumentation')
+    require(report['source'] in {'activity', 'metrickit'}, 'unknown report source')
+    require(isinstance(report['identity'], str) and 0 < len(report['identity']) <= 128, 'invalid identity')
+    begin, end = date(report['begin']), date(report['end'])
+    date(report['received'])
+    require(0 <= (end - begin).total_seconds() <= 31 * 86400, 'invalid interval')
+    require(type(report['mixedBuilds']) is bool and type(report['partial']) is bool, 'invalid coverage')
+    env = report['environment']
+    require(set(env) <= {'platform', 'deviceModel', 'osVersion', 'appVersion', 'build', 'provenance'}, 'unknown environment fields')
+    require(all(value is None or isinstance(value, str) and len(value) <= 80 for value in env.values()), 'invalid environment')
+    for key, metric in report['metrics'].items():
+        require(key in METRICS, 'unknown metric')
+        unit = 'bytes' if key.endswith('Bytes') else 'instructions' if key == 'cpuInstructions' else 'seconds'
+        require(metric['unit'] == unit, 'incompatible metric unit')
+        require(metric['value'] is None or number(metric['value']), 'invalid metric value')
+        require(metric['availability'] == ('missing' if metric['value'] is None else 'available'), 'inconsistent availability')
+    require(len(report['operations']) <= 2 * len(OPERATIONS), 'too many operations')
+    seen = set()
+    for op in report['operations']:
+        key = (op['operation'], op['coverage'])
+        require(op['operation'] in OPERATIONS and op['coverage'] in {'native', 'renderer'} and key not in seen, 'invalid/duplicate operation')
+        seen.add(key)
+        require(count(op['count'], 10**9) and count(op['durationSamples'], op['count']), 'invalid sample count')
+        buckets = op['histogram']['buckets']
+        require(len(buckets) == len(BOUNDS) + 1 and all(count(n, op['count']) for n in buckets), 'invalid histogram')
+        require(sum(buckets) == op['durationSamples'], 'histogram/sample mismatch')
+        require(set(op['outcomes']) <= OUTCOMES and all(count(n, op['count']) for n in op['outcomes'].values()) and sum(op['outcomes'].values()) == op['count'], 'invalid outcomes')
+        require(set(op['work']) <= WORK and all(count(n) for n in op['work'].values()), 'invalid workload')
+        require(op['resourceSampleEvery'] == 16, 'unsupported sampling denominator')
+    intervals = report['intervalResources']
+    require(len(intervals) <= len(OPERATIONS), 'too many interval resources')
+    seen = set()
+    for interval in intervals:
+        require(interval['operation'] in OPERATIONS and interval['operation'] not in seen and count(interval['count'], 10**9), 'invalid interval resource')
+        seen.add(interval['operation'])
+        require(all(interval.get(k) is None or number(interval[k]) for k in ('cpuSeconds', 'logicalWriteBytes')), 'invalid resource value')
+    require(set(report.get('contextSeconds', {})) <= {'foreground', 'background', 'reader', 'audio'} and all(number(v, 31 * 86400) for v in report.get('contextSeconds', {}).values()), 'invalid activity context')
+    require(count(report.get('openSpans', 0), 256), 'invalid open span count')
+    require(len(report['dropped']) <= 16 and all(count(v, 10**9) for v in report['dropped'].values()), 'invalid dropped counts')
+    return report
+
+
+def strict_json(data):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, 'duplicate JSON field')
+            result[key] = value
+        return result
+    return json.loads(data, object_pairs_hook=unique)
+
+
+def load(path):
+    require(path.stat().st_size <= CAP, 'oversized archive')
+    with zipfile.ZipFile(path) as archive:
+        entries = archive.infolist()
+        require(len(entries) == 3 and {e.filename for e in entries} == {'manifest.json', 'metrics.json', 'summary.txt'}, 'unexpected/duplicate archive entries (paths are forbidden)')
+        require(sum(e.file_size for e in entries) <= CAP and all(e.file_size <= CAP and not e.flag_bits & 1 and (e.external_attr >> 16) & 0o170000 != 0o120000 for e in entries), 'oversized/encrypted/symlink archive')
+        # Exact allowlist, bounded decompression; never write archive paths to disk.
+        files = {}
+        for entry in entries:
+            with archive.open(entry) as stream:
+                files[entry.filename] = stream.read(CAP + 1)
+            require(len(files[entry.filename]) <= entry.file_size, 'expansion limit exceeded')
+        manifest = strict_json(files['manifest.json'])
+        require(manifest['schema'] == 1 and manifest['instrumentation'] == 1, 'unsupported export schema')
+        require(manifest['histogramUpperBoundsSeconds'] == BOUNDS, 'incompatible histogram bounds')
+        history = strict_json(files['metrics.json'])
+        require(history['schema'] == 1, 'unsupported history schema')
+        reports = history['reports']
+        require(len(reports) <= 4096 and manifest['reportCount'] == len(reports), 'invalid report inventory')
+        return [validate(r) for r in reports], history
+
+
+def percentile(buckets, fraction):
+    total = sum(buckets)
+    if not total:
+        return None
+    target = math.ceil(total * fraction)
+    accumulated = 0
+    for i, n in enumerate(buckets):
+        accumulated += n
+        if accumulated >= target:
+            return BOUNDS[i] if i < len(BOUNDS) else '>60'
+
+
+def compare(paths):
+    require(len(paths) <= 32, 'at most 32 input bundles are accepted')
+    warnings, reports, seen = [], [], set()
+    total_rows = 0
+    for path in paths:
+        try:
+            rows, history = load(path)
+            total_rows += len(rows)
+            require(total_rows <= 4096, 'combined report limit exceeded')
+            if history.get('evicted') or history.get('dropped'):
+                warnings.append(f'{path.name}: evicted/dropped observations; incomplete coverage')
+            for row in rows:
+                key = (row['source'], row['identity'])
+                if key in seen:
+                    warnings.append(f'{path.name}: duplicate observation excluded')
+                    continue
+                seen.add(key)
+                if row['mixedBuilds']:
+                    warnings.append(f'{path.name}: mixed-build observation excluded')
+                    continue
+                env = row['environment']
+                if not all(env.get(k) for k in ('platform', 'deviceModel', 'osVersion', 'build', 'appVersion')):
+                    warnings.append(f'{path.name}: missing cohort/build metadata excluded')
+                    continue
+                reports.append(row)
+        except (ValueError, KeyError, TypeError, OverflowError, OSError, zipfile.BadZipFile, RuntimeError) as error:
+            warnings.append(f'{path.name}: unsupported/corrupt input: {error}')
+    # No stable installation identifier is exported. Overlapping same-cohort windows are ambiguous;
+    # retain the first and exclude the later instead of claiming independent device totals.
+    cohorts = collections.defaultdict(list)
+    for row in sorted(reports, key=lambda r: r['begin']):
+        env = row['environment']
+        key = tuple(env.get(k) for k in ('platform', 'deviceModel', 'osVersion', 'provenance', 'appVersion', 'build')) + (row['instrumentation'], row['source'])
+        if any(date(row['begin']) < date(other['end']) and date(other['begin']) < date(row['end']) for other in cohorts[key]):
+            warnings.append('overlapping same-cohort/source intervals excluded; independent devices cannot be inferred')
+            continue
+        cohorts[key].append(row)
+    output = []
+    for key, rows in sorted(cohorts.items()):
+        ops = {}
+        measurements = collections.defaultdict(list)
+        for row in rows:
+            if row.get('openSpans', 0) or row.get('dropped'):
+                warnings.append(f'build {key[5]}: unfinished spans or dropped activity; coverage is incomplete')
+            if row['partial']:
+                warnings.append(f'build {key[5]}: partial {row["source"]} coverage')
+            for name, metric in row['metrics'].items():
+                if metric['value'] is not None:
+                    measurements[name].append(metric['value'])
+                else:
+                    warnings.append(f'build {key[5]}: missing {name}')
+            for op in row['operations']:
+                name = op['operation'] + '/' + op['coverage']
+                aggregate = ops.setdefault(name, {'count': 0, 'samples': 0, 'buckets': [0] * 11, 'outcomes': collections.Counter(), 'work': collections.Counter()})
+                aggregate['count'] += op['count']; aggregate['samples'] += op['durationSamples']
+                aggregate['buckets'] = [a + b for a, b in zip(aggregate['buckets'], op['histogram']['buckets'])]
+                aggregate['outcomes'].update(op['outcomes']); aggregate['work'].update(op['work'])
+        for op in ops.values():
+            op['p50UpperSeconds'] = percentile(op['buckets'], .50)
+            op['p95UpperSeconds'] = percentile(op['buckets'], .95)
+            op['evidence'] = 'insufficient samples' if op['samples'] < 30 else 'distribution only; baseline thresholds pending'
+            op['retryFraction'] = op['work'].get('retries', 0) / op['count'] if op['count'] else None
+            op['payloadBytesPerSuccess'] = op['work'].get('payloadBytes', 0) / op['outcomes'].get('success', 0) if 'payloadBytes' in op['work'] and op['outcomes'].get('success', 0) else None
+        ratios = []
+        for row in rows:
+            cpu = row['metrics'].get('cpuSeconds', {}).get('value')
+            foreground = row['metrics'].get('foregroundSeconds', {}).get('value')
+            if row['source'] == 'metrickit' and not row['partial'] and cpu is not None and foreground and foreground >= 60:
+                ratios.append(cpu * 3600 / foreground)
+        output.append({'cohort': list(key), 'reports': len(rows), 'begin': min(r['begin'] for r in rows), 'end': max(r['end'] for r in rows),
+                       'operations': ops, 'perReportMeasurements': dict(measurements),
+                       'appTotalCPUSecondsPerForegroundHour': ratios,
+                       'captureSeconds': [(date(r['end']) - date(r['begin'])).total_seconds() for r in rows],
+                       'perReportObservedContextSeconds': [r.get('contextSeconds', {}) for r in rows],
+                       'sampledIntervalResources': [item for r in rows for item in r['intervalResources']]})
+    changes = []
+    os_changes = []
+    def build_order(value):
+        # Numeric build components sort numerically; nonnumeric builds stay explicitly lexical.
+        return tuple((0, int(part)) if part.isdigit() else (1, part) for part in value.split('.'))
+    for previous in output:
+        for current in output:
+            a, b = previous['cohort'], current['cohort']
+            if a[:4] != b[:4] or a[6:] != b[6:] or build_order(a[5]) >= build_order(b[5]):
+                continue
+            if a[-1] == 'metrickit':
+                windows = previous['captureSeconds'] + current['captureSeconds']
+                compatible_windows = windows and min(windows) > 0 and max(windows) / min(windows) <= 1.01
+                if not compatible_windows:
+                    warnings.append('OS aggregate build comparisons omitted for incompatible interval lengths')
+                else:
+                    for metric in previous['perReportMeasurements'].keys() & current['perReportMeasurements'].keys():
+                        old_values = previous['perReportMeasurements'][metric]
+                        new_values = current['perReportMeasurements'][metric]
+                        if len(old_values) != previous['reports'] or len(new_values) != current['reports']:
+                            continue
+                        before, after = sum(old_values) / len(old_values), sum(new_values) / len(new_values)
+                        os_changes.append({'metric': metric, 'fromBuild': a[5], 'toBuild': b[5],
+                            'perReportMeanBefore': before, 'perReportMeanAfter': after,
+                            'changePercent': (after / before - 1) * 100 if before else None,
+                            'reportsBefore': len(old_values), 'reportsAfter': len(new_values),
+                            'evidence': 'insufficient reports' if min(len(old_values), len(new_values)) < 3 else 'aggregate activity/resource change; workload and trace investigation required'})
+            for name in previous['operations'].keys() & current['operations'].keys():
+                old, new = previous['operations'][name], current['operations'][name]
+                changes.append({'operation': name, 'fromBuild': a[5], 'toBuild': b[5],
+                                'countChange': new['count'] - old['count'],
+                                'p50UpperSecondsBefore': old['p50UpperSeconds'], 'p50UpperSecondsAfter': new['p50UpperSeconds'],
+                                'p95UpperSecondsBefore': old['p95UpperSeconds'], 'p95UpperSecondsAfter': new['p95UpperSeconds'],
+                                'evidence': 'insufficient samples' if min(old['samples'], new['samples']) < 30 else 'investigate distribution changes with matched workloads; no energy causation claim'})
+    return {'schema': 1, 'cohorts': output, 'changes': changes, 'osChanges': os_changes, 'warnings': sorted(set(warnings)),
+            'limits': ['Resource intervals overlap and are sampled 1/16; never sum or extrapolate their totals.',
+                       'Activity durations/counts are not energy. CPU includes background work; foreground ratios do not split CPU.',
+                       'Merged compatible duration histograms provide bucket upper bounds, not averaged percentiles.',
+                       'Unknown metrics and missing builds remain unknown. Regression thresholds await ED-5 real-device baselines.']}
+
+
+def markdown(result):
+    lines = ['# Silveran performance comparison', '', *result['limits'], '']
+    for cohort in result['cohorts']:
+        lines += [f'## Cohort: {", ".join(map(str, cohort["cohort"]))}', '',
+                  f'Reports: {cohort["reports"]}; coverage: {cohort["begin"]} – {cohort["end"]}', '',
+                  '| Operation / process | Count | Duration samples | p50 upper seconds | p95 upper seconds | Evidence |',
+                  '| --- | ---: | ---: | ---: | ---: | --- |']
+        for name, op in sorted(cohort['operations'].items()):
+            lines.append(f'| {name} | {op["count"]} | {op["samples"]} | {op["p50UpperSeconds"]} | {op["p95UpperSeconds"]} | {op["evidence"]} |')
+        lines += ['', 'Observed context seconds per activity window (overlap, partial coverage): `' + json.dumps(cohort['perReportObservedContextSeconds'], sort_keys=True) + '`', '', 'OS measurements per report: `' + json.dumps(cohort['perReportMeasurements'], sort_keys=True) + '`', '',
+                  'App-total CPU seconds divided by foreground hours (includes background CPU): `' + json.dumps(cohort['appTotalCPUSecondsPerForegroundHour']) + '`', '']
+    lines += ['## Build comparisons', '', '```json', json.dumps({'operations': result['changes'], 'osAggregates': result['osChanges']}, indent=2), '```', '', '## Coverage warnings', '']
+    lines += ['- ' + warning.replace('\n', ' ') for warning in result['warnings']]
+    return '\n'.join(lines) + '\n'
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('reports', type=pathlib.Path, nargs='+')
+    parser.add_argument('--output', type=pathlib.Path, required=True, help='output filename stem')
+    args = parser.parse_args()
+    result = compare(args.reports)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.with_suffix('.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+    args.output.with_suffix('.md').write_text(markdown(result))
+    return 0 if result['cohorts'] else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

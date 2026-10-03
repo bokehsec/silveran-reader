@@ -2624,6 +2624,9 @@ public final class MediaViewModel {
     }
 
     private static nonisolated func makeCoverPayload(from data: Data) -> CoverImagePayload? {
+        let measurement = PerformanceMeasurement(.coverProcess)
+        var outcome: PerformanceOutcome = .failure
+        defer { measurement.finish(outcome) }
         let maxPixelSize = 360
         let options: CFDictionary =
             [
@@ -2640,6 +2643,7 @@ public final class MediaViewModel {
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else {
             return nil
         }
+        outcome = .success
         return CoverImagePayload(data: data, cgImage: SendableCGImage(image))
     }
 

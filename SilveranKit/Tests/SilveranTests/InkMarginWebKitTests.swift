@@ -109,8 +109,10 @@ struct InkMarginWebKitTests {
             const index = buildTextIndex(document.body);
             const anchor = makeAnchor(index.text, 0);
             const note = (id, x, y) => ({ id, placement: 'margin', refWidth: 70, anchor,
-              strokes: [{ tool: 'pen', color: '#111111', width: 2, points: [[x, y, .2], [x + 20, y + 20, .4]] }] });
-            window.notes = [note('left', 2, 20), note('right', 46, 20), note('over1', 2, 90), note('over2', 6, 95)];
+              strokes: [{ tool: 'pen', color: '#111111', width: 2, points: [[x, y, .2], [x + 20, y \
+            + 20, .4]] }] });
+            window.notes = [note('left', 2, 20), note('right', 46, 20), note('over1', 2, 90), \
+            note('over2', 6, 95)];
             window.layer = new MarginLayer(document);
             window.layer.setNotes(window.notes, index, { expanded: true });
             window.propose = proposeMarginStroke;
@@ -142,15 +144,19 @@ struct InkMarginWebKitTests {
             const groups = [...document.querySelectorAll('.silveran-margin-layer > g')];
             const shown = groups.filter(g => window.layer.placement(g.dataset.id));
             const tiles = groups.filter(g => !window.layer.placement(g.dataset.id));
-            const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+            const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && \
+            b.top < a.bottom;
             const painted = shown.map(g => g.getBoundingClientRect());
             const covered = tiles.some(t => painted.some(p => meets(t.getBoundingClientRect(), p)));
             const tile = tiles[0]?.getBoundingClientRect();
-            const tapped = tile ? window.layer.iconIDsAt(tile.x + tile.width / 2, tile.y + tile.height / 2).join('+') : 'none';
+            const tapped = tile ? window.layer.iconIDsAt(tile.x + tile.width / 2, tile.y + \
+            tile.height / 2).join('+') : 'none';
             const ask = points => {
-              const p = window.propose({ doc: document, href: 'ch', viewportWidth: innerWidth, layer: window.layer,
+              const p = window.propose({ doc: document, href: 'ch', viewportWidth: innerWidth, \
+            layer: window.layer,
                 notes: window.notes, stroke: { tool: 'pen', color: '#111111', width: 2, points } });
-              return p.op === 'append' ? `append:${p.noteId}` : `${p.op}:${p.placement ?? p.reason}`;
+              return p.op === 'append' ? `append:${p.noteId}` : `${p.op}:${p.placement ?? \
+            p.reason}`;
             };
             const right = window.layer.placement('right').ink;
             const left = window.layer.placement('left').ink;
@@ -242,5 +248,93 @@ struct InkMarginWebKitTests {
         }
         #endif
     }
+    @Test(
+        "WebKit previews legacy conversion with painted negative extents and restores icons",
+        arguments: [390, 744, 1024]
+    )
+    func conversionPreview(width: Int) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "MarginConversion-\(UUID().uuidString)"
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.copyItem(at: KitResources.webResourcesDirectory(), to: root)
+        let html = """
+            <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" \
+            content="width=device-width, initial-scale=1">
+            <style>html{box-sizing:border-box;padding:0 24px;}body{margin:0;font:20px \
+            system-ui;}p{margin:20px 0;}</style>
+            </head><body><p>Mara keeps the café ledger.</p><p>A later passage remains readable \
+            after the note.</p>
+            <script type="module">
+            import InkEngine from './InkEngine.js';
+            import { buildTextIndex, makeAnchor } from './InkAnchoring.js';
+            import { noteOrigin } from './InkLayout.js';
+            const index = buildTextIndex(document.body);
+            const anchor = makeAnchor(index.text,0);
+            window.section = {notes:[{id:'legacy',placement:'margin',refWidth:160,anchor,
+              \
+            strokes:[{tool:'pen',color:'#111111',width:10,points:[[-40,-10,1],[130,300,.8]]}]}],marks:[]};
+            window.engine = new InkEngine({post:()=>{}});
+            window.engine.setView({book:{sections:[{id:'c'}]},resolveCFI:()=>null,renderer:{getContents:()=>[{index:0,doc:document}],render(){},scrollToAnchor(){}}});
+            window.engine.setupSection(0,document);
+            window.engine.render('c',window.section);
+            window.noteOrigin = noteOrigin;
+            window.conversionReady = true;
+            </script></body></html>
+            """
+        let file = root.appendingPathComponent("conversion.html")
+        try Data(html.utf8).write(to: file)
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+        let view = WKWebView(
+            frame: CGRect(x: 0, y: 0, width: width, height: 800),
+            configuration: config
+        )
+        defer { view.stopLoading() }
+        view.loadFileURL(file, allowingReadAccessTo: root)
+        var ready = false
+        for _ in 0..<200 {
+            if (try? await view.evaluateJavaScript("window.conversionReady === true")) as? Bool
+                == true
+            {
+                ready = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        try #require(ready)
+        let result = try await view.callAsyncJavaScript(
+            """
+            const before = JSON.stringify(window.section);
+            engine.setMarginExpanded(true);
+            if(engine.marginExpanded) return 'expanded';
+            if(!engine.previewMarginConversion('c','legacy',{left:0,width:160,height:320,side:'right'})) \
+            return 'no preview';
+            const el = document.querySelector('silveran-ink');
+            if(!el) return 'missing area';
+            const r = el.getBoundingClientRect(), origin = noteOrigin(el);
+            // Include the pen's maximum pressure and outline, not only its sample centers.
+            if(origin.left + (-46.8)*origin.scale < r.left - .1) return 'left clipped';
+            if(origin.top + (-16.8)*origin.scale < r.top - .1) return 'top clipped';
+            if(origin.top + 306.8*origin.scale > r.bottom + .1) return \
+            JSON.stringify({reason:'bottom \
+            clipped',box:{left:r.left,top:r.top,right:r.right,bottom:r.bottom},origin,css:el.style.cssText,data:{...el.dataset}});
+            if(before !== JSON.stringify(window.section)) return 'mutated';
+            engine.render('c',window.section);
+            if(document.querySelector('silveran-ink')) return 'cancel failed';
+            const tile = document.querySelector('.silveran-margin-layer rect');
+            if(!tile) return 'missing icon';
+            const t = tile.getBoundingClientRect();
+            if(!engine.inkAt(document,t.x+t.width/2,t.y+t.height/2)) return 'tap not suppressed';
+            return 'ok';
+            """,
+            arguments: [:],
+            in: nil,
+            contentWorld: .page
+        )
+        #expect(result as? String == "ok")
+    }
+
 }
 #endif

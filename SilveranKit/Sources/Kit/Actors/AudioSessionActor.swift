@@ -187,11 +187,15 @@ public actor AudioSessionActor {
     }
 
     public func openAudiobook(book: BookMetadata, mediaURL: URL) async throws {
+        let measurement = PerformanceMeasurement(.audioPrepare)
+        var outcome: PerformanceOutcome = .failure
+        defer { measurement.finish(Task.isCancelled ? .cancelled : outcome) }
         if self.book?.id == book.id,
             self.mediaURL?.standardizedFileURL == mediaURL.standardizedFileURL,
             metadata != nil
         {
             await publishState()
+            outcome = .success
             return
         }
 
@@ -247,6 +251,7 @@ public actor AudioSessionActor {
             await configureNowPlayingCommands(for: .audiobook(book.id))
             await publishState()
             startCoverTask(for: book, sessionID: sessionID)
+            outcome = .success
         } catch {
             await teardown(syncReason: nil)
             notifyObservers(nil)
@@ -575,6 +580,7 @@ public actor AudioSessionActor {
     }
 
     private func notifySnapshotObservers(_ snapshot: AudioSessionSnapshot?) {
+        SilveranPlatform.performance.setActivity(.audio, active: snapshot?.isPlaying == true)
         for observer in snapshotObservers.values {
             observer(snapshot)
         }
@@ -847,6 +853,10 @@ public actor AudioSessionActor {
     }
 
     private func syncProgress(reason: SyncReason) async {
+        let measurement = PerformanceMeasurement(.audioPositionUpdate)
+        var outcome: PerformanceOutcome = .incomplete
+        var empty = 1
+        defer { measurement.finish(outcome, work: [.emptyChecks: empty]) }
         guard let book, let metadata,
             let state = await AudiobookActor.shared.getCurrentState()
         else { return }
@@ -860,6 +870,7 @@ public actor AudioSessionActor {
             } ?? 0
         let locator = makeLocator(state: state, metadata: metadata)
         guard locator != lastSyncedLocator else { return }
+        empty = 0
         let result = await ProgressSyncActor.shared.syncProgress(
             bookID: book.id,
             locator: locator,
@@ -870,9 +881,10 @@ public actor AudioSessionActor {
         )
         switch result {
             case .success, .queued:
+                outcome = .success
                 lastSyncedLocator = locator
             case .failed:
-                break
+                outcome = .failure
         }
     }
 

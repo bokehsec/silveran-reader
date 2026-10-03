@@ -1,5 +1,5 @@
 import { INK_TAG, isInkElement, buildTextIndex, resolveAnchor } from "./InkAnchoring.js";
-import { strokeAttributes } from "./InkStrokeShape.js";
+import { strokeAttributes, MAX_WIDTH_FACTOR } from "./InkStrokeShape.js";
 
 /**
  * Drawing notes in the text flow. A handwritten note is an <silveran-ink> element inserted into
@@ -11,11 +11,7 @@ const XHTML_NS = "http://www.w3.org/1999/xhtml";
 const SVG_NS = "http://www.w3.org/2000/svg";
 const STYLE_ID = "silveran-ink-style";
 
-// The open wide margin keeps text off the right of each column (InkMargin.MARGIN_ROOM). Padding,
-// because the paginator pins the body's margin; this replaces the reader's right text margin. The
-// open margin has no paginator gap (OD-042), so the text's left edge gets the gap's outer half
-// (4%) on top of the reader's own side margin (`--silveran-side-margin`, FoliateManager). A gutter
-// of note icons keeps at least 12 pt between the text and the icons (OD-044).
+// The shared note-icon gutter keeps text at least 12 pt clear even with Narrow margins.
 const INK_CSS = `
 ${INK_TAG} { display:block !important; position:relative !important; margin:0 !important;
   padding:0 !important; border:0 !important; text-indent:0 !important; float:none !important;
@@ -23,8 +19,6 @@ ${INK_TAG} { display:block !important; position:relative !important; margin:0 !i
   break-inside:avoid !important; -webkit-column-break-inside:avoid !important;
   background:var(--silveran-ink-note-tint, rgba(255, 196, 0, 0.08)) !important;
   border-radius:6px; pointer-events:none !important; overflow-x:clip !important; }
-html[data-silveran-margin="open"] body { padding-right:28% !important;
-  padding-left:calc(var(--silveran-side-margin, 0%) + 4%) !important; }
 html[data-silveran-margin="icons"] body { padding-right:max(var(--silveran-side-margin, 0%), 12px) !important; }
 ${INK_TAG} > svg { position:absolute; left:0; top:0; overflow:visible; pointer-events:none; }
 ${INK_TAG}[data-empty] { outline:1px dashed var(--silveran-ink-area-outline, rgba(31, 79, 209, 0.45)) !important;
@@ -46,6 +40,24 @@ export const bbox = pts => {
   let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
   for (const [x, y] of pts) { l = Math.min(l, x); r = Math.max(r, x); t = Math.min(t, y); b = Math.max(b, y); }
   return { left: l, top: t, right: r, bottom: b, width: r - l, height: b - t };
+};
+
+/** Full painted bounds in note coordinates, including pressure and path outlines. */
+export const paintedBounds = strokes => {
+  let result = null;
+  for (const stroke of strokes ?? []) {
+    if (!stroke.points?.length) continue;
+    const box = bbox(stroke.points);
+    const half = (stroke.width ?? 2) / 2;
+    const pad = stroke.tool === "highlighter" ? half : half * MAX_WIDTH_FACTOR + 0.3;
+    result = {
+      left: Math.min(result?.left ?? Infinity, box.left - pad),
+      top: Math.min(result?.top ?? Infinity, box.top - pad),
+      right: Math.max(result?.right ?? -Infinity, box.right + pad),
+      bottom: Math.max(result?.bottom ?? -Infinity, box.bottom + pad),
+    };
+  }
+  return result;
 };
 
 /** `paint(color)` adapts a stored colour to the page background. */
@@ -145,7 +157,7 @@ export const noteOrigin = el => {
   const r = el.getBoundingClientRect();
   const scale = parseFloat(el.dataset.scale) || 1;
   const shiftX = parseFloat(el.dataset.shiftX) || 0;
-  return { left: r.left - (parseFloat(el.dataset.originX) || 0) - shiftX * scale, top: r.top, scale };
+  return { left: r.left - (parseFloat(el.dataset.originX) || 0) - shiftX * scale, top: r.top - (parseFloat(el.dataset.shiftY) || 0) * scale, scale };
 };
 
 /**
@@ -157,11 +169,12 @@ export const noteOrigin = el => {
  */
 export const areaLayout = (area, box, full, limit) => {
   const hasInk = Number.isFinite(box.left);
-  const bottom = Math.max(area.height, hasInk ? box.bottom + 8 : 0);
+  const shiftY = hasInk ? Math.min(0, box.top) : 0;
+  const bottom = Math.max(area.height, hasInk ? box.bottom + 8 : 0) - shiftY;
   const heightScale = bottom > limit ? limit / bottom : 1;
   if (area.width == null) {
     const fit = hasInk ? fitWidth(box, heightScale, full) : { scale: heightScale, shiftX: 0 };
-    return { scale: fit.scale, shiftX: fit.shiftX, height: Math.ceil(bottom * fit.scale), originX: 0, width: null, side: null, beside: false };
+    return { shiftY, scale: fit.scale, shiftX: fit.shiftX, height: Math.ceil(bottom * fit.scale), originX: 0, width: null, side: null, beside: false };
   }
   const left = Math.min(area.left, hasInk ? box.left : area.left);
   const right = Math.max(area.left + area.width, hasInk ? box.right : -Infinity);
@@ -169,7 +182,7 @@ export const areaLayout = (area, box, full, limit) => {
   const width = Math.min(full, Math.ceil((right - left) * scale));
   const minText = Math.max(WRAP_MIN_TEXT, WRAP_MIN_TEXT_SHARE * full);
   const beside = full >= WRAP_MIN_COLUMN && full - width - WRAP_PAD >= minText;
-  return { scale, shiftX: 0, height: Math.ceil(bottom * scale), originX: left * scale, width, side: area.side ?? "left", beside };
+  return { shiftY, scale, shiftX: 0, height: Math.ceil(bottom * scale), originX: left * scale, width, side: area.side ?? "left", beside };
 };
 
 /** Lays out a note that has a writing area (ADR 015); see `areaLayout`. */
@@ -179,6 +192,7 @@ const sizeAreaNote = (el, note, all, box, full, limit) => {
   el.dataset.scale = String(layout.scale);
   el.dataset.shiftX = String(layout.shiftX);
   el.dataset.originX = String(layout.originX);
+  el.dataset.shiftY = String(layout.shiftY);
   el.dataset.area = "";
   if (layout.width != null) {
     el.style.setProperty("width", `${layout.width}px`, "important");
@@ -214,19 +228,20 @@ export const sizeNote = (el, note, maxHeight) => {
   el.dataset.full = String(full);
   if (all.length) delete el.dataset.empty; else el.dataset.empty = "";
   if (note.area) {
-    const layout = sizeAreaNote(el, note, all, all.length ? box : bbox([]), full, limit);
+    const layout = sizeAreaNote(el, note, all, paintedBounds(note.strokes) ?? bbox([]), full, limit);
     const svg = el.firstChild;
     svg.setAttribute("width", String(Math.max(1, Math.round(el.getBoundingClientRect().width))));
     svg.setAttribute("height", String(layout.height));
     const transform = [
       layout.originX ? `translate(${-layout.originX} 0)` : "",
       layout.scale !== 1 ? `scale(${layout.scale})` : "",
-      layout.shiftX ? `translate(${-layout.shiftX} 0)` : "",
+      layout.shiftX || layout.shiftY ? `translate(${-layout.shiftX} ${-layout.shiftY})` : "",
     ].filter(Boolean).join(" ");
     if (transform) svg.firstChild.setAttribute("transform", transform);
     else svg.firstChild.removeAttribute("transform");
     return;
   }
+  delete el.dataset.shiftY;
   delete el.dataset.area;
   const { scale, shiftX } = all.length
     ? fitWidth(box, box.bottom > limit ? limit / box.bottom : 1, full)

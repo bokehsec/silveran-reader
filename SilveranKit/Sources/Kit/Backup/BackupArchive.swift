@@ -166,6 +166,9 @@ public enum BackupArchiveCodec {
 
     /// Writes atomically: a partial file never appears at `url`.
     public static func write(_ archive: BackupArchive, to url: URL) throws {
+        let measurement = PerformanceMeasurement(.backupCompress)
+        var outcome: PerformanceOutcome = .failure
+        defer { measurement.finish(outcome) }
         try validate(archive)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -193,6 +196,7 @@ public enum BackupArchiveCodec {
         } else {
             try FileManager.default.moveItem(at: temporary, to: url)
         }
+        outcome = .success
     }
 
     public static func encode(_ archive: BackupArchive) throws -> Data {

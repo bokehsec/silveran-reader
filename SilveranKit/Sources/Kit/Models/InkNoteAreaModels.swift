@@ -24,6 +24,12 @@ public struct InkNoteAreaFrame: Codable, Sendable, Hashable, Identifiable {
 
     public var id: String { "\(href)#\(noteID)" }
 
+    /// Sized notes include ink above coordinate zero by shifting its rendering inside the box.
+    /// Match the renderer's origin without changing persisted strokes or the frame wire format.
+    public var originY: Double {
+        box.top - (hasArea ? min(0, ink?.top ?? 0) * scale : 0)
+    }
+
     public init(
         href: String,
         noteID: String,
@@ -73,9 +79,9 @@ public struct InkNoteAreaFrame: Codable, Sendable, Hashable, Identifiable {
         let inkView = ink.map {
             InkSelectionBounds(
                 left: originX + $0.left * scale,
-                top: box.top + $0.top * scale,
+                top: originY + $0.top * scale,
                 right: originX + $0.right * scale,
-                bottom: box.top + $0.bottom * scale
+                bottom: originY + $0.bottom * scale
             )
         }
         var l = min(max(left, columnLeft), columnRight - minWidth)
@@ -84,9 +90,9 @@ public struct InkNoteAreaFrame: Codable, Sendable, Hashable, Identifiable {
             l = min(l, max(inkView.left, columnLeft))
             r = max(r, min(inkView.right, columnRight))
         }
-        var b = min(max(bottom, box.top + minHeight), pageBottom)
+        var b = min(max(bottom, originY + minHeight), pageBottom)
         if let inkView { b = max(b, min(inkView.bottom, pageBottom)) }
-        let height = Self.round((b - box.top) / scale)
+        let height = max(InkNoteArea.minimumHeight, Self.round((b - originY) / scale))
         let touchesLeft = l <= columnLeft + 1
         let touchesRight = r >= columnRight - 1
         if touchesLeft && touchesRight {
@@ -185,5 +191,44 @@ public enum InkAreaDraft: Sendable, Equatable {
                 "resize \(frame.noteID) by \(handle.rawValue) to \(area.width.map { "\($0) × " } ?? "")\(area.height)"
             case .insert(_, let area): "new space \(area.height) tall"
         }
+    }
+}
+
+/// Geometry-only legacy transition (ADR 016). Stroke values remain merge identities.
+extension InkNote {
+    public var areaForMovingIntoText: InkNoteArea? {
+        guard isMarginNote, area == nil, !strokes.isEmpty else { return nil }
+        var left = 0.0
+        var right = 0.0
+        var bottom = 0.0
+        var hasPoints = false
+        for stroke in strokes {
+            guard stroke.width.isFinite, stroke.width > 0 else { return nil }
+            let pad = stroke.tool == .highlighter ? stroke.width / 2 : stroke.width / 2 * 1.3 + 0.3
+            for point in stroke.points {
+                guard (2...3).contains(point.count), point.allSatisfy(\.isFinite) else {
+                    return nil
+                }
+                hasPoints = true
+                left = min(left, point[0] - pad)
+                right = max(right, point[0] + pad)
+                bottom = max(bottom, point[1] + pad)
+                guard abs(point[1]) <= InkNoteArea.maximumSize else { return nil }
+            }
+        }
+        guard hasPoints else { return nil }
+        if let refWidth {
+            guard refWidth.isFinite, refWidth > 0 else { return nil }
+            right = max(right, refWidth)
+        }
+        // The renderer unions the negative painted extent with this area. Keep its stored left
+        // at zero (the original margin origin), rather than shifting any stroke.
+        let area = InkNoteArea(
+            width: max(InkNoteArea.minimumWidth, right),
+            height: max(InkNoteArea.minimumHeight, bottom + 8),
+            side: .right
+        )
+        guard area.isValid, right - left <= InkNoteArea.maximumSize else { return nil }
+        return area
     }
 }

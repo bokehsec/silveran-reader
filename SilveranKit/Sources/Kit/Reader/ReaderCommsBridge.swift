@@ -111,7 +111,7 @@ public final class ReaderCommsBridge {
         inkSession.onSelectionModeChanged = { [weak self] in
             guard let self else { return }
             self.pushInkState(
-                "window.foliateManager?.setInkSelectionMode(\(self.inkSession.isSelectingInk))"
+                "window.foliateManager?.setInkSelectionMode(\(self.inkSession.isSelectingInk || self.inkSession.isPreviewingMarginConversion))"
             )
         }
         // A web view rebuilt for a book already written in starts in Pencil mode.
@@ -144,6 +144,18 @@ public final class ReaderCommsBridge {
 
     /// JS is sending Swift a Relocated event when user navigates, page turns, resizes, etc.
     public func sendSwiftRelocated(_ message: RelocatedMessage) {
+        // A conversion preview must not publish a temporary pagination position. Foliate's
+        // resize observer can report its anchor reflow after the preview call returns. Keep
+        // that draft; native layout/style changes invalidate it explicitly. Real navigation
+        // puts it down, and the restoring render publishes the saved projection normally.
+        if inkSession.isPreviewingMarginConversion {
+            if inkSession.marginConversion != nil,
+                message.reason != "anchor", message.reason != "selection"
+            {
+                inkSession.cancelMarginConversion()
+            }
+            return
+        }
         inkSession.cancelSelection()
         debugLog("[ReaderCommsBridge] sendSwiftRelocated")
         debugLog(
@@ -183,7 +195,10 @@ public final class ReaderCommsBridge {
         // Margin taps, swipes and arrow keys never turn the page while writing. A "drag" is
         // a finger-driven curl that started before the lock (the animator won't start one
         // while writing) and must be allowed to finish.
-        if message.source != "drag", inkSession.isWriting || inkSession.isSelectingInk {
+        if message.source != "drag",
+            inkSession.isWriting || inkSession.isSelectingInk
+                || inkSession.isPreviewingMarginConversion
+        {
             debugLog("[ReaderCommsBridge] Ignoring navigation while writing with the Pencil")
             return
         }
@@ -479,6 +494,7 @@ public final class ReaderCommsBridge {
             .replacingOccurrences(of: "'", with: "\\'")
 
         debugLog("[ReaderCommsBridge] sendJsUpdateStyles()")
+        inkSession.cancelMarginConversion()
         let script = "window.foliateManager.updateStyles('\(jsonString)')"
         _ = try await js.evaluate(script)
     }

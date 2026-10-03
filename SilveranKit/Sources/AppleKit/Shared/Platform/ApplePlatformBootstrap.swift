@@ -9,6 +9,12 @@ public func bootstrapApplePlatformDefaultsIfNeeded() {
         in: FileManager.default.temporaryDirectory
     )
     guard !SilveranPlatform.isBootstrapped else { return }
+    #if os(iOS)
+    let performance: any PerformanceMeasuring = ApplePerformanceDiagnostics.shared
+    ApplePerformanceDiagnostics.shared.start()
+    #else
+    let performance: any PerformanceMeasuring = NoopPerformanceMeasurement()
+    #endif
     SilveranPlatform.bootstrap(
         audioPlayerFactory: AppleAudioPlayerFactory(),
         nowPlaying: MediaNowPlayingPresenter(),
@@ -17,5 +23,6 @@ public func bootstrapApplePlatformDefaultsIfNeeded() {
         fontMetadata: CoreTextFontTraitsProbe(),
         folderWatcher: applePlatformFolderWatcher(),
         applicationStorage: AppleApplicationStorageProvider(),
+        performance: performance,
     )
 }

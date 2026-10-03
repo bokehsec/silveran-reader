@@ -26,15 +26,15 @@ const setup = () => {
   return { doc, renderer, attributes, layout, reports, margin, open, renders: () => renders };
 };
 
-test("opening and closing the margin changes the page and reports each state", () => {
+test("old open and close requests keep expansion unavailable", () => {
   const { margin, reports, attributes, open } = setup();
-  assert.deepEqual(margin.set({ open: true }), { expanded: true, available: true });
-  assert.ok(open());
-  assert.equal(attributes.gap, "0%", "the open margin reaches the screen's edge (OD-042)");
-  assert.deepEqual(reports.at(-1), { expanded: true, available: true });
-  assert.deepEqual(margin.set({ open: false }), { expanded: false, available: true });
+  assert.deepEqual(margin.set({ open: true }), { expanded: false, available: false });
   assert.ok(!open());
-  assert.deepEqual(reports.at(-1), { expanded: false, available: true });
+  assert.equal(attributes.gap, "0%", "the open margin reaches the screen's edge (OD-042)");
+  assert.deepEqual(reports.at(-1), { expanded: false, available: false });
+  assert.deepEqual(margin.set({ open: false }), { expanded: false, available: false });
+  assert.ok(!open());
+  assert.deepEqual(reports.at(-1), { expanded: false, available: false });
 });
 
 test("closing with margin notes leaves only the thin icon gutter", () => {
@@ -46,7 +46,7 @@ test("closing with margin notes leaves only the thin icon gutter", () => {
   assert.equal(doc.documentElement.getAttribute(MARGIN_OPEN_ATTRIBUTE), "icons", "the text keeps clear of the icons (OD-044)");
 });
 
-test("switching to scrolling closes the wide margin; switching back reopens it", () => {
+test("scrolling and returning to pages never reopen the retired rail", () => {
   const { margin, layout, reports, open } = setup();
   margin.set({ open: true });
   layout.scrolling = true;
@@ -55,11 +55,11 @@ test("switching to scrolling closes the wide margin; switching back reopens it",
   assert.deepEqual(reports.at(-1), { expanded: false, available: false });
   layout.scrolling = false;
   margin.apply();
-  assert.ok(open(), "the person's choice to open it is kept");
-  assert.deepEqual(reports.at(-1), { expanded: true, available: true });
+  assert.ok(!open(), "remembered requests cannot reopen the retired rail");
+  assert.deepEqual(reports.at(-1), { expanded: false, available: false });
 });
 
-test("a resize to a narrow column closes the wide margin and reports it unavailable", () => {
+test("a narrow-column resize preserves disabled expansion", () => {
   const { margin, layout, reports, open } = setup();
   margin.set({ open: true });
   const count = reports.length;
@@ -71,16 +71,16 @@ test("a resize to a narrow column closes the wide margin and reports it unavaila
   assert.deepEqual(reports.at(-1), { expanded: false, available: false });
 });
 
-test("a failed open still reports what the page shows, and a retry repairs it", () => {
+test("a failed gutter update reports disabled expansion and can be retried", () => {
   const { margin, renderer, reports, open } = setup();
   const render = renderer.render;
   renderer.render = () => { throw new Error("injected render failure"); };
   assert.throws(() => margin.set({ open: true }), /injected render failure/);
   renderer.render = render;
-  assert.ok(open(), "the text room was applied before the failure");
-  assert.deepEqual(reports.at(-1), { expanded: true, available: true }, "the toolbar learns the page is open");
+  assert.ok(!open(), "failure never opens the retired rail");
+  assert.deepEqual(reports.at(-1), { expanded: false, available: false }, "the toolbar learns the page is open");
   assert.equal(margin.upToDate, false);
-  assert.deepEqual(margin.set({ open: true }), { expanded: true, available: true });
+  assert.deepEqual(margin.set({ open: true }), { expanded: false, available: false });
   assert.equal(margin.upToDate, true, "the retry finished applying it");
   margin.set({ open: false });
   assert.ok(!open(), "and it closes again");
@@ -91,7 +91,7 @@ test("a repeated command reports again without re-rendering", () => {
   margin.set({ open: true });
   const before = renders();
   const count = reports.length;
-  assert.deepEqual(margin.set({ open: true }), { expanded: true, available: true });
+  assert.deepEqual(margin.set({ open: true }), { expanded: false, available: false });
   assert.equal(renders(), before);
   assert.equal(reports.length, count + 1, "a lost report is sent again");
 });

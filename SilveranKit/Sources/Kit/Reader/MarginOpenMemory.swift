@@ -1,10 +1,8 @@
 import Foundation
 
-/// Whether the wide margin was left open in each book, on this device only (owner decision,
-/// 2026-10-03): a book annotated in the margin reopens with its margin notes showing as
-/// handwriting instead of icons. Reader view state, like the sidebar choices: it is not
-/// synchronized between devices and is not part of the configuration backup. Only books left
-/// open are recorded; a missing or unreadable record means closed, the earlier behavior.
+/// Obsolete local view-state adapter retained for source compatibility and rollback. ADR 016
+/// retires expansion: InkSession never reads or writes this record. It stays excluded from
+/// configuration sync and backup; existing preferences are left untouched.
 public struct MarginOpenMemory: Sendable {
     public var isOpen: @Sendable (BookID) -> Bool
     public var setOpen: @Sendable (BookID, Bool) -> Void

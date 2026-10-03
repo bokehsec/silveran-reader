@@ -489,6 +489,12 @@ private func makeWebViewConfiguration2(
     contentController.add(coordinator, name: "FileAccessDiagnostic")
     contentController.add(coordinator, name: "SelectionState")
     contentController.add(coordinator, name: "ReaderReady")
+    contentController.add(coordinator, name: "PerformanceDiagnostics")
+    coordinator.router.performanceIngress = RendererPerformanceIngress(generation: UUID())
+    contentController.addUserScript(WKUserScript(
+        source: "window.__silveranPerformanceGeneration = '\(coordinator.router.performanceIngress.generation.uuidString)';",
+        injectionTime: .atDocumentStart, forMainFrameOnly: true
+    ))
 
     contentController.addUserScript(consoleOverrideScript)
     #if os(iOS)

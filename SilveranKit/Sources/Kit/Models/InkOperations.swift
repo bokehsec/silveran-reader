@@ -321,6 +321,7 @@ public enum InkOperation: Sendable, Equatable {
     case appendToNote(href: String, noteID: String, stroke: InkStroke, at: Date)
     case addMark(href: String, mark: InkMark)
     case reclassifyMark(href: String, markID: String, kind: InkMarkKind)
+    case moveMarginNoteIntoText(href: String, expected: InkNote, at: Date)
     case convertMarkToNote(href: String, markID: String, at: Date)
     /// Removes strokes from notes (a note left with no strokes goes too) and whole marks.
     case erase(href: String, strokes: [InkStrokeRef], markIDs: [String], at: Date)
@@ -353,7 +354,8 @@ public enum InkOperation: Sendable, Equatable {
                 .transformStrokes(let href, _, _, _, _),
                 .replaceSection(let href, _), .reanchorNote(let href, _, _, _),
                 .reanchorMark(let href, _, _, _), .reclassifyMark(let href, _, _),
-                .convertMarkToNote(let href, _, _), .setNoteArea(let href, _, _, _):
+                .moveMarginNoteIntoText(let href, _, _), .convertMarkToNote(let href, _, _),
+                .setNoteArea(let href, _, _, _):
                 href
         }
     }
@@ -366,6 +368,7 @@ public enum InkOperation: Sendable, Equatable {
     /// The note or mark the page should bring into view after the change.
     public var focusID: String? {
         switch self {
+            case .moveMarginNoteIntoText(_, let note, _): note.id
             case .addNote(_, let note): note.id
             case .appendToNote(_, let noteID, _, _): noteID
             case .transformStrokes(_, let noteID, _, _, _): noteID
@@ -390,6 +393,15 @@ public enum InkOperation: Sendable, Equatable {
                     return false
                 }
                 section.notes.append(note)
+                return true
+
+            case .moveMarginNoteIntoText(_, let expected, let at):
+                guard let index = section.notes.firstIndex(where: { $0.id == expected.id }),
+                    section.notes[index] == expected, let area = expected.areaForMovingIntoText
+                else { return false }
+                section.notes[index].placement = nil
+                section.notes[index].area = area
+                section.notes[index].updatedAt = at
                 return true
 
             case .appendToNote(_, let noteID, let stroke, let at):

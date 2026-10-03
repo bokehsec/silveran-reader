@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 @testable import SilveranKit
@@ -28,6 +29,16 @@ private final class FakeEngine: InkEngineCalling {
     var selectionHit = InkSelectionHit()
     var onSelect: (() async -> Void)?
     var previews: [InkStrokeTransform] = []
+    var conversionShown = true
+    var conversionPreviews: [(String, String, InkNoteArea)] = []
+    var onConversion: (() async -> Void)?
+    func inkPreviewMarginConversion(href: String, noteID: String, area: InkNoteArea) async throws
+        -> Bool
+    {
+        conversionPreviews.append((href, noteID, area))
+        await onConversion?()
+        return conversionShown
+    }
     var marginFocusCalls: [(String, String)] = []
     func inkFocusMarginNote(href: String, noteID: String) async throws -> Bool {
         marginFocusCalls.append((href, noteID))
@@ -811,7 +822,7 @@ struct InkSessionModelTests {
 
     // MARK: Margin notes (P5.2)
 
-    @Test("A stroke the page places in the margin becomes a margin note")
+    @Test("Even an older page proposal creates new handwriting in the text, preserving the stroke")
     func marginNoteFromProposal() async {
         let directory = makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -830,13 +841,14 @@ struct InkSessionModelTests {
         await session.finishStroke(InkStrokeInput(points: [[5, 5]]))
         let note = session.section("c1").notes.first
         #expect(note?.id == "m1")
-        #expect(note?.placement == .margin)
-        #expect(note?.refWidth == 96)
-        #expect(session.hasMarginNotes)
+        #expect(note?.placement == nil)
+        #expect(note?.refWidth == nil)
+        #expect(note?.strokes == [InkStroke(points: [[1, 2]])])
+        #expect(!session.hasMarginNotes)
         await session.flush()
         #expect(
-            engine.marginCalls.last?.hasNotes == true,
-            "the page is told the book now has margin notes"
+            engine.marginCalls.last?.hasNotes == false,
+            "new writing does not reserve a legacy note gutter"
         )
     }
 
@@ -852,7 +864,10 @@ struct InkSessionModelTests {
         #expect(!session.hasMarginNotes)
         await session.flush()
         #expect(engine.flowNoteReports.last == true, "a narrow column can show the note as an icon")
-        #expect(engine.marginCalls.last?.hasNotes == false, "no margin gutter is asked for on a wide column")
+        #expect(
+            engine.marginCalls.last?.hasNotes == false,
+            "no margin gutter is asked for on a wide column"
+        )
         #expect(session.deleteInk(href: "c1", id: "inline"))
         await session.flush()
         #expect(engine.flowNoteReports.last == false)
@@ -878,39 +893,18 @@ struct InkSessionModelTests {
         #expect(!json.contains("placement"), "in-text notes are written exactly as before")
     }
 
-    @Test("Opening and closing the margin reaches the page")
+    @Test("Obsolete open and focus requests never reactivate expansion")
     func marginOpen() async {
         let directory = makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let engine = FakeEngine()
         let session = await openSession(directory: directory, engine: engine)
         await session.setMarginOpen(true)
-        #expect(engine.marginCalls.last?.open == true)
-        #expect(session.marginState.expanded, "the page's answer opens the toolbar state")
-        var changes = 0
-        session.onMarginStateChanged = { changes += 1 }
-        session.setMarginState(.init(expanded: false, available: true))
-        session.setMarginState(.init(expanded: false, available: true))
-        #expect(changes == 1)
-        #expect(!session.marginState.expanded)
-    }
-
-    @Test("The margin state follows what the page shows, not what was asked (OD-028)")
-    func marginFollowsPage() async {
-        let directory = makeDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let engine = FakeEngine()
-        let session = await openSession(directory: directory, engine: engine)
-        // A narrow column: the page keeps the margin closed and says it can't open.
-        engine.marginAnswer = { _ in .init(expanded: false, available: false) }
-        await session.setMarginOpen(true)
+        #expect(engine.marginCalls.last?.open == false)
+        session.setMarginState(.init(expanded: true, available: true))
         #expect(session.marginState == .init(expanded: false, available: false))
-        // The page's own report was lost, but its answer still reaches the toolbar.
-        engine.marginAnswer = nil
-        await session.setMarginOpen(true)
-        #expect(session.marginState == .init(expanded: true, available: true))
-        await session.setMarginOpen(false)
-        #expect(session.marginState.expanded == false)
+        #expect(!(await session.focusMarginNote(href: "c1", noteID: "legacy")))
+        #expect(engine.marginFocusCalls.isEmpty)
     }
 
     // MARK: Writing areas by long-press (owner decision 2026-10-03)
@@ -1013,53 +1007,178 @@ struct InkSessionModelTests {
         return session
     }
 
-    @Test("A book whose margin was left open reopens with it open")
-    func rememberedMarginReopens() async {
+    @Test("Remembered open state is ignored and not overwritten")
+    func rememberedMarginIgnored() async {
         let directory = makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let box = MemoryBox()
         box.set(bookID, true)
-        let engine = FakeEngine()
-        let session = await openRemembering(box, directory: directory, engine: engine)
-        #expect(await settle { session.marginState.expanded })
-        #expect(engine.marginCalls.first?.open == true, "the first margin command reopens it")
-    }
-
-    @Test("The page's reports before the book's first margin command are not remembered")
-    func earlyReportsAreNotChoices() async {
-        let directory = makeDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let box = MemoryBox()
-        box.set(bookID, true)
-        let session = rememberingSession(box, directory: directory)
-        // The page lays out (closed) before the session has told it anything.
-        session.setMarginState(.init(expanded: false, available: true))
-        #expect(box.contains(bookID))
-        let engine = FakeEngine()
-        session.engine = engine
-        await session.open(bookID: bookID)
-        #expect(await settle { session.marginState.expanded })
-    }
-
-    @Test(
-        "Closing or opening the margin is remembered for the book; an unavailable margin keeps the choice"
-    )
-    func marginChoiceRemembered() async {
-        let directory = makeDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let box = MemoryBox()
         let engine = FakeEngine()
         let session = await openRemembering(box, directory: directory, engine: engine)
         #expect(await settle { !engine.marginCalls.isEmpty })
-        #expect(engine.marginCalls.first?.open == nil, "a book never left open opens closed")
-        await session.setMarginOpen(true)
-        #expect(box.contains(bookID))
-        // Rotated to a column too narrow to write beside: the person's choice stays.
-        session.setMarginState(.init(expanded: false, available: false))
-        #expect(box.contains(bookID))
-        await session.setMarginOpen(false)
-        #expect(!box.contains(bookID))
-        #expect(!box.contains(BookID(sourceID: "source-2", uuid: "book-1")))
+        #expect(engine.marginCalls.first?.open == false)
+        #expect(!session.marginState.expanded)
+        #expect(box.contains(bookID), "obsolete local preference is left intact for rollback")
+    }
+
+    // MARK: Legacy conversion (ADR 016)
+
+    private func legacyMargin() -> InkNote {
+        InkNote(
+            id: "legacy",
+            anchor: anchor(10),
+            strokes: [InkStroke(width: 4, points: [[-30, -5, 0.8], [100, 80, 1]])],
+            createdAt: stamp,
+            placement: .margin,
+            refWidth: 140
+        )
+    }
+
+    @Test("Conversion previews do not save; confirm preserves ink, undo/redo and reopen")
+    func conversionLifecycle() async throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        let original = legacyMargin()
+        #expect(session.apply(.addNote(href: "c1", note: original)))
+        #expect(await session.flush())
+        #expect(await session.previewMarginConversion(href: "c1", expected: original))
+        #expect(session.section("c1").notes == [original])
+        #expect(!session.hasPendingChanges)
+        session.penDown()
+        #expect(!session.isWriting, "Pencil authoring is paused during the preview")
+        session.cancelMarginConversion()
+        #expect(session.section("c1").notes == [original])
+        #expect(await session.previewMarginConversion(href: "c1", expected: original))
+        #expect(await session.commitMarginConversion())
+        let converted = try #require(session.section("c1").notes.first)
+        #expect(converted.id == original.id && converted.anchor == original.anchor)
+        #expect(converted.createdAt == original.createdAt && converted.strokes == original.strokes)
+        #expect(converted.refWidth == original.refWidth && !converted.isMarginNote)
+        #expect(converted.area == original.areaForMovingIntoText)
+        #expect(session.undo())
+        #expect(session.section("c1").notes == [original])
+        #expect(session.redo())
+        #expect(session.section("c1").notes == [converted])
+        #expect(await session.flush())
+        let reopened = await openSession(directory: directory, engine: FakeEngine())
+        #expect(reopened.section("c1").notes == [converted])
+    }
+
+    @Test("Preview reflow neither dismisses conversion nor publishes temporary reading progress")
+    func conversionRelocation() async throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        let bridge = ReaderCommsBridge(inkSession: session)
+        session.engine = engine
+        var published = 0
+        bridge.onRelocated = { _ in published += 1 }
+        let original = legacyMargin()
+        session.apply(.addNote(href: "c1", note: original))
+        #expect(await session.flush())
+        #expect(await session.previewMarginConversion(href: "c1", expected: original))
+        func message(_ reason: String) throws -> RelocatedMessage {
+            try JSONDecoder().decode(
+                RelocatedMessage.self,
+                from: Data("{\"cfi\":\"temporary\",\"reason\":\"\(reason)\"}".utf8)
+            )
+        }
+        bridge.sendSwiftRelocated(try message("anchor"))
+        bridge.sendSwiftRelocated(try message("selection"))
+        #expect(session.marginConversion != nil)
+        #expect(published == 0)
+        bridge.sendSwiftRelocated(try message("page"))
+        #expect(session.marginConversion == nil)
+        #expect(published == 0)
+        #expect(session.section("c1").notes == [original])
+        bridge.sendSwiftRelocated(try message("anchor"))
+        #expect(published == 1, "the restored saved projection can publish progress")
+    }
+
+    @Test("Stale or unresolved conversion previews refuse without changing legacy notes")
+    func conversionStale() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        let original = legacyMargin()
+        session.apply(.addNote(href: "c1", note: original))
+        _ = await session.flush()
+        engine.conversionShown = false
+        #expect(!(await session.previewMarginConversion(href: "c1", expected: original)))
+        #expect(session.section("c1").notes == [original])
+        engine.conversionShown = true
+        engine.onConversion = {
+            session.apply(
+                .appendToNote(
+                    href: "c1",
+                    noteID: original.id,
+                    stroke: InkStroke(points: [[20, 130]]),
+                    at: stamp
+                )
+            )
+        }
+        #expect(!(await session.previewMarginConversion(href: "c1", expected: original)))
+        #expect(session.marginConversion == nil)
+        #expect(!(await session.commitMarginConversion()))
+        #expect(session.section("c1").notes[0].isMarginNote)
+        #expect(session.section("c1").notes[0].strokes.count == 2)
+        _ = await session.flush()
+    }
+
+    @Test("Failed conversion saves keep exact recovery edits until retry commits")
+    func conversionFailedSave() async throws {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let failing = Mutex(false)
+        let store = InkActor(
+            directory: directory,
+            writeFile: { data, url in
+                if failing.withLock({ $0 }) { throw CocoaError(.fileWriteOutOfSpace) }
+                try data.write(to: url, options: .atomic)
+            }
+        )
+        let session = InkSession(store: store, now: { stamp })
+        let engine = FakeEngine()
+        session.engine = engine
+        await session.open(bookID: bookID)
+        let original = legacyMargin()
+        session.apply(.addNote(href: "c1", note: original))
+        #expect(await session.flush())
+        #expect(await session.previewMarginConversion(href: "c1", expected: original))
+        failing.withLock { $0 = true }
+        #expect(!(await session.commitMarginConversion()))
+        #expect(session.hasPendingChanges)
+        #expect(session.committedInk.sections["c1"]?.notes == [original])
+        let exported = try JSONDecoder().decode(BookInk.self, from: session.exportData())
+        #expect(exported.sections["c1"]?.notes.first?.strokes == original.strokes)
+        failing.withLock { $0 = false }
+        #expect(await session.retrySave())
+        #expect(!(await store.load(bookID: bookID).ink.sections["c1"]!.notes[0].isMarginNote))
+    }
+
+    @Test("A renderer replacement or deletion cancels a conversion draft")
+    func conversionInvalidation() async {
+        let directory = makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let engine = FakeEngine()
+        let session = await openSession(directory: directory, engine: engine)
+        let original = legacyMargin()
+        session.apply(.addNote(href: "c1", note: original))
+        _ = await session.flush()
+        #expect(await session.previewMarginConversion(href: "c1", expected: original))
+        let replacement = FakeEngine()
+        session.engine = replacement
+        #expect(!(await session.commitMarginConversion()))
+        #expect(session.section("c1").notes == [original])
+        #expect(await session.previewMarginConversion(href: "c1", expected: original))
+        #expect(session.apply(.deleteNote(href: "c1", noteID: original.id)))
+        #expect(session.marginConversion == nil)
+        #expect(!(await session.commitMarginConversion()))
+        _ = await session.flush()
     }
 
     // MARK: Migration
@@ -1483,13 +1602,16 @@ struct InkSessionModelTests {
             noteID: "b",
             noteIDs: ["b", "missing", "inline", "a", "b"]
         )
-        #expect(selected == ["b", "inline", "a"], "handwriting from the text shows as an icon on a narrow column")
+        #expect(
+            selected == ["b", "inline", "a"],
+            "handwriting from the text shows as an icon on a narrow column"
+        )
         #expect(!(await session.focusMarginNote(href: "c1", noteID: "inline")))
         #expect(!(await session.focusMarginNote(href: "other-chapter", noteID: "a")))
         let before = session.ink
-        #expect(await session.focusMarginNote(href: "c1", noteID: "b"))
+        #expect(!(await session.focusMarginNote(href: "c1", noteID: "b")))
         #expect(session.ink == before)
-        #expect(engine.marginFocusCalls.count == 1)
+        #expect(engine.marginFocusCalls.isEmpty)
         #expect(session.undo())
         #expect(session.section("c1").notes == [a, b], "focusing did not add an undo step")
     }

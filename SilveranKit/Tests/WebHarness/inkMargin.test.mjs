@@ -64,14 +64,14 @@ test("margin notes are not put in the text flow, and are not orphans when their 
   assert.ok(doc.querySelector(".silveran-margin-layer"), "margin notes have a layer of their own");
 });
 
-test("expanding the margin redraws the loaded sections", () => {
+test("an expansion request keeps legacy notes as reachable icons", () => {
   const { engine, index } = engineWith();
   const at = index.text.indexOf("Mara Eklund");
   const section = { notes: [{ id: "m", placement: "margin", refWidth: 90, anchor: makeAnchor(index.text, at), strokes: [stroke], createdAt: 1 }], marks: [] };
   engine.render("OEBPS/ch1.xhtml", section, null);
   assert.equal(engine.marginExpanded, false);
   engine.setMarginExpanded(true);
-  assert.equal(engine.marginExpanded, true);
+  assert.equal(engine.marginExpanded, false);
 });
 
 
@@ -161,7 +161,7 @@ test("phone and scrolling gutters leave room for readable margin icons", () => {
   }
   assert.equal(marginGap({ hasNotes: false }), "0%");
   // OD-042: the open margin has no gap, so the page (and the ink) reaches the screen's edge.
-  assert.equal(marginGap({ hasNotes: true, expanded: true }), "0%");
+  assert.equal(marginGap({ hasNotes: true, expanded: true }), "6%");
   assert.equal(marginGap({ hasNotes: true, scrolling: true }), "6%");
 
 });
@@ -318,4 +318,24 @@ test("an unreadably small focused note is counted in a tile, not drawn", () => {
   const { drawn, tiles } = layoutMarginColumn([tallEntry(200)], { expanded: true, focusedId: "tall", focusMinScale: MARGIN_FOCUS_MIN_SCALE });
   assert.equal(drawn.length, 0);
   assert.deepEqual(tiles.map(t => t.entries.map(e => e.note.id)), [["tall"]]);
+});
+
+test("conversion preview renders before the existing passage but leaves the cached legacy note intact", () => {
+  const { doc, engine, index } = engineWith();
+  const note = { id: "legacy", placement: "margin", refWidth: 140,
+    anchor: makeAnchor(index.text, 0), strokes: [{ ...stroke, points: [[-30, -4], [120, 80]] }] };
+  const section = { notes: [note], marks: [] };
+  engine.render("OEBPS/ch1.xhtml", section);
+  const before = structuredClone(section);
+  assert.equal(engine.previewMarginConversion("OEBPS/ch1.xhtml", note.id,
+    { left: 0, width: 140, height: 100, side: "right" }), true, "offset zero is a valid passage");
+  assert.equal(doc.querySelector(INK_TAG).dataset.id, "legacy");
+  assert.deepEqual(section, before);
+  engine.render("OEBPS/ch1.xhtml", section);
+  assert.equal(doc.querySelector(INK_TAG), null, "cancel restores legacy icon projection");
+  assert.equal(engine.revealMarginNote("legacy"), false, "focus calls cannot reopen expansion");
+  note.anchor = { exact: "a missing passage" };
+  engine.render("OEBPS/ch1.xhtml", section);
+  assert.equal(engine.previewMarginConversion("OEBPS/ch1.xhtml", note.id,
+    { left: 0, width: 140, height: 100, side: "right" }), false);
 });

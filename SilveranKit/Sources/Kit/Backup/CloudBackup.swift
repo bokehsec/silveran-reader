@@ -281,9 +281,14 @@ public actor CloudBackupCoordinator {
             let contents = archive.files(for: entry.kind)
             for file in entry.files { files[file.fingerprint.hex] = contents[file.path]! }
         }
+        let measurement = PerformanceMeasurement(.backupUpload)
+        var outcome: PerformanceOutcome = .failure
+        var transferred = 0
+        defer { measurement.finish(Task.isCancelled ? .cancelled : outcome, work: [.transferredBytes: transferred]) }
         let existing = try await transport.existingAssets(Set(files.keys))
         for (hash, data) in files where !existing.contains(hash) {
             try await transport.uploadAsset(hash: hash, data: data)
+            transferred += data.count
         }
         let generation = CloudBackupGeneration(
             id: archive.manifest.archiveID,
@@ -302,6 +307,7 @@ public actor CloudBackupCoordinator {
         let stored = try await transport.existingAssets(Set(files.keys))
         for (hash, data) in files where !stored.contains(hash) {
             try await transport.uploadAsset(hash: hash, data: data)
+            transferred += data.count
         }
         state.lastCompleteAt = now()
         state.lastCompleteGenerationID = generation.id
@@ -312,6 +318,7 @@ public actor CloudBackupCoordinator {
         if archive.manifest.isComplete, let marks {
             try? await localHistory?.recordCompleteBackup(marks)
         }
+        outcome = .success
         try? await prune()
         return true
     }

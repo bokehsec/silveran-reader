@@ -665,6 +665,8 @@ public actor LibraryDerivationActor {
     }
 
     public func deriveSnapshot(from input: LibraryDerivationInput) -> LibraryViewSnapshot {
+        let measurement = PerformanceMeasurement(.libraryIndex)
+        defer { measurement.finish() }
         let started = CFAbsoluteTimeGetCurrent()
         var badgeCounts: [String: Int] = [:]
         var context = Context(input: input)

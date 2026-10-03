@@ -165,6 +165,8 @@ class EbookPlayerViewModel {
     var showInkRepair = false
     /// The page's margin for margin notes (P5.2).
     var inkMarginState = InkSession.MarginState()
+    var previewingMarginConversion = false
+    var marginConversionMessage: String?
     /// A margin note opened by tapping its icon where the margin can't open (narrow screens).
     var presentedMarginNote: MarginNoteRef?
     struct MarginNoteRef: Identifiable, Equatable {
@@ -319,6 +321,11 @@ class EbookPlayerViewModel {
             guard let self else { return }
             self.inkMarginState = self.inkSession.marginState
         }
+        previewingMarginConversion = inkSession.isPreviewingMarginConversion
+        inkSession.onMarginConversionChanged = { [weak self] in
+            guard let self else { return }
+            self.previewingMarginConversion = self.inkSession.isPreviewingMarginConversion
+        }
         inkSession.onMarginNotesTapped = { [weak self] href, ids in
             guard let first = ids.first else { return }
             self?.presentedMarginNote = MarginNoteRef(href: href, noteID: first, noteIDs: ids)
@@ -329,12 +336,6 @@ class EbookPlayerViewModel {
             self.inkOrphanCount = self.inkSession.orphans.values.reduce(0) { $0 + $1.count }
             if self.annotationRepairCount == 0 { self.showInkRepair = false }
         }
-    }
-
-    /// Opens or closes the wide margin for writing margin notes.
-    func toggleInkMargin() {
-        let open = !inkMarginState.expanded
-        Task { await inkSession.setMarginOpen(open) }
     }
 
     /// The chapter name for a section href, for the ink repair list.
@@ -386,7 +387,9 @@ class EbookPlayerViewModel {
     /// kept; its saved words become the words it now covers.
     @discardableResult
     func relocateHighlight(
-        id: UUID, to suggestion: HighlightRepairSuggestion, checked: Highlight
+        id: UUID,
+        to suggestion: HighlightRepairSuggestion,
+        checked: Highlight
     ) async -> Bool {
         guard let bookID = bookData?.metadata.id,
             let existing = highlights.first(where: { $0.id == id }), existing == checked,
@@ -420,11 +423,15 @@ class EbookPlayerViewModel {
             var verifiedSuggestion = suggestion
             verifiedSuggestion.placement = proposed
             let updated = try await AnnotationRepairCommands.prepareHighlight(
-                expected: existing, suggestion: verifiedSuggestion,
-                checkedHref: existing.locator.href, category: expectedSession.category,
+                expected: existing,
+                suggestion: verifiedSuggestion,
+                checkedHref: existing.locator.href,
+                category: expectedSession.category,
                 verifyPlacement: { bookID, category, placement in
                     try await BookServiceActor.shared.verifyAnnotationPlacement(
-                        placement, bookID: bookID, category: category
+                        placement,
+                        bookID: bookID,
+                        category: category
                     )
                 }
             )
@@ -1036,12 +1043,17 @@ class EbookPlayerViewModel {
                 result = await BookmarkActor.shared.updateHighlight(highlight)
             case .repair(let expected, let replacement):
                 result = await AnnotationRepairCommands.commitHighlight(
-                    expected: expected, replacement: replacement, owner: BookmarkActor.shared
+                    expected: expected,
+                    replacement: replacement,
+                    owner: BookmarkActor.shared
                 )
             case .synchronize:
-                result = .failure(AnnotationPersistenceFailure(
-                    message: "Synchronized changes must be applied through the annotation sync owner."
-                ))
+                result = .failure(
+                    AnnotationPersistenceFailure(
+                        message:
+                            "Synchronized changes must be applied through the annotation sync owner."
+                    )
+                )
             case .recolor(let id, let color):
                 result = await BookmarkActor.shared.recolorHighlight(
                     id: id,

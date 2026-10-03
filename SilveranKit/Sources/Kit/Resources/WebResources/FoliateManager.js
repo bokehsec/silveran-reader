@@ -1,3 +1,4 @@
+import { RendererPerformance } from "./PerformanceDiagnostics.js";
 import "./foliate-js/view.js";
 import { Overlayer } from "./foliate-js/overlayer.js";
 import { SpanHighlighter } from "./SpanHighlighter.js";
@@ -5,7 +6,6 @@ import { debugLog } from "./DebugConfig.js";
 import BookmarkManager from "./BookmarkManager.js";
 import InkEngine from "./InkEngine.js";
 import { InkMarginControl } from "./InkMarginControl.js";
-import { MARGIN_FOCUS_MIN_SCALE } from "./InkMargin.js";
 import { runInkSelfTest } from "./InkSelfTest.js";
 import { InkTouchGuard } from "./InkTouchGuard.js";
 import { maybeRunInkDebug } from "./InkDebug.js";
@@ -200,6 +200,7 @@ class FoliateManager {
   #pageTurnStyle = "none";
   #swipeGesture = null;
   #lastTurnNavigation = Promise.resolve();
+  #performance = new RendererPerformance();
   #textSelectionActive = false;
   #lastRelocateRange = null;
   #highlightedElement = null;
@@ -273,6 +274,9 @@ class FoliateManager {
     let clickTimer = null;
 
     this.#view.addEventListener("load", ({ detail }) => {
+      const measurement = this.#performance.begin();
+      let outcome = "failure";
+      try {
       const { doc, index } = detail;
       if (doc) {
         let isDragging = false;
@@ -342,6 +346,8 @@ class FoliateManager {
         this.#bookmarkManager.setupSection(index, doc);
         this.#inkEngine.setupSection(index, doc);
       }
+      outcome = "success";
+      } finally { this.#performance.end("reader.chapterLayout", measurement, outcome); }
     });
 
     debugLog("FoliateManager", "Event listeners attached");
@@ -522,7 +528,7 @@ class FoliateManager {
   }
 
   #handleSingleClick(event) {
-    // A margin note's icon opens the margin (or, on a narrow screen, shows the note).
+    // Every note icon opens the shared drawing viewer.
     const doc = event.target?.ownerDocument ?? event.view?.document;
     const marginIDs = doc ? this.#inkEngine.marginIconIDsAt(doc, event.clientX, event.clientY) : [];
     if (marginIDs.length) {
@@ -923,6 +929,9 @@ class FoliateManager {
   }
 
   updateStyles(jsonString) {
+    const measurement = this.#performance.begin();
+    let outcome = "failure";
+    try {
     // Don't log full jsonString - customCSS contains huge base64 font data
     try {
       const parsed = JSON.parse(jsonString);
@@ -1017,6 +1026,8 @@ class FoliateManager {
 
     this.#applyStylesToRenderer();
     this.#refreshReadaloudHighlight();
+    outcome = "success";
+    } finally { this.#performance.end("reader.reflow", measurement, outcome); }
   }
 
   #applyStylesToRenderer() {
@@ -1090,7 +1101,7 @@ class FoliateManager {
 
   // MARK: - Margin notes (P5.2)
 
-  /** The wide margin: its state from Swift and the layout, applied to the page (OD-027/028). */
+  /** Shared note-icon gutter and narrow-column projection (ADR 016). */
   #inkMargin = new InkMarginControl({
     renderer: () => this.#view?.renderer ?? null,
     engine: this.#inkEngine,
@@ -1121,39 +1132,22 @@ class FoliateManager {
   }
 
   /**
-   * Swift: `{ hasNotes?, hasFlowNotes?, open? }`. Opening the margin widens the gutter so notes
-   * can be written there; a narrow column shows handwriting from the text as icons in the gutter. Returns what the page shows, `{ expanded, available }`.
+   * Swift supplies note presence. Older open requests are ignored. A narrow column shows
+   * handwriting from the text as icons. The retained bridge report always disables expansion.
    */
   inkSetMargin(jsonString) {
     return JSON.stringify(this.#inkMargin.set(JSON.parse(jsonString)));
   }
 
+  // Compatibility entry point: retired commands cannot expand the page.
   async inkFocusMarginNote(href, id) {
-    if (this.#isNarrowColumn() || this.#scrollingMode) return JSON.stringify({ shown: false });
-    this.#inkMargin.set({ open: true });
-    await new Promise(resolve => requestAnimationFrame(resolve));
-    return JSON.stringify({ shown: this.#inkEngine.revealMarginNote(id, href) });
+    return JSON.stringify({ shown: false });
   }
 
-  /**
-   * A tap on a note's icon: open the margin, or on a narrow screen (and for handwriting from the
-   * text, which shows as an icon only there) show the note.
-   */
+  /** Legacy and narrow-column note icons always open the shared viewer. */
   #handleMarginIconTap(doc, ids) {
-    const id = ids[0];
-    if (ids.length > 1 || this.#isNarrowColumn() || this.#scrollingMode || this.#inkEngine.flowNotesAsIcons) {
-      const href = this.#inkEngine.hrefOf(doc);
-      window.webkit?.messageHandlers?.InkMarginNoteTapped?.postMessage({ href, id, ids });
-      return;
-    }
-    this.#inkMargin.set({ open: true });
-    // The text reflowed: keep the note that was tapped in view. A note that would have to shrink
-    // below 70% of its written size to fit opens in the note sheet instead (owner decision 2026-10-03).
-    requestAnimationFrame(() => {
-      if (this.#inkEngine.revealMarginNote(id, null, { minScale: MARGIN_FOCUS_MIN_SCALE })) return;
-      const href = this.#inkEngine.hrefOf(doc);
-      window.webkit?.messageHandlers?.InkMarginNoteTapped?.postMessage({ href, id, ids });
-    });
+    const href = this.#inkEngine.hrefOf(doc);
+    window.webkit?.messageHandlers?.InkMarginNoteTapped?.postMessage({ href, id: ids[0], ids });
   }
 
   #updateMaxInlineSize() {
@@ -1791,6 +1785,10 @@ class FoliateManager {
   }
 
   // Writing areas (ADR 015)
+  inkPreviewMarginConversion(href, id, areaJSON) {
+    return JSON.stringify({ shown: this.#inkEngine.previewMarginConversion(href, id, JSON.parse(areaJSON)) });
+  }
+
   inkMeasureNoteAreas() {
     return JSON.stringify(this.#inkEngine.measureNoteAreas());
   }

@@ -6,6 +6,7 @@ import Foundation
 /// platform-local (native selection UI, diagnostics) and the caller keeps it.
 @SilveranUIActor
 public final class ReaderMessageRouter {
+    public var performanceIngress = RendererPerformanceIngress(generation: UUID())
     public weak var bridge: ReaderCommsBridge?
     public var onConsoleLog: ((_ level: String, _ message: String) -> Void)?
     public var onReaderReady: (() -> Void)?
@@ -17,6 +18,13 @@ public final class ReaderMessageRouter {
     @discardableResult
     public func route(name: String, body: Any) -> Bool {
         switch name {
+            case "PerformanceDiagnostics":
+                if let observations = performanceIngress.accept(body) {
+                    for observation in observations {
+                        SilveranPlatform.performance.observe(observation.operation, seconds: observation.seconds, outcome: observation.outcome)
+                    }
+                }
+                return true
             case "ConsoleLog":
                 if let dict = body as? [String: Any],
                     let level = dict["level"] as? String,

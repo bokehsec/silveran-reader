@@ -295,7 +295,9 @@ final class PageCurlAnimator: NSObject, PageTurnAnimating {
         if bridge?.isNarrationPlaying() == true { return false }
         if textSelectionActive { return false }
         // A resting palm must not start a curl under the Pencil.
-        if bridge?.inkSession.isWriting == true || bridge?.inkSession.isSelectingInk == true {
+        if bridge?.inkSession.isWriting == true || bridge?.inkSession.isSelectingInk == true
+            || bridge?.inkSession.isPreviewingMarginConversion == true
+        {
             return false
         }
         return activeCurl == nil && tapTurnsInFlight == 0

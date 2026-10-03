@@ -561,7 +561,10 @@ public actor BookServiceActor {
             sawSource = true
 
             let sourceStart = CFAbsoluteTimeGetCurrent()
+            let measurement = PerformanceMeasurement(.sourceRefresh)
             let sourceMetadataOptional = await source.fetchLibraryInformation()
+            measurement.finish(sourceMetadataOptional == nil ? .failure : .success,
+                work: [.items: sourceMetadataOptional?.count ?? 0, .emptyChecks: sourceMetadataOptional?.isEmpty == true ? 1 : 0])
             let sourceElapsed = (CFAbsoluteTimeGetCurrent() - sourceStart) * 1000
             debugLog(
                 "[ConnDiag] fetchLibraryInformation: source='\(record.name)' kind=\(record.kind) elapsed=\(String(format: "%.0f", sourceElapsed))ms books=\(sourceMetadataOptional?.count ?? -1)"
@@ -598,7 +601,11 @@ public actor BookServiceActor {
     public func fetchLibraryInformation(sourceID: BookSourceID) async -> [BookMetadata]? {
         await ensureSourceRegistryLoaded()
         guard let source = sourceActor(for: sourceID) else { return nil }
-        guard let metadata = await source.fetchLibraryInformation() else { return nil }
+        let measurement = PerformanceMeasurement(.sourceRefresh)
+        let fetched = await source.fetchLibraryInformation()
+        measurement.finish(fetched == nil ? .failure : .success,
+            work: [.items: fetched?.count ?? 0, .emptyChecks: fetched?.isEmpty == true ? 1 : 0])
+        guard let metadata = fetched else { return nil }
         let sourceRecord = sourceRecords.first(where: { $0.id == sourceID })
         let named = metadata.map { book in
             var named = book
@@ -1558,11 +1565,14 @@ public actor BookServiceActor {
     ) async -> HTTPResult {
         await ensureSourceRegistryLoaded()
         guard let source = sourceActor(for: bookID.sourceID) else { return .noConnection }
-        return await source.sendProgressToServer(
+        let measurement = PerformanceMeasurement(.readingStateSync)
+        let result = await source.sendProgressToServer(
             bookId: bookID.uuid,
             locator: locator,
             timestamp: timestamp,
         )
+        measurement.finish(result == .success ? .success : .failure, work: [.items: 1])
+        return result
     }
 
     public func fetchBookPosition(bookID: BookID) async -> BookReadingPosition? {

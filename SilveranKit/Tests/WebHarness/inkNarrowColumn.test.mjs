@@ -116,3 +116,16 @@ test("rotating a phone between room and no room switches the icons and the gutte
   assert.equal(engine.flowNotesAsIcons, false);
   assert.equal(attributes.gap, "0%");
 });
+
+test("empty writing areas remain reachable as icons when expansion is retired", () => {
+  const { doc, window, engine, section } = engineWith();
+  section.notes[0].strokes = [];
+  section.notes[0].area = { left: 0, height: 150 };
+  window.getComputedStyle = () => ({ columnWidth: "380px", columnGap: "60px", paddingLeft: "30px" });
+  window.Range.prototype.getClientRects = () => [{ left: 30, right: 300, top: 100, bottom: 120, width: 270, height: 20 }];
+  engine.setMarginExpanded(true, { flowIcons: true });
+  engine.render("OEBPS/ch1.xhtml", section);
+  assert.equal(engine.marginExpanded, false);
+  assert.deepEqual(engine.marginIconIDsAt(doc, 425, 110), ["flow"]);
+  assert.equal(engine.inkAt(doc, 425, 110), true, "icon taps suppress page navigation");
+});

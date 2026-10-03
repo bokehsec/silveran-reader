@@ -77,13 +77,6 @@ public struct EbookPlayerView: View {
         self.onClose = onClose
     }
 
-    /// The margin button's action, where the Pencil writes and the margin can open.
-    private var marginToggle: (() -> Void)? {
-        guard viewModel.commsBridge?.toggleInkTools != nil, viewModel.inkMarginState.available
-        else { return nil }
-        return viewModel.toggleInkMargin
-    }
-
     private var marginViewer: (() -> Void)? {
         guard let index = viewModel.progressManager?.selectedChapterId,
             let href = viewModel.bookStructure[safe: index]?.id
@@ -94,25 +87,58 @@ public struct EbookPlayerView: View {
     }
 
     private func marginEditingAction(href: String) -> ((InkNote) async -> Bool)? {
-        #if os(iOS)
-        guard UIDevice.current.userInterfaceIdiom == .pad, viewModel.inkMarginState.available,
-            viewModel.commsBridge?.selectInkWithLasso != nil
-        else { return nil }
+        guard viewModel.inkSession.canEdit else { return nil }
         return { note in
-            guard await viewModel.inkSession.focusMarginNote(href: href, noteID: note.id) else {
-                return false
-            }
+            guard await viewModel.inkSession.previewMarginConversion(href: href, expected: note)
+            else { return false }
+            viewModel.marginConversionMessage = nil
             viewModel.presentedMarginNote = nil
-            viewModel.commsBridge?.selectInkWithLasso?()
             return true
         }
-        #else
-        return nil
-        #endif
+    }
+
+    private var marginConversionControls: some View {
+        VStack(spacing: 8) {
+            if viewModel.previewingMarginConversion {
+                Text("Move into Text").font(.headline)
+                Text(
+                    "Preview: the writing area goes before the passage. Your drawing stays unchanged."
+                )
+                .font(.subheadline)
+                Text("On narrow screens, it will still open from an icon.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                HStack {
+                    Button("Cancel") { viewModel.inkSession.cancelMarginConversion() }
+                    Spacer()
+                    Button("Move into Text") {
+                        Task {
+                            let saved = await viewModel.inkSession.commitMarginConversion()
+                            if !saved {
+                                viewModel.marginConversionMessage =
+                                    viewModel.inkSession.hasPendingChanges
+                                    ? "The move hasn’t been saved. Use Retry or Export in the handwriting save warning."
+                                    : "The note or page changed. Open the note and preview again."
+                            }
+                        }
+                    }.buttonStyle(.borderedProminent)
+                }
+            } else if let message = viewModel.marginConversionMessage {
+                Text(message).font(.subheadline)
+                Button("Done") { viewModel.marginConversionMessage = nil }
+            }
+        }
+        .padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding().frame(maxWidth: 560)
     }
 
     public var body: some View {
         readerBody
+            .overlay(alignment: .bottom) {
+                if viewModel.previewingMarginConversion || viewModel.marginConversionMessage != nil
+                {
+                    marginConversionControls
+                }
+            }
             .environment(\.colorScheme, colorScheme)
             #if os(iOS)
         // Pins the reader's presentation (its sheets and web view included) without
@@ -747,9 +773,7 @@ public struct EbookPlayerView: View {
                     onSleepTimerStart: viewModel.handleSleepTimerStart,
                     onSleepTimerCancel: viewModel.handleSleepTimerCancel,
                     onToggleInkTools: viewModel.commsBridge?.toggleInkTools,
-                    onToggleMargin: marginToggle,
                     onViewMarginNotes: marginViewer,
-                    marginOpen: viewModel.inkMarginState.expanded,
                     settingsVM: viewModel.settingsVM,
                 )
                 .simultaneousGesture(chromeInteractionGesture)

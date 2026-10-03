@@ -167,6 +167,9 @@ public actor BookmarkActor {
     private func drain(_ bookID: BookID) async {
         defer { workers[bookID] = nil }
         while let command = pending[bookID]?.first {
+            let measurement = PerformanceMeasurement(.commitHighlight)
+            var outcome: PerformanceOutcome = .failure
+            defer { measurement.finish(outcome) }
             do {
                 try await store.mutateHighlights(
                     command.mutation,
@@ -177,6 +180,7 @@ public actor BookmarkActor {
                 failures[bookID] = failure(error)
                 return
             }
+            outcome = .success
             pending[bookID]?.removeFirst()
             generations[bookID, default: 0] += 1
             failures[bookID] = nil
