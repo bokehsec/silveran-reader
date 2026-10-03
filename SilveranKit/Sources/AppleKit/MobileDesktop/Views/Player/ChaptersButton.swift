@@ -12,7 +12,24 @@ public struct ChaptersButton: View {
     private let buttonSize: CGFloat
     private let showBackground: Bool
 
-    @State private var showSheet = false
+    /// Who owns whether the list is open: the caller when it passes a binding, otherwise this view.
+    private let isPresented: Binding<Bool>?
+    @State private var localShowSheet = false
+
+    private var showSheet: Bool {
+        get { isPresented?.wrappedValue ?? localShowSheet }
+        nonmutating set {
+            if let isPresented {
+                isPresented.wrappedValue = newValue
+            } else {
+                localShowSheet = newValue
+            }
+        }
+    }
+
+    private var showSheetBinding: Binding<Bool> {
+        isPresented ?? $localShowSheet
+    }
 
     public init(
         chapters: [ChapterItem],
@@ -24,7 +41,9 @@ public struct ChaptersButton: View {
         showLabel: Bool = true,
         buttonSize: CGFloat = 38,
         showBackground: Bool = true,
+        isPresented: Binding<Bool>? = nil,
     ) {
+        self.isPresented = isPresented
         self.chapters = chapters
         self.selectedChapterId = selectedChapterId
         self.onChapterSelected = onChapterSelected
@@ -43,7 +62,7 @@ public struct ChaptersButton: View {
                 buttonLabel
             }
             .buttonStyle(.plain)
-            .sheet(isPresented: $showSheet) {
+            .sheet(isPresented: showSheetBinding) {
                 chaptersSheet
             }
             #else
@@ -51,7 +70,7 @@ public struct ChaptersButton: View {
                 buttonLabel
             }
             .buttonStyle(.plain)
-            .popover(isPresented: $showSheet, arrowEdge: .bottom) {
+            .popover(isPresented: showSheetBinding, arrowEdge: .bottom) {
                 chapterSelectionList
                     .frame(width: 360, height: 420)
             }

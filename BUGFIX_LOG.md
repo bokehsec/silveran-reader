@@ -42,6 +42,47 @@ Migration, data, release, or upstream-PR considerations. Use `None known` when a
 
 <!-- Add new entries immediately below this line, newest first. -->
 
+### BF-093 — The reader's bars hid themselves while a chapter list was open, and the rolled-up Pencil tools vanished
+
+- Date: 2026-10-03
+- Status: Fixed; iPad simulator workflow checked; real-Pencil and iPhone checks pending
+- Platforms: iOS/iPadOS reader (bars and timer); iPadOS (Pencil tool strip)
+- Components: `EbookPlayerViewModel` (`isChromeInUse`, `handleToggleOverlay`, `chromeAutoHideDelay`), `EbookPlayerTopToolbar`, `ChaptersButton`, `EbookPlayerView`, `InkToolStrip`, `InkToolStripView`, `InkToolController`, `ReaderCommsBridge`
+- Related links: owner report 2026-10-03; BF-059 (same timer); [Pencil plan decisions](docs/PENCIL_INK_IMPLEMENTATION_PLAN.md#product-decisions-settled)
+
+#### Symptom
+
+1. The reader's bars hide themselves 5 seconds after the last touch. Opening Chapters from the top bar and taking longer than that to choose closed the chapter list mid-browse: the bars faded and took the list with them. The bookmarks/margin-notes choice on iPad (a menu) did the same.
+2. On iPad, after rolling the Pencil tool strip up into its small button, the button disappeared the next time the page was tapped to hide the bars, so the tools seemed to vanish instead of staying available.
+3. Related: when the bars faded while the strip was in use, the strip jumped up by the bar's height under the finger or Pencil, and an open colour editor lost its place.
+
+#### Root cause
+
+1. The timer only stays paused for presentations listed in `isChromeInUse`. The chapter list's open state was private `@State` inside `ChaptersButton`, and the bookmarks choice was a SwiftUI `Menu`, which does not report being open; neither was in the list. When the timer fired, `EbookPlayerTopToolbar` was removed from the hierarchy and its sheet/menu with it.
+2. `handleToggleOverlay` called `hideInkTools` whenever a tap hid the bars (decision of 2026-10-01: "hides when the reader hides the chrome by tapping"). That applied to the rolled-up button too. Rolling up itself works.
+3. Touches on the strip did not count as using the bars, and the colour editor's open state was private to `InkToolStripView`.
+
+#### Change
+
+- `ChaptersButton` takes an optional `isPresented` binding (other callers keep their own state); the top bar passes `showChaptersSheet`. The iPad bookmarks/margin-notes `Menu` is now a button with a confirmation dialog bound to `showBookmarksMenu` (shown as a popover on iPad). Both, and `InkToolStrip.isEditingColor` (mirrored from the strip's colour editor), are part of `isChromeInUse`, so the timer waits while they are open and restarts when they close.
+- The strip gets the same `chromeInteractionGesture` as the bars, so touching it restarts the timer while the bars show.
+- Hiding the bars by tapping rolls an unrolled strip up and leaves a rolled-up one; only the Handwriting button puts the tools away (owner, 2026-10-03; recorded in the Pencil plan). `ReaderCommsBridge.hideInkTools` and `InkToolController.hide()` had no other callers and were removed.
+- Debug builds only: `-SilveranChromeAutoHideSeconds N` lengthens the timer and `-SilveranShowInkTools` shows the strip on opening a book, because simulator input lags past 5 s.
+- Unchanged: the 5-second delay, VoiceOver keeping the bars up, a tap toggling the bars, and the timer never touching the strip.
+
+#### Validation
+
+- `scripts/iosbuild` (Debug, "Silveran Library Reuse QA iPad", iPad A16, iOS 26.2): build succeeded.
+- Same simulator, synthetic "Ink Fixture (ebook)" in the QA source, Debug build with `-SilveranChromeAutoHideSeconds 20`: before the fix, the bars auto-hid on schedule; with the fix, opening Chapters from the top bar kept the bars and the list up past the timer (no "Auto-hiding" log while it was open), and the timer hid the bars about 20 s after the list closed.
+- With `-SilveranShowInkTools`: the roll-up arrow turns the strip into the small pen button (before and after the fix). After the fix, a tap on the page that hides the bars leaves the rolled-up button on screen.
+- Unrolled strip, bars showing, tap on the page: the bars hid ("Toggled overlay visibility: false") and the strip rolled up into its button instead of disappearing.
+- `scripts/test`: 663 tests / 85 suites pass. `swift format` applied to the changed lines only; `git diff --check` passes.
+- Not checked: the bookmarks/margin-notes dialog (the fixture's column is too narrow to offer margin notes), the colour editor and strip touches with a real Pencil, iPhone, macOS (shares `ChaptersButton`; not built), and VoiceOver. No unit test: `EbookPlayerViewModel` is not constructed in the test suite (as in BF-059, the same timer's earlier fix).
+
+#### Compatibility and follow-up
+
+The strip's rolled-up state is saved as before, so a strip rolled up by hiding the bars reopens rolled up. No data changes.
+
 ### BF-092 — A deleted highlight stayed on the page
 
 - Date: 2026-10-03

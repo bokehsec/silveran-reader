@@ -34,7 +34,6 @@ public final class ReaderCommsBridge {
     /// Shows or hides the writing tool palette. Set by the iPad reader; nil where the Pencil does not write.
     public var selectInkWithLasso: (() -> Void)?
     public var toggleInkTools: (() -> Void)?
-    public var hideInkTools: (() -> Void)?
 
     /// Notifies when book structure (TOC) is ready
     public var onBookStructureReady: ((BookStructureReadyMessage) -> Void)?

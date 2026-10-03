@@ -53,6 +53,7 @@ struct InkToolStripView: View {
         }
         .ignoresSafeArea()
         .coordinateSpace(name: Self.space)
+        .onChange(of: editingSlot) { _, slot in strip.isEditingColor = slot != nil }
     }
 
     private var alignment: Alignment {

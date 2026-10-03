@@ -33,6 +33,8 @@ final class InkToolStrip {
     /// Text is selected on the page, so the strip steps aside for the selection bar and comes back
     /// when the selection ends. Showing, rolled-up state and the tool in hand are unchanged.
     private(set) var yieldsToTextSelection = false
+    /// One of the three colours is being changed (its editor is open).
+    var isEditingColor = false
     private(set) var canUndo = false
     private(set) var canRedo = false
     /// The reader's highlight colours, offered first when changing a highlighter colour.

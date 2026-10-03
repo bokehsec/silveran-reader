@@ -218,6 +218,10 @@ public struct EbookPlayerView: View {
         // cannot be reached by tapping. Debug builds only.
         .task {
             let arguments = CommandLine.arguments
+            if arguments.contains("-SilveranShowInkTools") {
+                try? await Task.sleep(for: .seconds(2))
+                viewModel.inkToolStrip.show()
+            }
             let customize = arguments.contains("-SilveranOpenCustomizeReader")
             guard customize || arguments.contains("-SilveranOpenDisplayOptions") else { return }
             try? await Task.sleep(for: .seconds(2))
@@ -760,6 +764,8 @@ public struct EbookPlayerView: View {
                     showSearchSheet: $viewModel.showSearchPanel,
                     showBookmarksPanel: $viewModel.showBookmarksPanel,
                     showAudioSidebar: $viewModel.showAudioSidebar,
+                    showChaptersSheet: $viewModel.showChaptersSheet,
+                    showBookmarksMenu: $viewModel.showBookmarksMenu,
                     searchManager: viewModel.searchManager,
                     onDismiss: {
                         if let onClose {
@@ -799,6 +805,9 @@ public struct EbookPlayerView: View {
                     avoidsTopBar: viewModel.isTopBarVisible,
                     avoidsMiniPlayer: isMiniPlayerShowing
                 )
+                // Using the tools while the bars show keeps them up, so the strip does not jump
+                // up under the finger or Pencil as they hide.
+                .simultaneousGesture(chromeInteractionGesture)
                 .transition(.opacity)
             }
 

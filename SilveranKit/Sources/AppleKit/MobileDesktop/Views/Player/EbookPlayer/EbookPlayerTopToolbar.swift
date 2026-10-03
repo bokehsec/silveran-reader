@@ -22,6 +22,8 @@ struct EbookPlayerTopToolbar: View {
     @Binding var showSearchSheet: Bool
     @Binding var showBookmarksPanel: Bool
     @Binding var showAudioSidebar: Bool
+    @Binding var showChaptersSheet: Bool
+    @Binding var showBookmarksMenu: Bool
 
     let searchManager: EbookSearchManager?
 
@@ -99,6 +101,7 @@ struct EbookPlayerTopToolbar: View {
                         showLabel: false,
                         buttonSize: 44,
                         showBackground: false,
+                        isPresented: $showChaptersSheet,
                     )
 
                     if isPad, let onToggleInkTools {
@@ -115,21 +118,25 @@ struct EbookPlayerTopToolbar: View {
                     }
 
                     if let onViewMarginNotes {
-                        Menu {
-                            Button("Bookmarks & Highlights", systemImage: "bookmark") {
-                                showBookmarksPanel = true
-                            }
-                            Button(
-                                "Margin Notes in This Chapter",
-                                systemImage: "pencil.and.list.clipboard",
-                                action: onViewMarginNotes
-                            )
+                        // A dialog rather than a Menu: the bars stay up while it is open, which a
+                        // Menu cannot report.
+                        Button {
+                            showBookmarksMenu = true
                         } label: {
                             Image(systemName: "bookmark")
                                 .font(.system(size: 20)).foregroundStyle(toolbarForegroundColor)
+                                .contentShape(Rectangle())
                         }
                         .frame(width: 44, height: 44)
                         .accessibilityLabel("Bookmarks, highlights and margin notes")
+                        .confirmationDialog(
+                            "Bookmarks, Highlights and Margin Notes",
+                            isPresented: $showBookmarksMenu,
+                            titleVisibility: .hidden
+                        ) {
+                            Button("Bookmarks & Highlights") { showBookmarksPanel = true }
+                            Button("Margin Notes in This Chapter", action: onViewMarginNotes)
+                        }
                     } else {
                         Button {
                             showBookmarksPanel = true

@@ -144,7 +144,18 @@ class EbookPlayerViewModel {
     /// Set by the audio card while it is pulled up past the mini player.
     var isAudioCardExpanded = false
     @ObservationIgnored private var chromeAutoHideTask: Task<Void, Never>?
-    static let chromeAutoHideDelay: Duration = .seconds(5)
+    static let chromeAutoHideDelay: Duration = {
+        #if DEBUG
+        // QA hook: simulator input can lag past 5 s. `-SilveranChromeAutoHideSeconds 20`.
+        let arguments = CommandLine.arguments
+        if let index = arguments.firstIndex(of: "-SilveranChromeAutoHideSeconds"),
+            arguments.indices.contains(index + 1), let seconds = Int(arguments[index + 1])
+        {
+            return .seconds(seconds)
+        }
+        #endif
+        return .seconds(5)
+    }()
     #endif
     var showCustomizePopover = false
     /// Display Options and the sleep timer are presented from the top bar. They live here
@@ -250,6 +261,9 @@ class EbookPlayerViewModel {
     var showTranslation = false
     var translationText = ""
     var showBookmarksPanel = false
+    /// The top bar's chapter list and bookmarks/margin-notes choices; open, they keep the bars up.
+    var showChaptersSheet = false
+    var showBookmarksMenu = false
     var bookmarksPanelInitialTab: BookmarksPanel.Tab = .bookmarks
     var highlights: [Highlight] = []
     var pendingSelection: TextSelectionMessage? = nil
@@ -605,8 +619,9 @@ class EbookPlayerViewModel {
             isTopBarVisible = isReadingBarVisible
             debugLog("[EbookPlayerViewModel] Toggled overlay visibility: \(isReadingBarVisible)")
         }
-        // The writing tools go with the chrome when the reader hides it (not when it fades on its own).
-        if !isTopBarVisible { commsBridge?.hideInkTools?() }
+        // Hiding the chrome by tapping rolls the writing tools up into their button; they never
+        // disappear with it (owner, 2026-10-03). Only the Handwriting button puts them away.
+        if !isTopBarVisible, inkToolStrip.isShowing { inkToolStrip.rollUp() }
         #endif
     }
 
@@ -616,10 +631,12 @@ class EbookPlayerViewModel {
         pinsMiniPlayer ? isTopBarVisible : (isTopBarVisible || isReadingBarVisible)
     }
 
-    /// Menus, panels, and sheets opened from the bars keep them on screen.
+    /// Menus, panels, and sheets opened from the bars, and the writing tools' colour editor, keep
+    /// the bars on screen.
     var isChromeInUse: Bool {
         showCustomizePopover || showDisplayOptions || showSleepTimerSheet || showSearchPanel
-            || showBookmarksPanel || showAudioSheet
+            || showBookmarksPanel || showChaptersSheet || showBookmarksMenu || showAudioSheet
+            || inkToolStrip.isEditingColor
             || showTranslation || isAudioCardExpanded || pendingSelection != nil
             || pendingEditHighlight != nil || showServerPositionDialog
     }

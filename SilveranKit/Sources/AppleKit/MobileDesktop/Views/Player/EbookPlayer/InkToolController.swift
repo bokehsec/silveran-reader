@@ -43,11 +43,6 @@ final class InkToolController: NSObject, UIPencilInteractionDelegate {
         if strip.isShowing { assertResponder() } else { responder.resignFirstResponder() }
     }
 
-    func hide() {
-        strip.hide()
-        responder.resignFirstResponder()
-    }
-
     /// The Pencil touched the page: the strip comes up the first time, and the responder for
     /// undo comes back from WebKit if it took it.
     func pencilDown() {

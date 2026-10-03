@@ -775,7 +775,6 @@ private struct WebViewRepresentable2: PlatformViewRepresentable {
                     ink?.cancelSelectionForLayoutChange()
                 }
                 bridge.toggleInkTools = { [weak tools] in tools?.toggle() }
-                bridge.hideInkTools = { [weak tools] in tools?.hide() }
                 context.coordinator.inkInputController = ink
                 context.coordinator.inkToolController = tools
             }
